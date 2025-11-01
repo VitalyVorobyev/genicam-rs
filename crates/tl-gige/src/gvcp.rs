@@ -77,7 +77,6 @@ impl GvcpRequestHeader {
         buf.extend_from_slice(payload);
         buf.freeze()
     }
-
 }
 
 /// GVCP acknowledgement header wrapper.
@@ -390,7 +389,11 @@ impl GigeDevice {
                 continue;
             }
 
-            let mut buf = vec![0u8; genicp::HEADER_SIZE + consts::GENCP_MAX_BLOCK + consts::GENCP_WRITE_OVERHEAD];
+            let mut buf =
+                vec![
+                    0u8;
+                    genicp::HEADER_SIZE + consts::GENCP_MAX_BLOCK + consts::GENCP_WRITE_OVERHEAD
+                ];
             match time::timeout(consts::CONTROL_TIMEOUT, self.socket.recv(&mut buf)).await {
                 Ok(Ok(len)) => {
                     trace!(request_id, bytes = len, attempt, "received GenCP ack");
@@ -449,9 +452,7 @@ impl GigeDevice {
         let multiplier = 1u32 << (attempt.saturating_sub(1)).min(3);
         let base_ms = consts::RETRY_BASE_DELAY.as_millis() as u64;
         let base = Duration::from_millis(base_ms.saturating_mul(multiplier as u64).max(base_ms));
-        let jitter_ms = self
-            .rng
-            .u64(..=consts::RETRY_JITTER.as_millis() as u64);
+        let jitter_ms = self.rng.u64(..=consts::RETRY_JITTER.as_millis() as u64);
         let jitter = Duration::from_millis(jitter_ms);
         let delay = base + jitter;
         debug!(attempt, delay = ?delay, "gvcp retry backoff");
@@ -486,7 +487,8 @@ impl GigeDevice {
     pub async fn write_mem(&mut self, addr: u64, data: &[u8]) -> Result<(), GigeError> {
         let mut offset = 0usize;
         while offset < data.len() {
-            let chunk = (data.len() - offset).min(consts::GENCP_MAX_BLOCK - consts::GENCP_WRITE_OVERHEAD);
+            let chunk =
+                (data.len() - offset).min(consts::GENCP_MAX_BLOCK - consts::GENCP_WRITE_OVERHEAD);
             if chunk == 0 {
                 return Err(GigeError::Protocol("write chunk size is zero".into()));
             }
