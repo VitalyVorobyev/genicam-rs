@@ -1,52 +1,153 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::env;
 use std::error::Error;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
-use genapi_core::{GenApiError, NodeMap, RegisterIo};
-use genicam::{Camera, GenicamError};
+use genapi_core::{GenApiError, Node, NodeMap, RegisterIo};
+use genapi_xml::Addressing;
+use genicam::{Camera, GenicamError, GigeRegisterIo};
+use tl_gige::{self, GigeDevice};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if env::args().any(|arg| arg == "--real") {
+        run_real()?;
+    } else {
+        run_mock()?;
+    }
+    Ok(())
+}
+
+fn run_mock() -> Result<(), Box<dyn Error>> {
     const XML: &str = r#"
         <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="2" SchemaSubMinorVersion="3">
             <Enumeration Name="GainSelector">
                 <Address>0x300</Address>
                 <Length>2</Length>
                 <AccessMode>RW</AccessMode>
-                <EnumEntry Name="AnalogAll" Value="0" />
-                <EnumEntry Name="DigitalAll" Value="1" />
+                <EnumEntry Name="All" Value="0" />
+                <EnumEntry Name="Red" Value="1" />
+                <EnumEntry Name="Blue" Value="2" />
             </Enumeration>
             <Integer Name="Gain">
-                <Address>0x304</Address>
                 <Length>2</Length>
                 <AccessMode>RW</AccessMode>
                 <Min>0</Min>
                 <Max>48</Max>
                 <pSelected>GainSelector</pSelected>
-                <Selected>AnalogAll</Selected>
+                <Selected>All</Selected>
+                <Address>0x310</Address>
+                <Selected>Red</Selected>
+                <Address>0x314</Address>
+                <Selected>Blue</Selected>
             </Integer>
         </RegisterDescription>
     "#;
 
     let model = genapi_xml::parse(XML)?;
     let nodemap = NodeMap::from(model);
-    let transport = MockIo::with_registers(&[(0x300, vec![0, 0]), (0x304, vec![0, 20])]);
+    let transport = MockIo::with_registers(&[
+        (0x300, vec![0, 0]),
+        (0x310, vec![0, 12]),
+        (0x314, vec![0, 28]),
+    ]);
     let mut camera = Camera::new(transport, nodemap);
 
-    println!("Selector demo:");
-    println!("  GainSelector -> {}", camera.get("GainSelector")?);
-    println!("  Gain -> {}", camera.get("Gain")?);
+    println!("-- mock Gain selector demo --");
+    print_gain_addressing(camera.nodemap());
 
-    println!("Switching selector to DigitalAll");
-    camera.set("GainSelector", "DigitalAll")?;
-    match camera.get("Gain") {
-        Ok(value) => println!("  Gain -> {value}"),
-        Err(GenicamError::GenApi(GenApiError::Unavailable(_))) => {
-            println!("  Gain is unavailable for DigitalAll selector value");
+    let scenarios = ["All", "Red", "Blue"];
+    for selector in scenarios {
+        if selector != "All" {
+            camera.set(sfnc::GAIN_SELECTOR, selector)?;
         }
-        Err(err) => return Err(err.into()),
+        println!("\nSelector -> {}", camera.get(sfnc::GAIN_SELECTOR)?);
+        match camera.get(sfnc::GAIN) {
+            Ok(value) => println!("Gain ({selector}) -> {value}"),
+            Err(GenicamError::GenApi(GenApiError::Unavailable(msg))) => {
+                println!("Gain unavailable: {msg}");
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
 
     Ok(())
+}
+
+fn run_real() -> Result<(), Box<dyn Error>> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let devices = rt.block_on(tl_gige::discover(Duration::from_secs(1)))?;
+    let Some(info) = devices.first() else {
+        println!("No GigE Vision devices discovered.");
+        return Ok(());
+    };
+
+    println!(
+        "Connecting to {}",
+        info.model.clone().unwrap_or_else(|| "camera".into())
+    );
+    let addr = SocketAddr::new(IpAddr::V4(info.ip), tl_gige::GVCP_PORT);
+    let device = rt.block_on(GigeDevice::open(addr))?;
+    let device = std::sync::Arc::new(tokio::sync::Mutex::new(device));
+    let xml = rt.block_on(genapi_xml::fetch_and_load_xml({
+        let device = device.clone();
+        move |address, length| {
+            let device = device.clone();
+            async move {
+                let mut dev = device.lock().await;
+                dev.read_mem(address, length)
+                    .await
+                    .map_err(|err| genapi_xml::XmlError::Transport(err.to_string()))
+            }
+        }
+    }))?;
+    let model = genapi_xml::parse(&xml)?;
+    let nodemap = NodeMap::from(model);
+    let handle = rt.handle().clone();
+    let device = match std::sync::Arc::try_unwrap(device) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(_) => panic!("device still has outstanding clones"),
+    };
+    let transport = GigeRegisterIo::new(handle, device);
+    let mut camera = Camera::new(transport, nodemap);
+
+    println!("-- real Gain selector demo --");
+    print_gain_addressing(camera.nodemap());
+
+    let selectors = ["All", "Red"];
+    for selector in selectors {
+        println!("\nAttempting GainSelector={selector}");
+        if let Err(err) = camera.set(sfnc::GAIN_SELECTOR, selector) {
+            println!("  Unable to set selector: {err}");
+            continue;
+        }
+        match camera.get(sfnc::GAIN) {
+            Ok(value) => println!("  Gain -> {value}"),
+            Err(GenicamError::GenApi(GenApiError::Unavailable(msg))) => {
+                println!("  Gain unavailable: {msg}");
+            }
+            Err(err) => println!("  Failed to read Gain: {err}"),
+        }
+    }
+
+    Ok(())
+}
+
+fn print_gain_addressing(nodemap: &NodeMap) {
+    if let Some(Node::Integer(node)) = nodemap.node(sfnc::GAIN) {
+        match &node.addressing {
+            Addressing::Fixed { address, len } => {
+                println!("Gain uses fixed address 0x{address:08X} ({} bytes)", len);
+            }
+            Addressing::BySelector { selector, map } => {
+                println!("Gain addresses by selector {selector}:");
+                for (value, (addr, len)) in map {
+                    println!("  {value:>8} -> 0x{addr:08X} ({} bytes)", len);
+                }
+            }
+        }
+    }
 }
 
 struct MockIo {

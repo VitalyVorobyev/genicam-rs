@@ -69,6 +69,7 @@ dependencies = [
  "quick-xml",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

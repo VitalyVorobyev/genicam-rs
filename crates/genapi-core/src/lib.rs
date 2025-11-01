@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use genapi_xml::{AccessMode, NodeDecl, XmlModel};
+use genapi_xml::{AccessMode, Addressing, NodeDecl, XmlModel};
 use thiserror::Error;
 use tracing::debug;
 
@@ -83,10 +83,8 @@ impl Node {
 pub struct IntegerNode {
     /// Unique feature name.
     pub name: String,
-    /// Absolute register address relative to the device control space.
-    pub address: u64,
-    /// Register length in bytes.
-    pub len: u32,
+    /// Register addressing metadata (fixed or selector-based).
+    pub addressing: Addressing,
     /// Declared access rights.
     pub access: AccessMode,
     /// Minimum permitted user value.
@@ -108,8 +106,7 @@ pub struct IntegerNode {
 #[derive(Debug)]
 pub struct FloatNode {
     pub name: String,
-    pub address: u64,
-    pub len: u32,
+    pub addressing: Addressing,
     pub access: AccessMode,
     pub min: f64,
     pub max: f64,
@@ -127,8 +124,7 @@ pub struct FloatNode {
 #[derive(Debug)]
 pub struct EnumNode {
     pub name: String,
-    pub address: u64,
-    pub len: u32,
+    pub addressing: Addressing,
     pub access: AccessMode,
     pub entries: Vec<(String, i64)>,
     pub default: Option<String>,
@@ -143,8 +139,7 @@ pub struct EnumNode {
 #[derive(Debug)]
 pub struct BooleanNode {
     pub name: String,
-    pub address: u64,
-    pub len: u32,
+    pub addressing: Addressing,
     pub access: AccessMode,
     pub selectors: Vec<String>,
     pub selected_if: Vec<(String, Vec<String>)>,
@@ -191,15 +186,14 @@ impl NodeMap {
         let node = self.get_integer_node(name)?;
         ensure_readable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if let Some(value) = *node.cache.borrow() {
             return Ok(value);
         }
-        let raw = io
-            .read(node.address, node.len as usize)
-            .map_err(|err| match err {
-                GenApiError::Io(_) => err,
-                other => other,
-            })?;
+        let raw = io.read(address, len as usize).map_err(|err| match err {
+            GenApiError::Io(_) => err,
+            other => other,
+        })?;
         let value = bytes_to_i64(name, &raw)?;
         debug!(node = %name, raw = value, "read integer feature");
         node.cache.replace(Some(value));
@@ -216,6 +210,7 @@ impl NodeMap {
         let node = self.get_integer_node(name)?;
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if value < node.min || value > node.max {
             return Err(GenApiError::Range(name.to_string()));
         }
@@ -224,9 +219,9 @@ impl NodeMap {
                 return Err(GenApiError::Range(name.to_string()));
             }
         }
-        let bytes = i64_to_bytes(name, value, node.len)?;
+        let bytes = i64_to_bytes(name, value, len)?;
         debug!(node = %name, raw = value, "write integer feature");
-        io.write(node.address, &bytes).map_err(|err| match err {
+        io.write(address, &bytes).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
@@ -240,15 +235,14 @@ impl NodeMap {
         let node = self.get_float_node(name)?;
         ensure_readable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if let Some(value) = *node.cache.borrow() {
             return Ok(value);
         }
-        let raw = io
-            .read(node.address, node.len as usize)
-            .map_err(|err| match err {
-                GenApiError::Io(_) => err,
-                other => other,
-            })?;
+        let raw = io.read(address, len as usize).map_err(|err| match err {
+            GenApiError::Io(_) => err,
+            other => other,
+        })?;
         let raw_value = bytes_to_i64(name, &raw)?;
         let value = apply_scale(node, raw_value as f64);
         debug!(node = %name, raw = raw_value, value, "read float feature");
@@ -266,13 +260,14 @@ impl NodeMap {
         let node = self.get_float_node(name)?;
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if value < node.min || value > node.max {
             return Err(GenApiError::Range(name.to_string()));
         }
         let raw = encode_float(node, value)?;
-        let bytes = i64_to_bytes(name, raw, node.len)?;
+        let bytes = i64_to_bytes(name, raw, len)?;
         debug!(node = %name, raw, value, "write float feature");
-        io.write(node.address, &bytes).map_err(|err| match err {
+        io.write(address, &bytes).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
@@ -286,15 +281,14 @@ impl NodeMap {
         let node = self.get_enum_node(name)?;
         ensure_readable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if let Some(value) = node.cache.borrow().clone() {
             return Ok(value);
         }
-        let raw = io
-            .read(node.address, node.len as usize)
-            .map_err(|err| match err {
-                GenApiError::Io(_) => err,
-                other => other,
-            })?;
+        let raw = io.read(address, len as usize).map_err(|err| match err {
+            GenApiError::Io(_) => err,
+            other => other,
+        })?;
         let raw_value = bytes_to_i64(name, &raw)?;
         let entry = node.map_by_value.get(&raw_value).cloned().ok_or_else(|| {
             GenApiError::Parse(format!("unknown enum value {raw_value} for {name}"))
@@ -314,13 +308,14 @@ impl NodeMap {
         let node = self.get_enum_node(name)?;
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         let raw = *node
             .map_by_name
             .get(entry)
             .ok_or_else(|| GenApiError::Range(name.to_string()))?;
-        let bytes = i64_to_bytes(name, raw, node.len)?;
+        let bytes = i64_to_bytes(name, raw, len)?;
         debug!(node = %name, raw, entry, "write enum feature");
-        io.write(node.address, &bytes).map_err(|err| match err {
+        io.write(address, &bytes).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
@@ -334,15 +329,14 @@ impl NodeMap {
         let node = self.get_bool_node(name)?;
         ensure_readable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         if let Some(value) = *node.cache.borrow() {
             return Ok(value);
         }
-        let raw = io
-            .read(node.address, node.len as usize)
-            .map_err(|err| match err {
-                GenApiError::Io(_) => err,
-                other => other,
-            })?;
+        let raw = io.read(address, len as usize).map_err(|err| match err {
+            GenApiError::Io(_) => err,
+            other => other,
+        })?;
         let raw_value = bytes_to_i64(name, &raw)?;
         let value = raw_value != 0;
         debug!(node = %name, raw = raw_value, value, "read boolean feature");
@@ -360,10 +354,11 @@ impl NodeMap {
         let node = self.get_bool_node(name)?;
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         let raw = if value { 1 } else { 0 };
-        let bytes = i64_to_bytes(name, raw, node.len)?;
+        let bytes = i64_to_bytes(name, raw, len)?;
         debug!(node = %name, raw, value, "write boolean feature");
-        io.write(node.address, &bytes).map_err(|err| match err {
+        io.write(address, &bytes).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
@@ -445,10 +440,43 @@ impl NodeMap {
             }
             let current = self.get_selector_value(selector, io)?;
             if !allowed.iter().any(|value| value == &current) {
-                return Err(GenApiError::Unavailable(node_name.to_string()));
+                return Err(GenApiError::Unavailable(format!(
+                    "node '{node_name}' unavailable for selector '{selector}={current}'"
+                )));
             }
         }
         Ok(())
+    }
+
+    fn resolve_address(
+        &self,
+        node_name: &str,
+        addressing: &Addressing,
+        io: &dyn RegisterIo,
+    ) -> Result<(u64, u32), GenApiError> {
+        match addressing {
+            Addressing::Fixed { address, len } => Ok((*address, *len)),
+            Addressing::BySelector { selector, map } => {
+                let value = self.get_selector_value(selector, io)?;
+                if let Some((_, (address, len))) = map.iter().find(|(name, _)| name == &value) {
+                    let addr = *address;
+                    let len = *len;
+                    debug!(
+                        node = %node_name,
+                        selector = %selector,
+                        value = %value,
+                        address = format_args!("0x{addr:X}"),
+                        len,
+                        "resolve address via selector"
+                    );
+                    Ok((addr, len))
+                } else {
+                    Err(GenApiError::Unavailable(format!(
+                        "node '{node_name}' unavailable for selector '{selector}={value}'"
+                    )))
+                }
+            }
+        }
     }
 
     fn get_selector_value(
@@ -499,8 +527,7 @@ impl From<XmlModel> for NodeMap {
             match decl {
                 NodeDecl::Integer {
                     name,
-                    address,
-                    len,
+                    addressing,
                     access,
                     min,
                     max,
@@ -509,6 +536,12 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
+                    if let Addressing::BySelector { selector, .. } = &addressing {
+                        dependents
+                            .entry(selector.clone())
+                            .or_default()
+                            .push(name.clone());
+                    }
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -517,8 +550,7 @@ impl From<XmlModel> for NodeMap {
                     }
                     let node = IntegerNode {
                         name: name.clone(),
-                        address,
-                        len,
+                        addressing,
                         access,
                         min,
                         max,
@@ -532,8 +564,7 @@ impl From<XmlModel> for NodeMap {
                 }
                 NodeDecl::Float {
                     name,
-                    address,
-                    len,
+                    addressing,
                     access,
                     min,
                     max,
@@ -543,6 +574,12 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
+                    if let Addressing::BySelector { selector, .. } = &addressing {
+                        dependents
+                            .entry(selector.clone())
+                            .or_default()
+                            .push(name.clone());
+                    }
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -551,8 +588,7 @@ impl From<XmlModel> for NodeMap {
                     }
                     let node = FloatNode {
                         name: name.clone(),
-                        address,
-                        len,
+                        addressing,
                         access,
                         min,
                         max,
@@ -567,14 +603,19 @@ impl From<XmlModel> for NodeMap {
                 }
                 NodeDecl::Enum {
                     name,
-                    address,
-                    len,
+                    addressing,
                     access,
                     entries,
                     default,
                     selectors,
                     selected_if,
                 } => {
+                    if let Addressing::BySelector { selector, .. } = &addressing {
+                        dependents
+                            .entry(selector.clone())
+                            .or_default()
+                            .push(name.clone());
+                    }
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -589,8 +630,7 @@ impl From<XmlModel> for NodeMap {
                     }
                     let node = EnumNode {
                         name: name.clone(),
-                        address,
-                        len,
+                        addressing,
                         access,
                         entries,
                         default,
@@ -604,12 +644,17 @@ impl From<XmlModel> for NodeMap {
                 }
                 NodeDecl::Boolean {
                     name,
-                    address,
-                    len,
+                    addressing,
                     access,
                     selectors,
                     selected_if,
                 } => {
+                    if let Addressing::BySelector { selector, .. } = &addressing {
+                        dependents
+                            .entry(selector.clone())
+                            .or_default()
+                            .push(name.clone());
+                    }
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -618,8 +663,7 @@ impl From<XmlModel> for NodeMap {
                     }
                     let node = BooleanNode {
                         name: name.clone(),
-                        address,
-                        len,
+                        addressing,
                         access,
                         selectors,
                         selected_if,
@@ -767,17 +811,21 @@ mod tests {
                 <Address>0x300</Address>
                 <Length>2</Length>
                 <AccessMode>RW</AccessMode>
-                <EnumEntry Name="AnalogAll" Value="0" />
-                <EnumEntry Name="DigitalAll" Value="1" />
+                <EnumEntry Name="All" Value="0" />
+                <EnumEntry Name="Red" Value="1" />
+                <EnumEntry Name="Blue" Value="2" />
             </Enumeration>
             <Integer Name="Gain">
-                <Address>0x304</Address>
                 <Length>2</Length>
                 <AccessMode>RW</AccessMode>
                 <Min>0</Min>
                 <Max>48</Max>
                 <pSelected>GainSelector</pSelected>
-                <Selected>AnalogAll</Selected>
+                <Selected>All</Selected>
+                <Address>0x310</Address>
+                <Selected>Red</Selected>
+                <Address>0x314</Address>
+                <Selected>Blue</Selected>
             </Integer>
             <Boolean Name="GammaEnable">
                 <Address>0x400</Address>
@@ -879,19 +927,67 @@ mod tests {
     }
 
     #[test]
-    fn selector_gating() {
+    fn selector_address_switching() {
         let mut nodemap = build_nodemap();
         let io = MockIo::with_registers(&[
             (0x300, i64_to_bytes("GainSelector", 0, 2).unwrap()),
-            (0x304, i64_to_bytes("Gain", 10, 2).unwrap()),
+            (0x310, i64_to_bytes("Gain", 10, 2).unwrap()),
+            (0x314, i64_to_bytes("Gain", 24, 2).unwrap()),
         ]);
-        let gain = nodemap.get_integer("Gain", &io).expect("gain available");
-        assert_eq!(gain, 10);
+
+        let gain_all = nodemap.get_integer("Gain", &io).expect("gain for All");
+        assert_eq!(gain_all, 10);
+        assert_eq!(io.read_count(0x310), 1);
+        assert_eq!(io.read_count(0x314), 0);
+
+        io.write(0x314, &i64_to_bytes("Gain", 32, 2).unwrap())
+            .expect("update red gain");
         nodemap
-            .set_enum("GainSelector", "DigitalAll", &io)
-            .expect("set selector");
+            .set_enum("GainSelector", "Red", &io)
+            .expect("set selector to red");
+        let gain_red = nodemap.get_integer("Gain", &io).expect("gain for Red");
+        assert_eq!(gain_red, 32);
+        assert_eq!(
+            io.read_count(0x310),
+            1,
+            "previous address should not be reread"
+        );
+        assert_eq!(io.read_count(0x314), 1);
+
+        let gain_red_cached = nodemap.get_integer("Gain", &io).expect("cached red");
+        assert_eq!(gain_red_cached, 32);
+        assert_eq!(io.read_count(0x314), 1, "selector cache should be reused");
+
+        nodemap
+            .set_enum("GainSelector", "Blue", &io)
+            .expect("set selector to blue");
         let err = nodemap.get_integer("Gain", &io).unwrap_err();
-        assert!(matches!(err, GenApiError::Unavailable(_)));
+        match err {
+            GenApiError::Unavailable(msg) => {
+                assert!(msg.contains("GainSelector=Blue"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert_eq!(
+            io.read_count(0x314),
+            1,
+            "no read expected for missing mapping"
+        );
+
+        io.write(0x310, &i64_to_bytes("Gain", 12, 2).unwrap())
+            .expect("update all gain");
+        nodemap
+            .set_enum("GainSelector", "All", &io)
+            .expect("restore selector to all");
+        let gain_all_updated = nodemap
+            .get_integer("Gain", &io)
+            .expect("gain for All again");
+        assert_eq!(gain_all_updated, 12);
+        assert_eq!(
+            io.read_count(0x310),
+            2,
+            "address switch should invalidate cache"
+        );
     }
 
     #[test]
