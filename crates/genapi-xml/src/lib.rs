@@ -1009,11 +1009,12 @@ fn attribute_value_required(event: &BytesStart<'_>, name: &[u8]) -> Result<Strin
 fn parse_u64(value: &str) -> Result<u64, XmlError> {
     let trimmed = value.trim();
     if let Some(hex) = trimmed.strip_prefix("0x") {
-        u64::from_str_radix(hex, 16)
+        let hex = hex.replace('_', "");
+        u64::from_str_radix(&hex, 16)
             .map_err(|err| XmlError::Invalid(format!("invalid hex value: {err}")))
     } else {
-        trimmed
-            .parse()
+        let dec = trimmed.replace('_', "");
+        dec.parse()
             .map_err(|err| XmlError::Invalid(format!("invalid integer: {err}")))
     }
 }
@@ -1021,11 +1022,12 @@ fn parse_u64(value: &str) -> Result<u64, XmlError> {
 fn parse_i64(value: &str) -> Result<i64, XmlError> {
     let trimmed = value.trim();
     if let Some(hex) = trimmed.strip_prefix("0x") {
-        i64::from_str_radix(hex, 16)
+        let hex = hex.replace('_', "");
+        i64::from_str_radix(&hex, 16)
             .map_err(|err| XmlError::Invalid(format!("invalid hex value: {err}")))
     } else {
-        trimmed
-            .parse()
+        let dec = trimmed.replace('_', "");
+        dec.parse()
             .map_err(|err| XmlError::Invalid(format!("invalid integer: {err}")))
     }
 }

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use genapi_core::{GenApiError, NodeMap, RegisterIo};
-use genapi_xml;
 use genicam::{Camera, GenicamError};
 
 fn main() -> Result<(), Box<dyn Error>> {

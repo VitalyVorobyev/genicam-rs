@@ -6,9 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use genapi_core::{GenApiError, NodeMap, RegisterIo};
-use genapi_xml;
 use genicam::{Camera, GigeRegisterIo};
-use sfnc;
 use tl_gige::{self, GigeDevice};
 
 fn main() -> Result<(), Box<dyn Error>> {
