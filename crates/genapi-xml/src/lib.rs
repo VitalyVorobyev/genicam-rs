@@ -11,6 +11,9 @@ use tracing::warn;
 const FIRST_URL_ADDRESS: u64 = 0x0000;
 const FIRST_URL_MAX_LEN: usize = 512;
 
+/// XML element name referencing another node that provides an address.
+const TAG_P_ADDRESS: &[u8] = b"pAddress";
+
 #[derive(Debug, Error)]
 pub enum XmlError {
     #[error("xml: {0}")]
@@ -56,6 +59,13 @@ pub enum Addressing {
         selector: String,
         /// Mapping of selector value to `(address, length)` pair.
         map: Vec<(String, (u64, u32))>,
+    },
+    /// Node resolves its register block through another node providing the address.
+    Indirect {
+        /// Node providing the register address at runtime.
+        p_address_node: String,
+        /// Length of the target register block in bytes.
+        len: u32,
     },
 }
 
@@ -294,6 +304,7 @@ struct AddressingBuilder {
     entries: Vec<AddressEntry>,
     pending_value: Option<String>,
     pending_len: Option<u32>,
+    p_address_node: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +321,10 @@ impl AddressingBuilder {
 
     fn set_length(&mut self, len: u32) {
         self.length = Some(len);
+    }
+
+    fn set_p_address_node(&mut self, node: &str) {
+        self.p_address_node = Some(node.to_string());
     }
 
     fn register_selector(&mut self, selector: &str) {
@@ -347,7 +362,7 @@ impl AddressingBuilder {
         }
     }
 
-    fn finalize(self, node: &str) -> Result<Addressing, XmlError> {
+    fn finalize(self, node: &str, default_len: Option<u32>) -> Result<Addressing, XmlError> {
         if !self.entries.is_empty() {
             let selector = self.selector.ok_or_else(|| {
                 XmlError::Invalid(format!(
@@ -356,7 +371,7 @@ impl AddressingBuilder {
             })?;
             let mut map = Vec::new();
             for entry in self.entries {
-                let len = entry.len.or(self.length).ok_or_else(|| {
+                let len = entry.len.or(self.length).or(default_len).ok_or_else(|| {
                     XmlError::Invalid(format!(
                         "node {node} is missing <Length> for selector value {}",
                         entry.value
@@ -368,6 +383,12 @@ impl AddressingBuilder {
                     map.push((entry.value.clone(), (entry.address, len)));
                 }
             }
+            if self.p_address_node.is_some() {
+                warn!(
+                    node = %node,
+                    "ignoring <pAddress> in favour of selector table"
+                );
+            }
             if self.fixed_address.is_some() {
                 warn!(
                     node = %node,
@@ -377,13 +398,28 @@ impl AddressingBuilder {
             }
             Ok(Addressing::BySelector { selector, map })
         } else {
-            let address = self
-                .fixed_address
-                .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Address>")))?;
             let len = self
                 .length
+                .or(default_len)
                 .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Length>")))?;
-            Ok(Addressing::Fixed { address, len })
+            if let Some(p_address_node) = self.p_address_node {
+                if self.fixed_address.is_some() {
+                    warn!(
+                        node = %node,
+                        address_node = %p_address_node,
+                        "ignoring fixed <Address> in favour of <pAddress>"
+                    );
+                }
+                Ok(Addressing::Indirect {
+                    p_address_node,
+                    len,
+                })
+            } else {
+                let address = self.fixed_address.ok_or_else(|| {
+                    XmlError::Invalid(format!("node {node} is missing <Address>"))
+                })?;
+                Ok(Addressing::Fixed { address, len })
+            }
         }
     }
 }
@@ -417,6 +453,13 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                 b"Address" => {
                     let text = read_text_start(reader, e)?;
                     addressing.attach_selected_address(parse_u64(&text)?, None);
+                }
+                TAG_P_ADDRESS => {
+                    let text = read_text_start(reader, e)?;
+                    let target = text.trim();
+                    if !target.is_empty() {
+                        addressing.set_p_address_node(target);
+                    }
                 }
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
@@ -514,6 +557,14 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                         last_selector = Some(selected_if.len() - 1);
                     }
                 }
+                TAG_P_ADDRESS => {
+                    if let Some(value) = attribute_value(e, b"Name")? {
+                        let trimmed = value.trim();
+                        if !trimmed.is_empty() {
+                            addressing.set_p_address_node(trimmed);
+                        }
+                    }
+                }
                 b"Selected" => {
                     if let Some(val) = attribute_value(e, b"Value")? {
                         addressing.push_selected_value(val.clone());
@@ -561,7 +612,7 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let max =
         max.ok_or_else(|| XmlError::Invalid(format!("Integer node {name} is missing <Max>")))?;
 
-    let addressing = addressing.finalize(&name)?;
+    let addressing = addressing.finalize(&name, Some(4))?;
 
     Ok(NodeDecl::Integer {
         name,
@@ -607,6 +658,13 @@ fn parse_float(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<Node
                 b"Address" => {
                     let text = read_text_start(reader, e)?;
                     addressing.attach_selected_address(parse_u64(&text)?, None);
+                }
+                TAG_P_ADDRESS => {
+                    let text = read_text_start(reader, e)?;
+                    let target = text.trim();
+                    if !target.is_empty() {
+                        addressing.set_p_address_node(target);
+                    }
                 }
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
@@ -718,6 +776,14 @@ fn parse_float(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<Node
                         last_selector = Some(selected_if.len() - 1);
                     }
                 }
+                TAG_P_ADDRESS => {
+                    if let Some(value) = attribute_value(e, b"Name")? {
+                        let trimmed = value.trim();
+                        if !trimmed.is_empty() {
+                            addressing.set_p_address_node(trimmed);
+                        }
+                    }
+                }
                 b"Selected" => {
                     if let Some(val) = attribute_value(e, b"Value")? {
                         addressing.push_selected_value(val.clone());
@@ -769,7 +835,7 @@ fn parse_float(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<Node
         _ => None,
     };
 
-    let addressing = addressing.finalize(&name)?;
+    let addressing = addressing.finalize(&name, Some(8))?;
 
     Ok(NodeDecl::Float {
         name,
@@ -812,6 +878,13 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
                 b"Address" => {
                     let text = read_text_start(reader, e)?;
                     addressing.attach_selected_address(parse_u64(&text)?, None);
+                }
+                TAG_P_ADDRESS => {
+                    let text = read_text_start(reader, e)?;
+                    let target = text.trim();
+                    if !target.is_empty() {
+                        addressing.set_p_address_node(target);
+                    }
                 }
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
@@ -947,7 +1020,7 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
         buf.clear();
     }
 
-    let addressing = addressing.finalize(&name)?;
+    let addressing = addressing.finalize(&name, Some(4))?;
 
     Ok(NodeDecl::Enum {
         name,
@@ -985,6 +1058,13 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                 b"Address" => {
                     let text = read_text_start(reader, e)?;
                     addressing.attach_selected_address(parse_u64(&text)?, None);
+                }
+                TAG_P_ADDRESS => {
+                    let text = read_text_start(reader, e)?;
+                    let target = text.trim();
+                    if !target.is_empty() {
+                        addressing.set_p_address_node(target);
+                    }
                 }
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
@@ -1063,6 +1143,14 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                         last_selector = Some(selected_if.len() - 1);
                     }
                 }
+                TAG_P_ADDRESS => {
+                    if let Some(value) = attribute_value(e, b"Name")? {
+                        let trimmed = value.trim();
+                        if !trimmed.is_empty() {
+                            addressing.set_p_address_node(trimmed);
+                        }
+                    }
+                }
                 b"Selected" => {
                     if let Some(val) = attribute_value(e, b"Value")? {
                         addressing.push_selected_value(val.clone());
@@ -1105,10 +1193,7 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
         buf.clear();
     }
 
-    if addressing.length.is_none() {
-        addressing.set_length(1);
-    }
-    let addressing = addressing.finalize(&name)?;
+    let addressing = addressing.finalize(&name, Some(4))?;
 
     Ok(NodeDecl::Boolean {
         name,
@@ -1649,6 +1734,60 @@ mod tests {
                 assert_eq!(selected_if.len(), 1);
                 assert_eq!(selected_if[0].0, "GainSelector");
                 assert_eq!(selected_if[0].1, vec!["AnalogAll".to_string()]);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_indirect_addressing() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="RegAddr">
+                    <Address>0x2000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>65535</Max>
+                </Integer>
+                <Integer Name="Gain" Address="0xFFFF">
+                    <pAddress>RegAddr</pAddress>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>255</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse indirect xml");
+        assert_eq!(model.nodes.len(), 2);
+        match &model.nodes[0] {
+            NodeDecl::Integer {
+                name, addressing, ..
+            } => {
+                assert_eq!(name, "RegAddr");
+                assert!(
+                    matches!(addressing, Addressing::Fixed { address, len } if *address == 0x2000 && *len == 4)
+                );
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+        match &model.nodes[1] {
+            NodeDecl::Integer {
+                name, addressing, ..
+            } => {
+                assert_eq!(name, "Gain");
+                match addressing {
+                    Addressing::Indirect {
+                        p_address_node,
+                        len,
+                    } => {
+                        assert_eq!(p_address_node, "RegAddr");
+                        assert_eq!(*len, 4);
+                    }
+                    other => panic!("expected indirect addressing, got {other:?}"),
+                }
             }
             other => panic!("unexpected node: {other:?}"),
         }
