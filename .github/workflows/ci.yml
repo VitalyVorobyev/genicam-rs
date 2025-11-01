@@ -47,5 +47,10 @@ jobs:
       - name: Documentation build
         run: cargo doc --workspace --all-features --no-deps --locked
 
-      - name: Package validation
-        run: cargo package --locked
+      - name: Package validation (publishable crates)
+        run: |
+          # Only validate crates that can be packaged in isolation.
+          cargo package -p genicp --locked
+          cargo package -p genapi-xml --locked
+          # tl-gige depends on path genicp; verify packaging shape without index checks.
+          cargo package -p tl-gige --locked --no-verify
