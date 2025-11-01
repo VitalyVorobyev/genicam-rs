@@ -63,15 +63,25 @@ pub async fn discover(timeout: Duration) -> Result<Vec<DeviceInfo>, GigeError> {
 }
 
 /// Discover devices only on the specified interface name.
-pub async fn discover_on_interface(timeout: Duration, interface: &str) -> Result<Vec<DeviceInfo>, GigeError> {
+pub async fn discover_on_interface(
+    timeout: Duration,
+    interface: &str,
+) -> Result<Vec<DeviceInfo>, GigeError> {
     discover_filtered(timeout, Some(interface)).await
 }
 
-async fn discover_filtered(timeout: Duration, iface_filter: Option<&str>) -> Result<Vec<DeviceInfo>, GigeError> {
+async fn discover_filtered(
+    timeout: Duration,
+    iface_filter: Option<&str>,
+) -> Result<Vec<DeviceInfo>, GigeError> {
     let mut interfaces = Vec::new();
     for iface in get_if_addrs()? {
-        let IfAddr::V4(v4) = iface.addr else { continue; };
-        if v4.ip.is_loopback() { continue; }
+        let IfAddr::V4(v4) = iface.addr else {
+            continue;
+        };
+        if v4.ip.is_loopback() {
+            continue;
+        }
         if let Some(filter) = iface_filter {
             if iface.name != filter {
                 continue;
@@ -106,7 +116,7 @@ async fn discover_filtered(timeout: Duration, iface_filter: Option<&str>) -> Res
 
             let mut responses = Vec::new();
             let mut buffer = vec![0u8; DISCOVERY_BUFFER];
-            let mut timer = time::sleep(timeout);
+            let timer = time::sleep(timeout);
             tokio::pin!(timer);
             loop {
                 tokio::select! {
@@ -128,7 +138,8 @@ async fn discover_filtered(timeout: Duration, iface_filter: Option<&str>) -> Res
 
     let mut seen = HashMap::new();
     while let Some(res) = join_set.join_next().await {
-        let devices = res.map_err(|e| GigeError::Protocol(format!("discovery task failed: {e}")))??;
+        let devices =
+            res.map_err(|e| GigeError::Protocol(format!("discovery task failed: {e}")))??;
         for dev in devices {
             seen.entry((dev.ip, dev.mac)).or_insert(dev);
         }
@@ -143,7 +154,7 @@ fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Result<Option<Devic
     if buf.len() < GENCP_HEADER_SIZE {
         return Err(GigeError::Protocol("GVCP ack too short".into()));
     }
-    let mut header = &buf[..];
+    let mut header = buf;
     let status = header.get_u16();
     let command = header.get_u16();
     let length = header.get_u16() as usize;
@@ -152,10 +163,14 @@ fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Result<Option<Devic
         return Ok(None);
     }
     if command != GVCP_DISCOVERY_ACK {
-        return Err(GigeError::Protocol(format!("unexpected discovery opcode {command:#06x}")));
+        return Err(GigeError::Protocol(format!(
+            "unexpected discovery opcode {command:#06x}"
+        )));
     }
     if status != 0 {
-        return Err(GigeError::Protocol(format!("discovery returned status {status:#06x}")));
+        return Err(GigeError::Protocol(format!(
+            "discovery returned status {status:#06x}"
+        )));
     }
     if buf.len() < GENCP_HEADER_SIZE + length {
         return Err(GigeError::Protocol("discovery payload truncated".into()));
@@ -189,7 +204,12 @@ fn parse_discovery_payload(payload: &[u8]) -> Result<DeviceInfo, GigeError> {
     let _ = skip_string(&mut cursor, 16);
     let _ = skip_string(&mut cursor, 16);
 
-    Ok(DeviceInfo { ip, mac, manufacturer, model })
+    Ok(DeviceInfo {
+        ip,
+        mac,
+        manufacturer,
+        model,
+    })
 }
 
 fn read_fixed_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Option<String>, GigeError> {
@@ -213,7 +233,11 @@ fn parse_string(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let slice = &bytes[..end];
     let s = String::from_utf8_lossy(slice).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 pub struct GigeDevice {
@@ -232,7 +256,11 @@ impl GigeDevice {
         };
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         socket.connect(addr).await?;
-        Ok(Self { socket, remote: addr, request_id: 1 })
+        Ok(Self {
+            socket,
+            remote: addr,
+            request_id: 1,
+        })
     }
 
     fn next_request_id(&mut self) -> u16 {
@@ -272,7 +300,9 @@ impl GigeDevice {
             return Err(GigeError::Protocol("acknowledgement id mismatch".into()));
         }
         if ack.header.opcode != opcode {
-            return Err(GigeError::Protocol("unexpected opcode in acknowledgement".into()));
+            return Err(GigeError::Protocol(
+                "unexpected opcode in acknowledgement".into(),
+            ));
         }
         match ack.header.status {
             StatusCode::Success => Ok(ack),
@@ -314,8 +344,10 @@ impl GigeDevice {
             payload.put_u64(addr + offset as u64);
             payload.extend_from_slice(&data[offset..offset + chunk]);
             let ack = self.transact(OpCode::WriteMem, payload).await?;
-            if ack.payload.len() != 0 {
-                return Err(GigeError::Protocol("write acknowledgement carried unexpected payload".into()));
+            if !ack.payload.is_empty() {
+                return Err(GigeError::Protocol(
+                    "write acknowledgement carried unexpected payload".into(),
+                ));
             }
             offset += chunk;
         }

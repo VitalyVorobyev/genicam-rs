@@ -1,3 +1,13 @@
+[package]
+name = "genicam-rs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# This is an aggregator/CLI; not intended for crates.io publishing yet.
+publish = false
+
 [workspace]
 members = [
   "crates/genicp",
@@ -14,8 +24,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/genicam-rs"
+license = "MIT"
+repository = "https://github.com/VitalyVorobyev/genicam-rs"
 rust-version = "1.75"
 
 [workspace.dependencies]
@@ -32,3 +42,10 @@ serde_json = "1"
 rusb = "0.9"
 # For net utils:
 if-addrs = "0.11"
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
+tl-gige = { path = "crates/tl-gige" }
+genapi-xml = { path = "crates/genapi-xml" }

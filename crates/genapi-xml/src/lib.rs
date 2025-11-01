@@ -43,7 +43,8 @@ where
     match location {
         UrlLocation::Local { address, length } => {
             let xml_bytes = read_mem(address, length).await?;
-            String::from_utf8(xml_bytes).map_err(|err| XmlError::Xml(format!("invalid UTF-8: {err}")))
+            String::from_utf8(xml_bytes)
+                .map_err(|err| XmlError::Xml(format!("invalid UTF-8: {err}")))
         }
         UrlLocation::LocalNamed(name) => Err(XmlError::Unsupported(format!(
             "named local URL '{name}' is not supported"
@@ -76,12 +77,12 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
                 depth += 1;
                 handle_start(&e, depth, &mut schema_version, &mut top_level_features)?;
                 if depth > 0 {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                 }
             }
             Ok(Event::End(_)) => {
                 if depth > 0 {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                 }
             }
             Ok(Event::Eof) => break,
@@ -91,7 +92,10 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
         buf.clear();
     }
 
-    Ok(MinimalXmlInfo { schema_version, top_level_features })
+    Ok(MinimalXmlInfo {
+        schema_version,
+        top_level_features,
+    })
 }
 
 fn handle_start(
@@ -115,7 +119,9 @@ fn handle_start(
 fn extract_schema_version(event: &BytesStart<'_>) -> Option<String> {
     let major = attribute_value(event, b"SchemaMajorVersion").ok().flatten();
     let minor = attribute_value(event, b"SchemaMinorVersion").ok().flatten();
-    let sub = attribute_value(event, b"SchemaSubMinorVersion").ok().flatten();
+    let sub = attribute_value(event, b"SchemaSubMinorVersion")
+        .ok()
+        .flatten();
     if major.is_none() && minor.is_none() && sub.is_none() {
         None
     } else {
@@ -130,7 +136,9 @@ fn attribute_value(event: &BytesStart<'_>, name: &[u8]) -> Result<Option<String>
     for attr in event.attributes() {
         let attr = attr.map_err(|err| XmlError::Xml(err.to_string()))?;
         if attr.key.as_ref() == name {
-            let value = attr.unescape_value().map_err(|err| XmlError::Xml(err.to_string()))?;
+            let value = attr
+                .unescape_value()
+                .map_err(|err| XmlError::Xml(err.to_string()))?;
             let trimmed = value.trim().to_string();
             if trimmed.is_empty() {
                 return Ok(None);
@@ -170,7 +178,7 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
     }
     let mut address = None;
     let mut length = None;
-    for part in trimmed.split(|c| c == ';' || c == ',' ) {
+    for part in trimmed.split(|c| c == ';' || c == ',') {
         let token = part.trim();
         if token.is_empty() {
             continue;
@@ -184,7 +192,10 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
                 }
                 "length" | "size" => {
                     let len = parse_int(value)?;
-                    length = Some(len.try_into().map_err(|_| XmlError::Invalid("length does not fit usize".into()))?);
+                    length = Some(
+                        len.try_into()
+                            .map_err(|_| XmlError::Invalid("length does not fit usize".into()))?,
+                    );
                 }
                 _ => {}
             }
@@ -203,9 +214,12 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
 fn parse_int(value: &str) -> Result<u64, XmlError> {
     let trimmed = value.trim();
     if let Some(hex) = trimmed.strip_prefix("0x") {
-        u64::from_str_radix(hex, 16).map_err(|err| XmlError::Invalid(format!("invalid hex value: {err}")))
+        u64::from_str_radix(hex, 16)
+            .map_err(|err| XmlError::Invalid(format!("invalid hex value: {err}")))
     } else {
-        trimmed.parse().map_err(|err| XmlError::Invalid(format!("invalid integer: {err}")))
+        trimmed
+            .parse()
+            .map_err(|err| XmlError::Invalid(format!("invalid integer: {err}")))
     }
 }
 
@@ -213,7 +227,11 @@ fn first_cstring(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let slice = &bytes[..end];
     let value = String::from_utf8_lossy(slice).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[cfg(test)]

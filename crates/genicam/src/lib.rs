@@ -1,6 +1,6 @@
 //! Public API: Camera, Stream, Image, Feature access bridging TL <-> GenApi.
 
-use genapi_core::{NodeMap, Node, GenApiError};
+use genapi_core::{GenApiError, Node, NodeMap};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,18 +23,33 @@ pub struct Camera<T: Transport> {
 }
 
 impl<T: Transport> Camera<T> {
-    pub fn nodemap(&self) -> &NodeMap { &self.nodemap }
-    pub fn nodemap_mut(&mut self) -> &mut NodeMap { &mut self.nodemap }
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+    pub fn nodemap(&self) -> &NodeMap {
+        &self.nodemap
+    }
+    pub fn nodemap_mut(&mut self) -> &mut NodeMap {
+        &mut self.nodemap
+    }
     pub fn set_integer(&mut self, name: &str, v: i64) -> Result<(), GenicamError> {
-        let n = self.nodemap_mut().get_mut(name).ok_or_else(|| GenApiError::NodeNotFound(name.into()))?;
+        let n = self
+            .nodemap_mut()
+            .get_mut(name)
+            .ok_or_else(|| GenApiError::NodeNotFound(name.into()))?;
         match n {
             Node::Integer(ref mut int) => {
-                if v < int.min || v > int.max { return Err(GenApiError::Range(name.into()).into()); }
+                if v < int.min || v > int.max {
+                    return Err(GenApiError::Range(name.into()).into());
+                }
                 int.value = v;
                 // TODO: map to registers via GenApi model, then self.transport.write_mem(...)
                 Ok(())
             }
-            _ => Err(GenApiError::TypeMismatch(name.into()).into())
+            _ => Err(GenApiError::TypeMismatch(name.into()).into()),
         }
     }
 }

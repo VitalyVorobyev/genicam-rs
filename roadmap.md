@@ -104,3 +104,60 @@ Phase 7 — (Optional) GenTL Producer (.cti)
 
 Phase 8 — Conformance & docs
 	•	Prep for A3 conformance tests (GigE/U3V); add developer guide and SFNC coverage table.
+
+Updated roadmap:
+
+Ethernet-First Roadmap (GigE Vision priority)
+
+Status: Phase 0 scaffold = ✅ (done)
+
+Phase 1 — GVCP control plane + GenCP + XML (MVP)
+	•	Deliver: Discovery (broadcast on each NIC), open control channel, GenCP ReadMem/WriteMem over GVCP, fetch device XML.
+	•	Acceptance: list_cameras shows IP/MAC/Model; get_set_feature fetches XML (prints size/version).
+
+Phase 2 — GenApi (minimal) + SFNC core features
+	•	Deliver: NodeMap supporting Integer/Float/Enum/Bool/Command; access mode; ranges; basic selector; SFNC constants.
+	•	Acceptance: Read/Set ExposureTime, Gain, AcquisitionMode; read-back verified.
+
+Phase 3 — GVSP streaming (baseline)
+	•	Deliver: Open stream channel; parse leader/trailer; packet reassembly; payload delivery for Mono8/Bayer/RGB8; image metadata struct; PFNC map.
+	•	Acceptance: grab_gige saves frames reliably at modest FPS with no crash and no corrupted frames.
+
+Phase 4 — Robust GVSP (loss, speed, MTU)
+	•	Deliver:
+	•	Resend logic (missing packets bitmap; GVCP resend ranges; backoff).
+	•	Packet size negotiation / MTU (jumbo frames support; DoNotFragment; packet delay).
+	•	Ring buffer + backpressure; stream stats (dropped, resends, late frames).
+	•	Multi-NIC selection; interface binding; SO_RCVBUF sizing.
+	•	Acceptance: Sustained ≥ 900 Mb/s Mono8@~1200×1000@90 FPS on 1 GbE with <0.1% frame drops (typical good NIC).
+
+Phase 5 — Events & Action Commands (synchronization at scale)
+	•	Deliver:
+	•	Message channel (event UDP port); subscribe to event selectors; decode event payloads.
+	•	Action commands (broadcast to group key/mask); API to fire and await acks.
+	•	Acceptance: Receive exposure-end/frame-start events; trigger multiple devices via action and see synchronized starts.
+
+Phase 6 — Time sync & timestamps (PTP/IEEE-1588)
+	•	Deliver:
+	•	Read device tick frequency; implement host↔device time mapping (latch/reset).
+	•	Optional: PTP time source selection; timestamp domain field in frames.
+	•	Acceptance: Per-frame timestamps mapped to host clock within ±1 ms (no PTP) and ±100 µs (with PTP enabled on NIC/camera).
+
+Phase 7 — Stream features
+	•	Deliver: Chunk data parsing (per-frame metadata); multi-part payloads; multicast receive.
+	•	Acceptance: Chunk exposure time attached to frames; join multicast stream successfully.
+
+Phase 8 — Performance polish
+	•	Deliver: Zero-copy where possible; NUMA/affinity hints; configurable async runtime; benchmark suite; soak tests.
+	•	Acceptance: 10 min soak at target bandwidth with 0 panics, stable memory, consistent FPS.
+
+Phase 9 — USB3 Vision (deprioritized, later)
+	•	Deliver: Control + stream via rusb; parity with Phases 1–3 for one U3V camera.
+
+Phase 10 — (Optional) GenTL Producer (.cti)
+	•	Deliver: C ABI exposing Interface/Device/Stream; loadable by GenTL consumers.
+
+Phase 11 — Conformance & docs
+	•	Deliver: SFNC coverage table; prep for A3 conformance tests; user/developer guides.
+
+⸻

@@ -180,7 +180,7 @@ pub fn decode_ack(buf: &[u8]) -> Result<GenCpAck, GenCpError> {
     if buf.len() < HEADER_SIZE {
         return Err(GenCpError::InvalidPacket("too short"));
     }
-    let mut cursor = &buf[..];
+    let mut cursor = buf;
     let status_raw = cursor.get_u16();
     let opcode_raw = cursor.get_u16();
     let length = cursor.get_u16();
@@ -229,7 +229,10 @@ mod tests {
         };
 
         let encoded = encode_cmd(&cmd);
-        assert_eq!(&encoded[..2], &CommandFlags::ACK_REQUIRED.bits().to_be_bytes());
+        assert_eq!(
+            &encoded[..2],
+            &CommandFlags::ACK_REQUIRED.bits().to_be_bytes()
+        );
         assert_eq!(&encoded[2..4], &0x0084u16.to_be_bytes());
         assert_eq!(&encoded[4..6], &(cmd.payload.len() as u16).to_be_bytes());
         assert_eq!(&encoded[6..8], &0x0042u16.to_be_bytes());
