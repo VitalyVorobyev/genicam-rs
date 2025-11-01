@@ -1,75 +1,108 @@
-genicam-rs
-===============
+# genicam-rs
 
-Pure Rust building blocks for the GenICam ecosystem — starting with GigE Vision (GVCP/GenCP/GVSP) and paving the way for USB3 Vision. This repo is a Cargo workspace composed of small, focused crates that you can use independently or together.
+Pure Rust building blocks for **GenICam** with an **Ethernet-first (GigE Vision)** focus.  
+Cargo workspace, modular crates (GenCP, GVCP/GVSP, GenApi core), and small examples.
 
-Status: early work-in-progress. Discovery and control-path primitives are taking shape; streaming and richer GenApi support come next. See roadmap.md for details.
+## Current status (Nov 2025)
 
-What’s here
-- genicp: Transport-agnostic GenCP encode/decode + status mapping.
-- tl-gige: GigE Vision transport — GVCP discovery; GenCP over GVCP; device memory read/write.
-- genapi-xml: Fetch GenICam XML via device registers (local:address=…); minimal parsing (schema version, top-level features).
-- genapi-core: Early Node/NodeMap types to model features (Integer/Float/Enum/Bool/Command/Category).
-- genicam: Public façade planned to bridge transports with GenApi nodes.
-- Placeholders: tl-u3v, pfnc, sfnc, gentl-cti (scaffolding for later phases).
+- ✅ **Discovery (GVCP)** on selected NICs; enumerate devices.
+- ✅ **Control path (GenCP over GVCP):** read/write device memory; fetch GenICam XML.
+- ✅ **GenApi (Tier-1):** basic NodeMap (Integer/Float/Enum/Bool/Command), ranges, access modes.
+- ✅ **Selector-based address switching** for common features (e.g., `GainSelector`).
+- 🚧 **Streaming (GVSP):** packet reassembly, resend, MTU/packet size & delay, backpressure, stats.
+- 🚧 **Events & actions:** message channel events; action commands (synchronization).
+- 🚧 **Time mapping & chunks:** device↔host timestamp mapping; chunk data parsing.
+- 🔜 USB3 Vision; SwissKnife & advanced GenApi; GenTL producer (.cti).
 
-Workspace layout
-- Cargo workspace at the root, with member crates in crates/ and example programs in examples/.
-- Rust 1.75 (pinned in rust-toolchain.toml).
-- Shared metadata (license, repository) set via [workspace.package] in Cargo.toml.
+> See `roadmap.md` for detailed phases and acceptance criteria.
 
-Quick start
-- Build everything: cargo build --workspace
-- Run tests: cargo test --workspace
-- Generate docs locally: cargo doc --workspace --no-deps
+## Workspace layout
 
-Examples
-The repository includes example programs under examples/ to demonstrate current capabilities:
+crates/
+  genicp/        # GenCP encode/decode
+  tl-gige/       # GigE Vision (GVCP/GVSP)
+  genapi-xml/    # GenICam XML loader & schema-lite parser
+  genapi-core/   # NodeMap & evaluation
+  genicam/       # Public API facade
+examples/        # Small demos (see below)
 
-- examples/list_cameras.rs — broadcast GVCP discovery and print IP/MAC/manufacturer/model.
-- examples/get_set_feature.rs — connect via GVCP/GenCP, fetch GenICam XML (local:… URL), parse minimal metadata.
+## Prereqs
 
-Note: examples currently live at the workspace root, not under a specific crate. Until they are moved to per-crate example targets, you can run them by temporarily copying into a crate’s examples/ folder. For instance, to run list_cameras with tl-gige:
+- Rust 1.75+ (pinned in `rust-toolchain.toml`)
+- Linux/macOS (Windows planned)
+- Network:
+  - Allow UDP broadcast on your capture NIC for discovery
+  - Optional: enable jumbo frames if you plan to test high throughput
 
-1) Copy the file into the crate’s example directory:
-   mkdir -p crates/tl-gige/examples && cp examples/list_cameras.rs crates/tl-gige/examples/
+## Build & test
 
-2) Run it with cargo:
-   cargo run -p tl-gige --example list_cameras --features ""
+```bash
+# Build everything
+cargo build --workspace
 
-Alternatively, open the example in your IDE and run it in a small ad-hoc binary crate that depends on tl-gige and tokio.
+# Run all tests
+cargo test --workspace
 
-Minimal usage (snippet)
-This is the essence of GigE discovery using tl-gige:
-
-```rust
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-    let devices = tl_gige::discover(Duration::from_millis(500)).await?;
-    for d in devices {
-        println!("{} {:?} {:?}", d.ip, d.manufacturer, d.model);
-    }
-    Ok(())
-}
+# Generate docs locally
+cargo doc --workspace --no-deps
 ```
 
-Roadmap
-- Detailed phases and acceptance criteria live in roadmap.md.
+## Run examples
 
-Platform notes
-- OS: Linux/macOS are primary targets while developing networking and async I/O. Windows support is planned.
-- Networking: Discovery uses UDP broadcast; ensure your firewall permits local broadcasts on your selected interface.
+Examples currently live at the workspace root. Run them via the appropriate crate target and adjust paths as needed.
 
-Contributing
-- Toolchain: Rust 1.75+ with rustfmt and clippy (installed via rustup; see rust-toolchain.toml).
-- Before opening a PR: cargo fmt --all, cargo clippy --workspace --all-targets -- -D warnings, cargo test --workspace.
-- Discussions, bug reports, and PRs are welcome.
+- **Discover devices (GVCP broadcast):**
 
-License
-- MIT — see LICENSE at the repository root.
+  ```bash
+  cargo run -p tl-gige --example list_cameras --features ""
+  ```
 
-Acknowledgements
-- Specs and terminology from the A3 GenICam, GigE Vision, and USB3 Vision standards.
+- **Fetch XML & print minimal metadata (control path):**
+
+  ```bash
+  cargo run -p tl-gige --example get_set_feature --features ""
+  ```
+
+- **Grab frames (GVSP):**
+
+  ```bash
+  cargo run -p tl-gige --example grab_gige --features ""
+  ```
+
+- **Events:**
+
+  ```bash
+  cargo run -p tl-gige --example events_gige --features ""
+  ```
+
+- **Action command (broadcast):**
+
+  ```bash
+  cargo run -p tl-gige --example action_trigger --features ""
+  ```
+
+- **Timestamp mapping:**
+
+  ```bash
+  cargo run -p tl-gige --example time_sync --features ""
+  ```
+
+- **Selectors demo:**
+
+  ```bash
+  cargo run -p genicam --example selectors_demo --features ""
+  ```
+
+## Troubleshooting
+
+- No devices found: check NIC/interface selection and host firewall (UDP broadcast).
+- Drops at high FPS: try jumbo frames, raise `SO_RCVBUF`, and enable packet delay.
+- Windows: run as admin, allow UDP in firewall rules; jumbo frames must be enabled per NIC.
+
+## License
+
+MIT — see LICENSE.
+
+## Acknowledgements
+
+Standards: GenICam/GenApi (EMVA/A3), GigE Vision. Thanks to the open-source ecosystem for prior art and inspiration.
