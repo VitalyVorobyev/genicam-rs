@@ -18,6 +18,9 @@ use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::info;
 
+#[cfg(target_os = "linux")]
+use tracing::warn;
+
 /// Default socket receive buffer size used when the caller does not provide a
 /// custom value. The number mirrors what many operating systems allow without
 /// requiring elevated privileges.
@@ -116,7 +119,7 @@ pub fn mtu(_iface: &Iface) -> io::Result<u32> {
                 return Ok(mtu);
             }
             Err(err) => {
-                tracing::warn!(name = _iface.name(), error = %err, "failed to read MTU, using default");
+                warn!(name = _iface.name(), error = %err, "failed to read MTU, using default");
             }
         }
     }
