@@ -113,7 +113,7 @@ fn run_real() -> Result<()> {
         Err(_) => panic!("device still has outstanding clones"),
     };
     let transport = GigeRegisterIo::new(handle, device);
-    let mut camera = Camera::new(transport, nodemap);
+    let camera = Camera::new(transport, nodemap);
 
     println!("-- real pAddress demo --");
     for (name, address_node) in indirect_integers {
@@ -150,29 +150,30 @@ fn collect_indirect_integers(model: &genapi_xml::XmlModel) -> Vec<(String, Strin
     let mut result = Vec::new();
     for decl in &model.nodes {
         if let NodeDecl::Integer {
-            name, addressing, ..
+            name,
+            addressing: Addressing::Indirect { p_address_node, .. },
+            ..
         } = decl
         {
-            if let Addressing::Indirect { p_address_node, .. } = addressing {
-                result.push((name.clone(), p_address_node.clone()));
-            }
+            result.push((name.to_string(), p_address_node.to_string()));
         }
     }
     result
 }
 
 fn print_indirect_nodes(node: Option<&Node>) {
-    if let Some(Node::Integer(integer)) = node {
-        if let Addressing::Indirect {
+    if let Some(Node::Integer(genapi_core::IntegerNode {
+        addressing: Addressing::Indirect {
             p_address_node,
             len,
-        } = &integer.addressing
-        {
-            println!(
-                "Gain uses indirect addressing via {p_address_node} ({} bytes)",
-                len
-            );
-        }
+        },
+        ..
+    })) = node
+    {
+        println!(
+            "Gain uses indirect addressing via {p_address_node} ({} bytes)",
+            len
+        );
     }
 }
 
