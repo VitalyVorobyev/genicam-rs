@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::GenicamError;
 use tl_gige::{
     stats::TimeStats,
-    time::{self, ControlChannel, TimeError, TimeSync},
+    time::{self, ControlChannel, TimeSync},
 };
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -71,7 +71,7 @@ where
 
     pub async fn coefficients(&self) -> (f64, f64) {
         let guard = self.sync.lock().await;
-        (guard.a, guard.b)
+        guard.coefficients()
     }
 
     pub async fn map_dev_ts(&self, ts: u64) -> SystemTime {
@@ -83,6 +83,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tl_gige::time::TimeError;
 
     struct MockControl;
 

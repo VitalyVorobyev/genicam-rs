@@ -102,6 +102,11 @@ impl TimeSync {
         }
     }
 
+    /// Return the current slope and intercept of the time mapping.
+    pub fn coefficients(&self) -> (f64, f64) {
+        (self.a, self.b)
+    }
+
     fn recompute(&mut self) {
         if self.window.len() < 2 {
             return;
