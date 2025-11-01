@@ -1,6 +1,7 @@
 [package]
 name = "tl-gige"
 version = "0.1.0"
+description = "GigE Vision transport: GVCP discovery, GenCP over GVCP, and GVSP"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

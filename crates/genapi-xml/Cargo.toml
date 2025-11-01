@@ -1,6 +1,7 @@
 [package]
 name = "genapi-xml"
 version = "0.1.0"
+description = "GenICam XML retrieval and minimal parsing (schema, features)"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
