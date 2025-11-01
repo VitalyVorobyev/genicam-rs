@@ -47,5 +47,5 @@ if-addrs = "0.11"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
-tl-gige = { path = "crates/tl-gige" }
-genapi-xml = { path = "crates/genapi-xml" }
+tl-gige = { version = "0.1.0", path = "crates/tl-gige" }
+genapi-xml = { version = "0.1.0", path = "crates/genapi-xml" }

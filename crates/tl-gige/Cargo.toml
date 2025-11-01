@@ -11,7 +11,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 if-addrs = { workspace = true }
 bytes = { workspace = true }
-genicp = { path = "../genicp" }
+genicp = { version = "0.1.0", path = "../genicp" }
 tokio = { workspace = true, features = ["macros", "net", "time"] }
 fastrand = "2"
 
