@@ -31,6 +31,9 @@ pub enum GenApiError {
     /// Node metadata or conversion failed.
     #[error("parse error: {0}")]
     Parse(String),
+    /// Indirect addressing resolved to an invalid register.
+    #[error("node {name} resolved invalid indirect address {addr:#X}")]
+    BadIndirectAddress { name: String, addr: i64 },
 }
 
 /// Register access abstraction backed by transports such as GVCP/GenCP.
@@ -78,12 +81,34 @@ impl Node {
     }
 }
 
+fn register_addressing_dependency(
+    dependents: &mut HashMap<String, Vec<String>>,
+    node_name: &str,
+    addressing: &Addressing,
+) {
+    match addressing {
+        Addressing::Fixed { .. } => {}
+        Addressing::BySelector { selector, .. } => {
+            dependents
+                .entry(selector.clone())
+                .or_default()
+                .push(node_name.to_string());
+        }
+        Addressing::Indirect { p_address_node, .. } => {
+            dependents
+                .entry(p_address_node.clone())
+                .or_default()
+                .push(node_name.to_string());
+        }
+    }
+}
+
 /// Integer feature metadata extracted from the XML description.
 #[derive(Debug)]
 pub struct IntegerNode {
     /// Unique feature name.
     pub name: String,
-    /// Register addressing metadata (fixed or selector-based).
+    /// Register addressing metadata (fixed, selector-based, or indirect).
     pub addressing: Addressing,
     /// Declared access rights.
     pub access: AccessMode,
@@ -476,6 +501,37 @@ impl NodeMap {
                     )))
                 }
             }
+            Addressing::Indirect {
+                p_address_node,
+                len,
+            } => {
+                let addr_value = self.get_integer(p_address_node, io)?;
+                if addr_value <= 0 {
+                    return Err(GenApiError::BadIndirectAddress {
+                        name: node_name.to_string(),
+                        addr: addr_value,
+                    });
+                }
+                let addr =
+                    u64::try_from(addr_value).map_err(|_| GenApiError::BadIndirectAddress {
+                        name: node_name.to_string(),
+                        addr: addr_value,
+                    })?;
+                if addr == 0 {
+                    return Err(GenApiError::BadIndirectAddress {
+                        name: node_name.to_string(),
+                        addr: addr_value,
+                    });
+                }
+                debug!(
+                    node = %node_name,
+                    source = %p_address_node,
+                    address = format_args!("0x{addr:X}"),
+                    len = *len,
+                    "resolve address via pAddress"
+                );
+                Ok((addr, *len))
+            }
         }
     }
 
@@ -536,12 +592,7 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
-                    if let Addressing::BySelector { selector, .. } = &addressing {
-                        dependents
-                            .entry(selector.clone())
-                            .or_default()
-                            .push(name.clone());
-                    }
+                    register_addressing_dependency(&mut dependents, &name, &addressing);
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -574,12 +625,7 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
-                    if let Addressing::BySelector { selector, .. } = &addressing {
-                        dependents
-                            .entry(selector.clone())
-                            .or_default()
-                            .push(name.clone());
-                    }
+                    register_addressing_dependency(&mut dependents, &name, &addressing);
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -610,12 +656,7 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
-                    if let Addressing::BySelector { selector, .. } = &addressing {
-                        dependents
-                            .entry(selector.clone())
-                            .or_default()
-                            .push(name.clone());
-                    }
+                    register_addressing_dependency(&mut dependents, &name, &addressing);
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -649,12 +690,7 @@ impl From<XmlModel> for NodeMap {
                     selectors,
                     selected_if,
                 } => {
-                    if let Addressing::BySelector { selector, .. } = &addressing {
-                        dependents
-                            .entry(selector.clone())
-                            .or_default()
-                            .push(name.clone());
-                    }
+                    register_addressing_dependency(&mut dependents, &name, &addressing);
                     for (selector, _) in &selected_if {
                         dependents
                             .entry(selector.clone())
@@ -839,6 +875,25 @@ mod tests {
         </RegisterDescription>
     "#;
 
+    const INDIRECT_FIXTURE: &str = r#"
+        <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+            <Integer Name="RegAddr">
+                <Address>0x2000</Address>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <Min>0</Min>
+                <Max>65535</Max>
+            </Integer>
+            <Integer Name="Gain">
+                <pAddress>RegAddr</pAddress>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <Min>0</Min>
+                <Max>255</Max>
+            </Integer>
+        </RegisterDescription>
+    "#;
+
     #[derive(Default)]
     struct MockIo {
         regs: RefCell<HashMap<u64, Vec<u8>>>,
@@ -887,6 +942,11 @@ mod tests {
 
     fn build_nodemap() -> NodeMap {
         let model = genapi_xml::parse(FIXTURE).expect("parse fixture");
+        NodeMap::from(model)
+    }
+
+    fn build_indirect_nodemap() -> NodeMap {
+        let model = genapi_xml::parse(INDIRECT_FIXTURE).expect("parse indirect fixture");
         NodeMap::from(model)
     }
 
@@ -1007,5 +1067,50 @@ mod tests {
             .expect("exec command");
         let payload = io.read(0x500, 4).expect("command write");
         assert_eq!(payload, vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn indirect_address_resolution() {
+        let mut nodemap = build_indirect_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x2000, i64_to_bytes("RegAddr", 0x3000, 4).unwrap()),
+            (0x3000, i64_to_bytes("Gain", 123, 4).unwrap()),
+            (0x3100, i64_to_bytes("Gain", 77, 4).unwrap()),
+        ]);
+
+        let initial = nodemap.get_integer("Gain", &io).expect("read gain");
+        assert_eq!(initial, 123);
+        assert_eq!(io.read_count(0x2000), 1);
+        assert_eq!(io.read_count(0x3000), 1);
+
+        nodemap
+            .set_integer("RegAddr", 0x3100, &io)
+            .expect("set indirect address");
+        let updated = nodemap
+            .get_integer("Gain", &io)
+            .expect("read gain after change");
+        assert_eq!(updated, 77);
+        assert_eq!(io.read_count(0x2000), 1);
+        assert_eq!(io.read_count(0x3000), 1);
+        assert_eq!(io.read_count(0x3100), 1);
+    }
+
+    #[test]
+    fn indirect_bad_address() {
+        let mut nodemap = build_indirect_nodemap();
+        let io = MockIo::with_registers(&[(0x2000, vec![0, 0, 0, 0])]);
+
+        nodemap
+            .set_integer("RegAddr", 0, &io)
+            .expect("write zero address");
+        let err = nodemap.get_integer("Gain", &io).unwrap_err();
+        match err {
+            GenApiError::BadIndirectAddress { name, addr } => {
+                assert_eq!(name, "Gain");
+                assert_eq!(addr, 0);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert_eq!(io.read_count(0x2000), 0);
     }
 }

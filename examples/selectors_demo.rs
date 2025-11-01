@@ -146,6 +146,15 @@ fn print_gain_addressing(nodemap: &NodeMap) {
                     println!("  {value:>8} -> 0x{addr:08X} ({} bytes)", len);
                 }
             }
+            Addressing::Indirect {
+                p_address_node,
+                len,
+            } => {
+                println!(
+                    "Gain resolves address via {p_address_node} ({} bytes per register)",
+                    len
+                );
+            }
         }
     }
 }
