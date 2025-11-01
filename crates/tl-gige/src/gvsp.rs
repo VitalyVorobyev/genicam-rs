@@ -66,7 +66,7 @@ pub fn parse_chunks(mut payload: &[u8]) -> Result<Vec<ChunkRaw>, GvspError> {
         if payload.len() < 8 {
             return Err(GvspError::Invalid("chunk header truncated"));
         }
-        let mut cursor = &payload[..];
+        let mut cursor = payload;
         let id = cursor.get_u16();
         let _reserved = cursor.get_u16();
         let length = cursor.get_u32() as usize;
@@ -113,7 +113,7 @@ pub fn parse_packet(payload: &[u8]) -> Result<GvspPacket, GvspError> {
     if payload.len() < GVSP_HEADER_SIZE {
         return Err(GvspError::Invalid("GVSP header truncated"));
     }
-    let mut cursor = &payload[..];
+    let mut cursor = payload;
     let status = cursor.get_u16();
     let block_id = cursor.get_u16();
     let packet_id = cursor.get_u16();
@@ -173,7 +173,8 @@ fn parse_trailer(packet_id: u16, block_id: u16, payload: &[u8]) -> Result<GvspPa
     if payload.len() < 2 {
         return Err(GvspError::Invalid("trailer truncated"));
     }
-    let status = (&payload[..]).get_u16();
+    let mut cursor = payload;
+    let status = cursor.get_u16();
     Ok(GvspPacket::Trailer {
         block_id,
         packet_id,
@@ -259,7 +260,6 @@ pub struct FrameAssembly {
     packet_payload: usize,
     bitmap: PacketBitmap,
     buffer: BytesMut,
-    created: Instant,
     deadline: Instant,
 }
 
@@ -278,7 +278,6 @@ impl FrameAssembly {
             packet_payload,
             bitmap: PacketBitmap::new(expected_packets),
             buffer,
-            created: Instant::now(),
             deadline,
         }
     }
@@ -310,7 +309,7 @@ impl FrameAssembly {
     }
 
     /// Finalise the frame if all packets have been received.
-    pub fn finish(mut self) -> Option<Bytes> {
+    pub fn finish(self) -> Option<Bytes> {
         if self.bitmap.is_complete() {
             Some(self.buffer.freeze())
         } else {

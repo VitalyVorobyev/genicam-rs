@@ -4,11 +4,19 @@ use std::net::Ipv4Addr;
 
 use tl_gige::nic::Iface;
 
+#[derive(Debug, Default, Clone)]
+struct Args {
+    iface: Option<Iface>,
+    auto: bool,
+    multicast: Option<Ipv4Addr>,
+    port: Option<u16>,
+}
+
 fn print_usage() {
     eprintln!("usage: grab_gige [--iface <name>] [--auto] [--multicast <ip>] [--port <n>]");
 }
 
-fn parse_args() -> Result<(Option<Iface>, bool, Option<Ipv4Addr>, Option<u16>), Box<dyn Error>> {
+fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let mut iface = None;
     let mut auto = false;
@@ -46,11 +54,11 @@ fn parse_args() -> Result<(Option<Iface>, bool, Option<Ipv4Addr>, Option<u16>), 
         }
     }
 
-    Ok((iface, auto, multicast, port))
+    Ok(Args { iface, auto, multicast, port })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (iface, auto, multicast, port) = parse_args()?;
+    let Args { iface, auto, multicast, port } = parse_args()?;
     println!("GigE stream setup");
     if let Some(iface) = iface {
         println!("  interface: {} (index {})", iface.name(), iface.index());

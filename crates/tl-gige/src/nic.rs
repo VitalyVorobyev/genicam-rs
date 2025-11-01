@@ -14,9 +14,9 @@ use std::sync::Mutex;
 
 use bytes::BytesMut;
 use if_addrs::IfAddr;
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
-use tracing::{debug, info, warn};
+use tracing::{info};
 
 /// Default socket receive buffer size used when the caller does not provide a
 /// custom value. The number mirrors what many operating systems allow without
@@ -102,21 +102,21 @@ impl Iface {
 /// On Linux the value is obtained from `/sys/class/net/<iface>/mtu` to avoid
 /// platform specific `ioctl` calls. The function falls back to the canonical
 /// Ethernet MTU (1500 bytes) when the information cannot be fetched.
-pub fn mtu(iface: &Iface) -> io::Result<u32> {
+pub fn mtu(_iface: &Iface) -> io::Result<u32> {
     #[cfg(target_os = "linux")]
     {
-        let path = format!("/sys/class/net/{}/mtu", iface.name());
+        let path = format!("/sys/class/net/{}/mtu", _iface.name());
         match fs::read_to_string(&path) {
             Ok(contents) => {
                 let mtu = contents
                     .trim()
                     .parse::<u32>()
                     .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-                debug!(name = iface.name(), mtu, "resolved interface MTU");
+                tracing::debug!(name = _iface.name(), mtu, "resolved interface MTU");
                 return Ok(mtu);
             }
             Err(err) => {
-                warn!(name = iface.name(), error = %err, "failed to read MTU, using default");
+                tracing::warn!(name = _iface.name(), error = %err, "failed to read MTU, using default");
             }
         }
     }
@@ -136,8 +136,6 @@ pub fn best_packet_size(mtu: u32) -> u32 {
     mtu.saturating_sub(ETHERNET_L2 + IPV4_HEADER + UDP_HEADER)
 }
 
-/// Internal helper storing socket configuration options applied before binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Bind a UDP socket configured for GVSP traffic.
 pub async fn bind_udp(
     bind: IpAddr,
@@ -156,13 +154,13 @@ pub async fn bind_udp(
         IpAddr::V4(_) => Domain::IPV4,
         IpAddr::V6(_) => Domain::IPV6,
     };
-    let socket = Socket::new(domain, Type::DGRAM.non_blocking()?, Some(Protocol::UDP))?;
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
 
     socket.set_reuse_address(true)?;
     #[cfg(all(unix, not(target_os = "solaris")))]
     socket.set_reuse_port(true)?;
 
-    socket.set_recv_buffer_size(recv_buffer as i32)?;
+    socket.set_recv_buffer_size(recv_buffer)?;
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if let Some(iface) = iface.as_ref() {
@@ -181,8 +179,7 @@ pub async fn bind_udp(
 
 /// Subscribe the provided socket to a multicast group on the supplied interface.
 pub fn join_multicast(sock: &UdpSocket, group: Ipv4Addr, iface: &Iface) -> io::Result<()> {
-    let std = sock.try_clone()?;
-    let socket = Socket::from(std);
+    let socket = SockRef::from(sock);
     let iface_addr = iface.ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED);
     socket.join_multicast_v4(&group, &iface_addr)?;
     Ok(())

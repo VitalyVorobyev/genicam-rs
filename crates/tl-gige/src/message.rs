@@ -53,7 +53,7 @@ impl MessagePacket {
         if data.len() > MAX_EVENT_PACKET {
             return Err(MessageError::Invalid("packet too large"));
         }
-        let mut cursor = &data[..];
+        let mut cursor = data;
         let status = cursor.get_u16();
         let opcode = cursor.get_u16();
         let length = cursor.get_u16() as usize;
