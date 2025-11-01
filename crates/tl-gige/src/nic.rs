@@ -109,7 +109,7 @@ pub fn mtu(_iface: &Iface) -> io::Result<u32> {
     #[cfg(target_os = "linux")]
     {
         let path = format!("/sys/class/net/{}/mtu", _iface.name());
-        match fs::read_to_string(&path) {
+        match fs::read_to_string(path) {
             Ok(contents) => {
                 let mtu = contents
                     .trim()
