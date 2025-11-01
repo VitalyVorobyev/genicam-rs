@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::QName;
 use quick_xml::Reader;
 use thiserror::Error;
 
@@ -238,7 +239,7 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                     nodes.push(node);
                 }
                 _ => {
-                    skip_element(&mut reader, e.name())?;
+                    skip_element(&mut reader, e.name().as_ref())?;
                 }
             },
             Ok(Event::Empty(ref e)) => match e.name().as_ref() {
@@ -287,48 +288,48 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let mut selectors = Vec::new();
     let mut selected_if: Vec<(String, Vec<String>)> = Vec::new();
     let mut last_selector: Option<usize> = None;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Address" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     address = Some(parse_u64(&text)?);
                 }
                 b"Length" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     length = Some(u32::try_from(value).map_err(|_| {
                         XmlError::Invalid(format!("length out of range for node {name}"))
                     })?);
                 }
                 b"AccessMode" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
                 }
                 b"Min" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     min = Some(parse_i64(&text)?);
                 }
                 b"Max" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     max = Some(parse_i64(&text)?);
                 }
                 b"Inc" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     inc = Some(parse_i64(&text)?);
                 }
                 b"Unit" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         unit = Some(trimmed.to_string());
                     }
                 }
                 b"pSelected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let selector = text.trim().to_string();
                     if !selector.is_empty() {
                         selectors.push(selector.clone());
@@ -337,7 +338,7 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                     }
                 }
                 b"Selected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     if let Some(idx) = last_selector {
                         let value = text.trim();
                         if !value.is_empty() {
@@ -413,62 +414,62 @@ fn parse_float(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<Node
     let mut selectors = Vec::new();
     let mut selected_if = Vec::new();
     let mut last_selector = None;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Address" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     address = Some(parse_u64(&text)?);
                 }
                 b"Length" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     length = Some(u32::try_from(value).map_err(|_| {
                         XmlError::Invalid(format!("length out of range for node {name}"))
                     })?);
                 }
                 b"AccessMode" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
                 }
                 b"Min" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     min = Some(parse_f64(&text)?);
                 }
                 b"Max" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     max = Some(parse_f64(&text)?);
                 }
                 b"Unit" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         unit = Some(trimmed.to_string());
                     }
                 }
                 b"Scale" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let (num, den) = parse_scale(&text)?;
                     scale_num = Some(num);
                     scale_den = Some(den);
                 }
                 b"ScaleNumerator" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     scale_num = Some(parse_i64(&text)?);
                 }
                 b"ScaleDenominator" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     scale_den = Some(parse_i64(&text)?);
                 }
                 b"Offset" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     offset = Some(parse_f64(&text)?);
                 }
                 b"pSelected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let selector = text.trim().to_string();
                     if !selector.is_empty() {
                         selectors.push(selector.clone());
@@ -477,7 +478,7 @@ fn parse_float(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<Node
                     }
                 }
                 b"Selected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     if let Some(idx) = last_selector {
                         let value = text.trim();
                         if !value.is_empty() {
@@ -554,25 +555,25 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
     let mut selectors = Vec::new();
     let mut selected_if = Vec::new();
     let mut last_selector = None;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Address" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     address = Some(parse_u64(&text)?);
                 }
                 b"Length" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     length = Some(u32::try_from(value).map_err(|_| {
                         XmlError::Invalid(format!("length out of range for node {name}"))
                     })?);
                 }
                 b"AccessMode" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
                 }
                 b"EnumEntry" => {
@@ -580,7 +581,7 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
                     entries.push(entry);
                 }
                 b"pSelected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let selector = text.trim().to_string();
                     if !selector.is_empty() {
                         selectors.push(selector.clone());
@@ -589,7 +590,7 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
                     }
                 }
                 b"Selected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     if let Some(idx) = last_selector {
                         let value = text.trim();
                         if !value.is_empty() {
@@ -598,7 +599,7 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
                     }
                 }
                 b"pValueDefault" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         default = Some(trimmed.to_string());
@@ -665,29 +666,29 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let mut selectors = Vec::new();
     let mut selected_if = Vec::new();
     let mut last_selector = None;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Address" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     address = Some(parse_u64(&text)?);
                 }
                 b"Length" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     length = Some(u32::try_from(value).map_err(|_| {
                         XmlError::Invalid(format!("length out of range for node {name}"))
                     })?);
                 }
                 b"AccessMode" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
                 }
                 b"pSelected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let selector = text.trim().to_string();
                     if !selector.is_empty() {
                         selectors.push(selector.clone());
@@ -696,7 +697,7 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                     }
                 }
                 b"Selected" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     if let Some(idx) = last_selector {
                         let value = text.trim();
                         if !value.is_empty() {
@@ -753,18 +754,18 @@ fn parse_command(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let name = attribute_value_required(&start, b"Name")?;
     let mut address = None;
     let mut length = None;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Address" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     address = Some(parse_u64(&text)?);
                 }
                 b"Length" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     length = Some(u32::try_from(value).map_err(|_| {
                         XmlError::Invalid(format!("length out of range for node {name}"))
@@ -817,7 +818,7 @@ fn parse_command_empty(start: &BytesStart<'_>) -> Result<NodeDecl, XmlError> {
 
 fn parse_category(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeDecl, XmlError> {
     let name = attribute_value_required(&start, b"Name")?;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut children = Vec::new();
     let mut buf = Vec::new();
 
@@ -825,7 +826,7 @@ fn parse_category(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<N
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"pFeature" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         children.push(trimmed.to_string());
@@ -869,21 +870,21 @@ fn parse_enum_entry(
 ) -> Result<(String, i64), XmlError> {
     let mut name = attribute_value_required(&start, b"Name")?;
     let mut value = attribute_value(&start, b"Value")?;
-    let node_name = start.name().to_vec();
+    let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"Value" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         value = Some(trimmed.to_string());
                     }
                 }
                 b"Name" => {
-                    let text = reader.read_text(e.name(), &mut Vec::new())?;
+                    let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         name = trimmed.to_string();
@@ -969,6 +970,14 @@ fn extract_schema_version(event: &BytesStart<'_>) -> Option<String> {
         let sub = sub.unwrap_or_else(|| "0".to_string());
         Some(format!("{major}.{minor}.{sub}"))
     }
+}
+
+fn read_text_start(reader: &mut Reader<&[u8]>, start: &BytesStart<'_>) -> Result<String, XmlError> {
+    let end_buf = start.name().as_ref().to_vec();
+    reader
+        .read_text(QName(&end_buf))
+        .map(|cow| cow.into_owned())
+        .map_err(|err| XmlError::Xml(err.to_string()))
 }
 
 fn attribute_value(event: &BytesStart<'_>, name: &[u8]) -> Result<Option<String>, XmlError> {

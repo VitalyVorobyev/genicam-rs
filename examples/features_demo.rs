@@ -124,18 +124,27 @@ fn run_real() -> Result<(), Box<dyn Error>> {
         info.model.clone().unwrap_or_else(|| "camera".into())
     );
     let addr = SocketAddr::new(IpAddr::V4(info.ip), tl_gige::GVCP_PORT);
-    let mut device = rt.block_on(GigeDevice::open(addr))?;
-    let xml = rt.block_on(genapi_xml::fetch_and_load_xml(|address, length| {
-        let future = device.read_mem(address, length);
-        async move {
-            future
-                .await
-                .map_err(|err| genapi_xml::XmlError::Transport(err.to_string()))
+    let device = rt.block_on(GigeDevice::open(addr))?;
+    let device = std::sync::Arc::new(tokio::sync::Mutex::new(device));
+    let xml = rt.block_on(genapi_xml::fetch_and_load_xml({
+        let device = device.clone();
+        move |address, length| {
+            let device = device.clone();
+            async move {
+                let mut dev = device.lock().await;
+                dev.read_mem(address, length)
+                    .await
+                    .map_err(|err| genapi_xml::XmlError::Transport(err.to_string()))
+            }
         }
     }))?;
     let model = genapi_xml::parse(&xml)?;
     let nodemap = NodeMap::from(model);
     let handle = rt.handle().clone();
+    let device = match std::sync::Arc::try_unwrap(device) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(_) => panic!("device still has outstanding clones"),
+    };
     let transport = GigeRegisterIo::new(handle, device);
     let mut camera = Camera::new(transport, nodemap);
 

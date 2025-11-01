@@ -698,7 +698,7 @@ fn i64_to_bytes(name: &str, value: i64, width: u32) -> Result<Vec<u8>, GenApiErr
     }
     let width = width as usize;
     let bytes = value.to_be_bytes();
-    let mut data = bytes[8 - width..].to_vec();
+    let data = bytes[8 - width..].to_vec();
     let roundtrip = bytes_to_i64(name, &data)?;
     if roundtrip != value {
         return Err(GenApiError::Range(format!(
