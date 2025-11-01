@@ -260,6 +260,7 @@ pub struct FrameAssembly {
     packet_payload: usize,
     bitmap: PacketBitmap,
     buffer: BytesMut,
+    lengths: Vec<usize>,
     deadline: Instant,
 }
 
@@ -278,6 +279,7 @@ impl FrameAssembly {
             packet_payload,
             bitmap: PacketBitmap::new(expected_packets),
             buffer,
+            lengths: vec![0; expected_packets],
             deadline,
         }
     }
@@ -300,6 +302,8 @@ impl FrameAssembly {
         if !self.bitmap.set(packet_id) {
             return true;
         }
+        // Track actual payload length for compaction at finish time.
+        self.lengths[packet_id] = payload.len();
         let offset = packet_id * self.packet_payload;
         if self.buffer.len() < offset + payload.len() {
             self.buffer.resize(offset + payload.len(), 0);
@@ -310,11 +314,47 @@ impl FrameAssembly {
 
     /// Finalise the frame if all packets have been received.
     pub fn finish(self) -> Option<Bytes> {
-        if self.bitmap.is_complete() {
-            Some(self.buffer.freeze())
-        } else {
-            None
+        if !self.bitmap.is_complete() {
+            return None;
         }
+
+        // If all packets except possibly the last are full-sized, we can
+        // return a slice of the existing buffer without extra copying.
+        let full_sized_prefix = if self.expected_packets > 0 {
+            self.lengths
+                .iter()
+                .take(self.expected_packets.saturating_sub(1))
+                .all(|&len| len == self.packet_payload)
+        } else {
+            true
+        };
+
+        if full_sized_prefix {
+            let last_len = *self.lengths.last().unwrap_or(&0);
+            let used = self
+                .packet_payload
+                .saturating_mul(self.expected_packets.saturating_sub(1))
+                + last_len;
+            let mut buf = self.buffer;
+            if buf.len() > used {
+                buf.truncate(used);
+            }
+            return Some(buf.freeze());
+        }
+
+        // Otherwise, compact the data to remove any gaps introduced by
+        // shorter packets occurring before the last packet.
+        let total: usize = self.lengths.iter().sum();
+        let mut out = BytesMut::with_capacity(total);
+        for (i, &len) in self.lengths.iter().enumerate() {
+            if len == 0 {
+                continue;
+            }
+            let start = i * self.packet_payload;
+            let end = start + len;
+            out.extend_from_slice(&self.buffer[start..end]);
+        }
+        Some(out.freeze())
     }
 }
 

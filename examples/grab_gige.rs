@@ -54,11 +54,21 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         }
     }
 
-    Ok(Args { iface, auto, multicast, port })
+    Ok(Args {
+        iface,
+        auto,
+        multicast,
+        port,
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let Args { iface, auto, multicast, port } = parse_args()?;
+    let Args {
+        iface,
+        auto,
+        multicast,
+        port,
+    } = parse_args()?;
     println!("GigE stream setup");
     if let Some(iface) = iface {
         println!("  interface: {} (index {})", iface.name(), iface.index());

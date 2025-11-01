@@ -16,7 +16,7 @@ use bytes::BytesMut;
 use if_addrs::IfAddr;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
-use tracing::{info};
+use tracing::info;
 
 /// Default socket receive buffer size used when the caller does not provide a
 /// custom value. The number mirrors what many operating systems allow without
