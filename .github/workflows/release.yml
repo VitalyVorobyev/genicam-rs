@@ -35,17 +35,19 @@ jobs:
       - name: Tests (release)
         run: cargo test --workspace --all-targets --all-features --release
 
-      - name: Package crate
-        run: cargo package --locked
+      - name: Package crates
+        run: |
+          cargo package -p genicp --locked
+          cargo package -p genapi-xml --locked
 
       - name: Build release binaries
-        run: cargo build --release --locked --bin grid_demo
+        run: cargo build --release --locked --bin genicam-rs
 
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          BIN_NAME="grid_demo-${{ github.ref_name }}"
-          cp target/release/grid_demo "dist/${BIN_NAME}"
+          BIN_NAME="genicam-rs-${{ github.ref_name }}"
+          cp target/release/genicam-rs "dist/${BIN_NAME}"
           tar -czf "dist/${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz" -C dist "${BIN_NAME}"
           rm "dist/${BIN_NAME}"
           cp target/package/*.crate dist/

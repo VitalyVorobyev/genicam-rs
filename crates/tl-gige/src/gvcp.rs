@@ -1,0 +1,610 @@
+//! GVCP control plane utilities.
+
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
+
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use fastrand::Rng;
+use genicp::{
+    decode_ack, encode_cmd, AckHeader, CommandFlags, GenCpAck, GenCpCmd, OpCode, StatusCode,
+};
+use if_addrs::{get_if_addrs, IfAddr};
+use thiserror::Error;
+use tokio::net::UdpSocket;
+use tokio::task::JoinSet;
+use tokio::time;
+use tracing::{debug, info, trace, warn};
+
+/// GVCP protocol constants grouped by semantic area.
+pub mod consts {
+    use std::time::Duration;
+
+    /// GVCP control port as defined by the GigE Vision specification (section 7.3).
+    pub const PORT: u16 = 3956;
+    /// Opcode of the discovery command.
+    pub const DISCOVERY_COMMAND: u16 = 0x0002;
+    /// Opcode of the discovery acknowledgement.
+    pub const DISCOVERY_ACK: u16 = 0x0003;
+    /// Opcode for requesting packet resends.
+    pub const PACKET_RESEND_COMMAND: u16 = 0x0040;
+    /// Opcode of the packet resend acknowledgement.
+    pub const PACKET_RESEND_ACK: u16 = 0x0041;
+
+    /// Maximum number of bytes we read per GenCP `ReadMem` operation.
+    pub const GENCP_MAX_BLOCK: usize = 512;
+    /// Additional bytes that accompany a GenCP `WriteMem` block.
+    pub const GENCP_WRITE_OVERHEAD: usize = 8;
+
+    /// Default timeout for control transactions.
+    pub const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
+    /// Maximum number of automatic retries for a control transaction.
+    pub const MAX_RETRIES: usize = 4;
+    /// Base delay used for retry backoff.
+    pub const RETRY_BASE_DELAY: Duration = Duration::from_millis(20);
+    /// Upper bound for the random jitter added to the retry delay (inclusive).
+    pub const RETRY_JITTER: Duration = Duration::from_millis(10);
+
+    /// Maximum number of bytes captured while listening for discovery responses.
+    pub const DISCOVERY_BUFFER: usize = 2048;
+}
+
+/// Public alias for the GVCP well-known port.
+pub use consts::PORT as GVCP_PORT;
+
+/// GVCP request header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GvcpRequestHeader {
+    /// Request flags (acknowledgement, broadcast).
+    pub flags: CommandFlags,
+    /// Raw command/opcode value.
+    pub command: u16,
+    /// Payload length in bytes.
+    pub length: u16,
+    /// Request identifier.
+    pub request_id: u16,
+}
+
+impl GvcpRequestHeader {
+    /// Encode the header into a `Bytes` buffer ready to be transmitted.
+    pub fn encode(self, payload: &[u8]) -> Bytes {
+        let mut buf = BytesMut::with_capacity(genicp::HEADER_SIZE + payload.len());
+        buf.put_u16(self.flags.bits());
+        buf.put_u16(self.command);
+        buf.put_u16(self.length);
+        buf.put_u16(self.request_id);
+        buf.extend_from_slice(payload);
+        buf.freeze()
+    }
+}
+
+/// GVCP acknowledgement header wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GvcpAckHeader {
+    /// Status reported by the device.
+    pub status: StatusCode,
+    /// Raw command/opcode value.
+    pub command: u16,
+    /// Payload length in bytes.
+    pub length: u16,
+    /// Identifier of the answered request.
+    pub request_id: u16,
+}
+
+impl From<AckHeader> for GvcpAckHeader {
+    fn from(value: AckHeader) -> Self {
+        Self {
+            status: value.status,
+            command: value.opcode.ack_code(),
+            length: value.length,
+            request_id: value.request_id,
+        }
+    }
+}
+
+/// Errors that can occur when operating the GVCP control path.
+#[derive(Debug, Error)]
+pub enum GigeError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("protocol: {0}")]
+    Protocol(String),
+    #[error("timeout waiting for acknowledgement")]
+    Timeout,
+    #[error("GenCP: {0}")]
+    GenCp(#[from] genicp::GenCpError),
+    #[error("device reported status {0:?}")]
+    Status(StatusCode),
+}
+
+/// Information returned by GVCP discovery packets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub ip: Ipv4Addr,
+    pub mac: [u8; 6],
+    pub model: Option<String>,
+    pub manufacturer: Option<String>,
+}
+
+impl DeviceInfo {
+    fn mac_string(&self) -> String {
+        self.mac
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+/// Discover GigE Vision devices on the local network by broadcasting a GVCP discovery command.
+pub async fn discover(timeout: Duration) -> Result<Vec<DeviceInfo>, GigeError> {
+    discover_filtered(timeout, None).await
+}
+
+/// Discover devices only on the specified interface name.
+pub async fn discover_on_interface(
+    timeout: Duration,
+    interface: &str,
+) -> Result<Vec<DeviceInfo>, GigeError> {
+    discover_filtered(timeout, Some(interface)).await
+}
+
+async fn discover_filtered(
+    timeout: Duration,
+    iface_filter: Option<&str>,
+) -> Result<Vec<DeviceInfo>, GigeError> {
+    let mut interfaces = Vec::new();
+    for iface in get_if_addrs()? {
+        let IfAddr::V4(v4) = iface.addr else {
+            continue;
+        };
+        if v4.ip.is_loopback() {
+            continue;
+        }
+        if let Some(filter) = iface_filter {
+            if iface.name != filter {
+                continue;
+            }
+        }
+        interfaces.push((iface.name, v4));
+    }
+
+    if interfaces.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut join_set = JoinSet::new();
+    for (idx, (name, v4)) in interfaces.into_iter().enumerate() {
+        let request_id = 0x0100u16.wrapping_add(idx as u16);
+        let interface_name = name.clone();
+        join_set.spawn(async move {
+            let local_addr = SocketAddr::new(IpAddr::V4(v4.ip), 0);
+            let socket = UdpSocket::bind(local_addr).await?;
+            socket.set_broadcast(true)?;
+            let broadcast = v4.broadcast.unwrap_or(Ipv4Addr::BROADCAST);
+            let destination = SocketAddr::new(IpAddr::V4(broadcast), consts::PORT);
+
+            let header = GvcpRequestHeader {
+                flags: CommandFlags::ACK_REQUIRED | CommandFlags::BROADCAST,
+                command: consts::DISCOVERY_COMMAND,
+                length: 0,
+                request_id,
+            };
+            let packet = header.encode(&[]);
+            info!(%interface_name, local = %v4.ip, dest = %destination, "sending GVCP discovery");
+            trace!(%interface_name, bytes = packet.len(), "GVCP discovery payload size");
+            socket.send_to(&packet, destination).await?;
+
+            let mut responses = Vec::new();
+            let mut buffer = vec![0u8; consts::DISCOVERY_BUFFER];
+            let timer = time::sleep(timeout);
+            tokio::pin!(timer);
+            loop {
+                tokio::select! {
+                    _ = &mut timer => break,
+                    recv = socket.recv_from(&mut buffer) => {
+                        let (len, src) = recv?;
+                        info!(%interface_name, %src, "received GVCP response");
+                        trace!(%interface_name, bytes = len, "GVCP response length");
+                        if let Some(info) = parse_discovery_ack(&buffer[..len], request_id)? {
+                            trace!(ip = %info.ip, mac = %info.mac_string(), "parsed discovery ack");
+                            responses.push(info);
+                        }
+                    }
+                }
+            }
+            Ok::<_, GigeError>(responses)
+        });
+    }
+
+    let mut seen = HashMap::new();
+    while let Some(res) = join_set.join_next().await {
+        let devices =
+            res.map_err(|e| GigeError::Protocol(format!("discovery task failed: {e}")))??;
+        for dev in devices {
+            seen.entry((dev.ip, dev.mac)).or_insert(dev);
+        }
+    }
+
+    let mut devices: Vec<_> = seen.into_values().collect();
+    devices.sort_by_key(|d| d.ip);
+    Ok(devices)
+}
+
+fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Result<Option<DeviceInfo>, GigeError> {
+    if buf.len() < genicp::HEADER_SIZE {
+        return Err(GigeError::Protocol("GVCP ack too short".into()));
+    }
+    let mut header = buf;
+    let status = header.get_u16();
+    let command = header.get_u16();
+    let length = header.get_u16() as usize;
+    let request_id = header.get_u16();
+    if request_id != expected_request {
+        return Ok(None);
+    }
+    if command != consts::DISCOVERY_ACK {
+        return Err(GigeError::Protocol(format!(
+            "unexpected discovery opcode {command:#06x}"
+        )));
+    }
+    if status != 0 {
+        return Err(GigeError::Protocol(format!(
+            "discovery returned status {status:#06x}"
+        )));
+    }
+    if buf.len() < genicp::HEADER_SIZE + length {
+        return Err(GigeError::Protocol("discovery payload truncated".into()));
+    }
+    let payload = &buf[genicp::HEADER_SIZE..genicp::HEADER_SIZE + length];
+    let info = parse_discovery_payload(payload)?;
+    Ok(Some(info))
+}
+
+fn parse_discovery_payload(payload: &[u8]) -> Result<DeviceInfo, GigeError> {
+    let mut cursor = Cursor::new(payload);
+    if cursor.remaining() < 32 {
+        return Err(GigeError::Protocol("discovery payload too small".into()));
+    }
+    let _spec_major = cursor.get_u16();
+    let _spec_minor = cursor.get_u16();
+    let _device_mode = cursor.get_u32();
+    let _device_class = cursor.get_u16();
+    let _device_capability = cursor.get_u16();
+    let mut mac = [0u8; 6];
+    cursor.copy_to_slice(&mut mac);
+    let _ip_config_options = cursor.get_u16();
+    let _ip_config_current = cursor.get_u16();
+    let ip = Ipv4Addr::from(cursor.get_u32());
+    let _subnet = cursor.get_u32();
+    let _gateway = cursor.get_u32();
+    let manufacturer = read_fixed_string(&mut cursor, 32)?;
+    let model = read_fixed_string(&mut cursor, 32)?;
+    let _ = skip_string(&mut cursor, 32);
+    let _ = skip_string(&mut cursor, 16);
+    let _ = skip_string(&mut cursor, 16);
+
+    Ok(DeviceInfo {
+        ip,
+        mac,
+        manufacturer,
+        model,
+    })
+}
+
+fn read_fixed_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Option<String>, GigeError> {
+    if cursor.remaining() < len {
+        return Err(GigeError::Protocol("discovery string truncated".into()));
+    }
+    let mut buf = vec![0u8; len];
+    cursor.copy_to_slice(&mut buf);
+    Ok(parse_string(&buf))
+}
+
+fn skip_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Option<()> {
+    if cursor.remaining() < len {
+        return None;
+    }
+    cursor.advance(len);
+    Some(())
+}
+
+fn parse_string(bytes: &[u8]) -> Option<String> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let slice = &bytes[..end];
+    let s = String::from_utf8_lossy(slice).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// GVCP device handle.
+pub struct GigeDevice {
+    socket: UdpSocket,
+    remote: SocketAddr,
+    request_id: u16,
+    rng: Rng,
+}
+
+impl GigeDevice {
+    /// Connect to a device GVCP endpoint.
+    pub async fn open(addr: SocketAddr) -> Result<Self, GigeError> {
+        let local_ip = match addr.ip() {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(_) => {
+                return Err(GigeError::Protocol("IPv6 GVCP is not supported".into()));
+            }
+        };
+        let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
+        socket.connect(addr).await?;
+        Ok(Self {
+            socket,
+            remote: addr,
+            request_id: 1,
+            rng: Rng::new(),
+        })
+    }
+
+    fn next_request_id(&mut self) -> u16 {
+        let id = self.request_id;
+        self.request_id = self.request_id.wrapping_add(1);
+        if self.request_id == 0 {
+            self.request_id = 1;
+        }
+        id
+    }
+
+    async fn transact_with_retry(
+        &mut self,
+        opcode: OpCode,
+        payload: BytesMut,
+    ) -> Result<GenCpAck, GigeError> {
+        let mut attempt = 0usize;
+        let mut payload = payload;
+        loop {
+            attempt += 1;
+            let request_id = self.next_request_id();
+            let payload_bytes = payload.clone().freeze();
+            let cmd = GenCpCmd {
+                header: genicp::CommandHeader {
+                    flags: CommandFlags::ACK_REQUIRED,
+                    opcode,
+                    length: payload_bytes.len() as u16,
+                    request_id,
+                },
+                payload: payload_bytes.clone(),
+            };
+            let encoded = encode_cmd(&cmd);
+            trace!(request_id, opcode = ?opcode, bytes = encoded.len(), attempt, "sending GenCP command");
+            if let Err(err) = self.socket.send(&encoded).await {
+                if attempt >= consts::MAX_RETRIES {
+                    return Err(err.into());
+                }
+                warn!(request_id, ?opcode, attempt, "send failed, retrying");
+                self.backoff(attempt).await;
+                payload = BytesMut::from(&payload_bytes[..]);
+                continue;
+            }
+
+            let mut buf =
+                vec![
+                    0u8;
+                    genicp::HEADER_SIZE + consts::GENCP_MAX_BLOCK + consts::GENCP_WRITE_OVERHEAD
+                ];
+            match time::timeout(consts::CONTROL_TIMEOUT, self.socket.recv(&mut buf)).await {
+                Ok(Ok(len)) => {
+                    trace!(request_id, bytes = len, attempt, "received GenCP ack");
+                    let ack = decode_ack(&buf[..len])?;
+                    if ack.header.request_id != request_id {
+                        debug!(
+                            request_id,
+                            got = ack.header.request_id,
+                            attempt,
+                            "acknowledgement id mismatch"
+                        );
+                        if attempt >= consts::MAX_RETRIES {
+                            return Err(GigeError::Protocol("acknowledgement id mismatch".into()));
+                        }
+                        self.backoff(attempt).await;
+                        payload = BytesMut::from(&payload_bytes[..]);
+                        continue;
+                    }
+                    if ack.header.opcode != opcode {
+                        return Err(GigeError::Protocol(
+                            "unexpected opcode in acknowledgement".into(),
+                        ));
+                    }
+                    match ack.header.status {
+                        StatusCode::Success => return Ok(ack),
+                        StatusCode::DeviceBusy if attempt < consts::MAX_RETRIES => {
+                            warn!(request_id, attempt, "device busy, retrying");
+                            self.backoff(attempt).await;
+                            payload = BytesMut::from(&payload_bytes[..]);
+                            continue;
+                        }
+                        other => return Err(GigeError::Status(other)),
+                    }
+                }
+                Ok(Err(err)) => {
+                    if attempt >= consts::MAX_RETRIES {
+                        return Err(err.into());
+                    }
+                    warn!(request_id, ?opcode, attempt, "receive error, retrying");
+                    self.backoff(attempt).await;
+                    payload = BytesMut::from(&payload_bytes[..]);
+                }
+                Err(_) => {
+                    if attempt >= consts::MAX_RETRIES {
+                        return Err(GigeError::Timeout);
+                    }
+                    warn!(request_id, ?opcode, attempt, "command timeout, retrying");
+                    self.backoff(attempt).await;
+                    payload = BytesMut::from(&payload_bytes[..]);
+                }
+            }
+        }
+    }
+
+    async fn backoff(&mut self, attempt: usize) {
+        let multiplier = 1u32 << (attempt.saturating_sub(1)).min(3);
+        let base_ms = consts::RETRY_BASE_DELAY.as_millis() as u64;
+        let base = Duration::from_millis(base_ms.saturating_mul(multiplier as u64).max(base_ms));
+        let jitter_ms = self.rng.u64(..=consts::RETRY_JITTER.as_millis() as u64);
+        let jitter = Duration::from_millis(jitter_ms);
+        let delay = base + jitter;
+        debug!(attempt, delay = ?delay, "gvcp retry backoff");
+        time::sleep(delay).await;
+    }
+
+    /// Read a block of memory from the remote device with chunking and retries.
+    pub async fn read_mem(&mut self, addr: u64, len: usize) -> Result<Vec<u8>, GigeError> {
+        let mut remaining = len;
+        let mut offset = 0usize;
+        let mut data = Vec::with_capacity(len);
+        while remaining > 0 {
+            let chunk = remaining.min(consts::GENCP_MAX_BLOCK);
+            let mut payload = BytesMut::with_capacity(12);
+            payload.put_u64(addr + offset as u64);
+            payload.put_u32(chunk as u32);
+            let ack = self.transact_with_retry(OpCode::ReadMem, payload).await?;
+            if ack.payload.len() != chunk {
+                return Err(GigeError::Protocol(format!(
+                    "expected {chunk} bytes but device returned {}",
+                    ack.payload.len()
+                )));
+            }
+            data.extend_from_slice(&ack.payload);
+            remaining -= chunk;
+            offset += chunk;
+        }
+        Ok(data)
+    }
+
+    /// Write a block of memory to the remote device with chunking and retries.
+    pub async fn write_mem(&mut self, addr: u64, data: &[u8]) -> Result<(), GigeError> {
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let chunk =
+                (data.len() - offset).min(consts::GENCP_MAX_BLOCK - consts::GENCP_WRITE_OVERHEAD);
+            if chunk == 0 {
+                return Err(GigeError::Protocol("write chunk size is zero".into()));
+            }
+            let mut payload = BytesMut::with_capacity(consts::GENCP_WRITE_OVERHEAD + chunk);
+            payload.put_u64(addr + offset as u64);
+            payload.extend_from_slice(&data[offset..offset + chunk]);
+            let ack = self.transact_with_retry(OpCode::WriteMem, payload).await?;
+            if !ack.payload.is_empty() {
+                return Err(GigeError::Protocol(
+                    "write acknowledgement carried unexpected payload".into(),
+                ));
+            }
+            offset += chunk;
+        }
+        Ok(())
+    }
+
+    /// Request resend of a packet range for the provided block identifier.
+    pub async fn request_resend(
+        &mut self,
+        block_id: u16,
+        first_packet: u16,
+        last_packet: u16,
+    ) -> Result<(), GigeError> {
+        let mut payload = BytesMut::with_capacity(8);
+        payload.put_u16(block_id);
+        payload.put_u16(0); // Reserved as per spec.
+        payload.put_u16(first_packet);
+        payload.put_u16(last_packet);
+
+        let request_id = self.next_request_id();
+        let header = GvcpRequestHeader {
+            flags: CommandFlags::ACK_REQUIRED,
+            command: consts::PACKET_RESEND_COMMAND,
+            length: payload.len() as u16,
+            request_id,
+        };
+        let packet = header.encode(&payload);
+        trace!(
+            block_id,
+            first_packet,
+            last_packet,
+            request_id,
+            "sending packet resend request"
+        );
+        self.socket.send(&packet).await?;
+        let mut buf = [0u8; genicp::HEADER_SIZE];
+        match time::timeout(consts::CONTROL_TIMEOUT, self.socket.recv(&mut buf)).await {
+            Ok(Ok(len)) => {
+                if len != genicp::HEADER_SIZE {
+                    return Err(GigeError::Protocol("resend ack length mismatch".into()));
+                }
+                let mut cursor = &buf[..];
+                let status = StatusCode::from_raw(cursor.get_u16());
+                let command = cursor.get_u16();
+                let length = cursor.get_u16();
+                let ack_request_id = cursor.get_u16();
+                if command != consts::PACKET_RESEND_ACK {
+                    return Err(GigeError::Protocol("unexpected resend ack opcode".into()));
+                }
+                if length != 0 {
+                    return Err(GigeError::Protocol("resend ack carried payload".into()));
+                }
+                if ack_request_id != request_id {
+                    return Err(GigeError::Protocol("resend ack request id mismatch".into()));
+                }
+                if status != StatusCode::Success {
+                    return Err(GigeError::Status(status));
+                }
+                Ok(())
+            }
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(GigeError::Timeout),
+        }
+    }
+
+    /// Address of the remote device.
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_header_roundtrip() {
+        let header = GvcpRequestHeader {
+            flags: CommandFlags::ACK_REQUIRED,
+            command: 0x1234,
+            length: 4,
+            request_id: 0xBEEF,
+        };
+        let payload = [1u8, 2, 3, 4];
+        let encoded = header.encode(&payload);
+        assert_eq!(encoded.len(), genicp::HEADER_SIZE + payload.len());
+        assert_eq!(&encoded[0..2], &header.flags.bits().to_be_bytes());
+        assert_eq!(&encoded[2..4], &header.command.to_be_bytes());
+        assert_eq!(&encoded[4..6], &header.length.to_be_bytes());
+        assert_eq!(&encoded[6..8], &header.request_id.to_be_bytes());
+        assert_eq!(&encoded[8..], &payload);
+    }
+
+    #[test]
+    fn ack_header_conversion() {
+        let ack = AckHeader {
+            status: StatusCode::DeviceBusy,
+            opcode: OpCode::ReadMem,
+            length: 12,
+            request_id: 0x44,
+        };
+        let converted = GvcpAckHeader::from(ack);
+        assert_eq!(converted.status, StatusCode::DeviceBusy);
+        assert_eq!(converted.command, OpCode::ReadMem.ack_code());
+        assert_eq!(converted.length, 12);
+        assert_eq!(converted.request_id, 0x44);
+    }
+}
