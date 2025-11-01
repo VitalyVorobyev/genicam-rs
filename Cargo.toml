@@ -42,6 +42,8 @@ serde_json = "1"
 rusb = "0.9"
 # For net utils:
 if-addrs = "0.11"
+async-trait = "0.1"
+socket2 = "0.5"
 
 [dependencies]
 tracing = { workspace = true }
@@ -49,3 +51,4 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
 tl-gige = { version = "0.1.0", path = "crates/tl-gige" }
 genapi-xml = { version = "0.1.0", path = "crates/genapi-xml" }
+genicam = { version = "0.1.0", path = "crates/genicam" }

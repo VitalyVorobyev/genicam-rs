@@ -10,3 +10,8 @@ publish = false
 [dependencies]
 genapi-core = { version = "0.1.0", path = "../genapi-core" }
 thiserror = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing = { workspace = true }
+tl-gige = { version = "0.1.0", path = "../tl-gige" }
+async-trait = { workspace = true }
