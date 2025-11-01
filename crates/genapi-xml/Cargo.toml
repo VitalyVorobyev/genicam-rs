@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
