@@ -57,7 +57,9 @@ checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
 name = "genapi-core"
 version = "0.1.0"
 dependencies = [
+ "genapi-xml",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -76,6 +78,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "genapi-core",
+ "sfnc",
  "thiserror",
  "tl-gige",
  "tokio",
@@ -86,8 +89,10 @@ dependencies = [
 name = "genicam-rs"
 version = "0.1.0"
 dependencies = [
+ "genapi-core",
  "genapi-xml",
  "genicam",
+ "sfnc",
  "tl-gige",
  "tokio",
  "tracing",

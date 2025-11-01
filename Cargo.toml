@@ -53,3 +53,5 @@ tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
 tl-gige = { version = "0.1.0", path = "crates/tl-gige" }
 genapi-xml = { version = "0.1.0", path = "crates/genapi-xml" }
 genicam = { version = "0.1.0", path = "crates/genicam" }
+genapi-core = { version = "0.1.0", path = "crates/genapi-core" }
+sfnc = { version = "0.1.0", path = "crates/sfnc" }
