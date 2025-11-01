@@ -1,6 +1,7 @@
 [package]
 name = "genicp"
 version = "0.1.0"
+description = "Transport-agnostic GenCP encode/decode and status mapping"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

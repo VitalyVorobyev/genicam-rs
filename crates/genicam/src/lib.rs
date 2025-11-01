@@ -2,6 +2,7 @@
 
 pub mod chunks;
 pub mod events;
+pub mod stream;
 pub mod time;
 
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use thiserror::Error;
 
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
+pub use stream::{Stream, StreamBuilder};
 pub use time::TimeMapper;
 pub use tl_gige::action::{AckSummary, ActionParams};
 

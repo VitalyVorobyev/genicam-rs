@@ -197,7 +197,7 @@ mod tests {
         let start = Instant::now();
         for i in 0..16u64 {
             let dev = i * 1000;
-            let host = start + Duration::from_millis((i * 16) as u64);
+            let host = start + Duration::from_millis(i * 16);
             sync.update(dev, host);
         }
         let mapped = sync.to_host_time(64_000);

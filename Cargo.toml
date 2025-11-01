@@ -1,6 +1,7 @@
 [package]
 name = "genicam-rs"
 version = "0.1.0"
+description = "GenICam workspace: GigE Vision + GenApi tooling (aggregator)"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
