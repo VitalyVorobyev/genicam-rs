@@ -1,11 +1,11 @@
 //! GenApi node system: typed feature access backed by register IO.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry as HashMapEntry, HashMap, HashSet};
 
-use genapi_xml::{AccessMode, Addressing, NodeDecl, XmlModel};
+use genapi_xml::{AccessMode, Addressing, EnumEntryDecl, EnumValueSrc, NodeDecl, XmlModel};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, trace, warn};
 
 /// Error type produced by GenApi operations.
 #[derive(Debug, Error)]
@@ -31,6 +31,12 @@ pub enum GenApiError {
     /// Node metadata or conversion failed.
     #[error("parse error: {0}")]
     Parse(String),
+    /// Raw register value did not correspond to any enum entry.
+    #[error("enum {node} has no entry for raw value {value}")]
+    EnumValueUnknown { node: String, value: i64 },
+    /// Attempted to select an enum entry that does not exist.
+    #[error("enum {node} has no entry named {entry}")]
+    EnumNoSuchEntry { node: String, entry: String },
     /// Indirect addressing resolved to an invalid register.
     #[error("node {name} resolved invalid indirect address {addr:#X}")]
     BadIndirectAddress { name: String, addr: i64 },
@@ -70,9 +76,7 @@ impl Node {
             Node::Float(node) => {
                 node.cache.replace(None);
             }
-            Node::Enum(node) => {
-                node.cache.replace(None);
-            }
+            Node::Enum(node) => node.invalidate(),
             Node::Boolean(node) => {
                 node.cache.replace(None);
             }
@@ -151,13 +155,19 @@ pub struct EnumNode {
     pub name: String,
     pub addressing: Addressing,
     pub access: AccessMode,
-    pub entries: Vec<(String, i64)>,
+    pub entries: Vec<EnumEntryDecl>,
     pub default: Option<String>,
     pub selectors: Vec<String>,
     pub selected_if: Vec<(String, Vec<String>)>,
-    map_by_name: HashMap<String, i64>,
-    map_by_value: HashMap<i64, String>,
-    cache: RefCell<Option<String>>,
+    pub providers: Vec<String>,
+    value_cache: RefCell<Option<String>>,
+    mapping_cache: RefCell<Option<EnumMapping>>,
+}
+
+#[derive(Debug, Clone)]
+struct EnumMapping {
+    by_value: HashMap<i64, String>,
+    by_name: HashMap<String, i64>,
 }
 
 /// Boolean feature metadata.
@@ -169,6 +179,13 @@ pub struct BooleanNode {
     pub selectors: Vec<String>,
     pub selected_if: Vec<(String, Vec<String>)>,
     cache: RefCell<Option<bool>>,
+}
+
+impl EnumNode {
+    fn invalidate(&self) {
+        self.value_cache.replace(None);
+        self.mapping_cache.replace(None);
+    }
 }
 
 /// Command feature metadata.
@@ -307,7 +324,7 @@ impl NodeMap {
         ensure_readable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         let (address, len) = self.resolve_address(name, &node.addressing, io)?;
-        if let Some(value) = node.cache.borrow().clone() {
+        if let Some(value) = node.value_cache.borrow().clone() {
             return Ok(value);
         }
         let raw = io.read(address, len as usize).map_err(|err| match err {
@@ -315,11 +332,9 @@ impl NodeMap {
             other => other,
         })?;
         let raw_value = bytes_to_i64(name, &raw)?;
-        let entry = node.map_by_value.get(&raw_value).cloned().ok_or_else(|| {
-            GenApiError::Parse(format!("unknown enum value {raw_value} for {name}"))
-        })?;
+        let entry = self.lookup_enum_entry(node, raw_value, io)?;
         debug!(node = %name, raw = raw_value, entry = %entry, "read enum feature");
-        node.cache.replace(Some(entry.clone()));
+        node.value_cache.replace(Some(entry.clone()));
         Ok(entry)
     }
 
@@ -334,19 +349,43 @@ impl NodeMap {
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         let (address, len) = self.resolve_address(name, &node.addressing, io)?;
-        let raw = *node
-            .map_by_name
-            .get(entry)
-            .ok_or_else(|| GenApiError::Range(name.to_string()))?;
+        let entry_decl = node
+            .entries
+            .iter()
+            .find(|candidate| candidate.name == entry)
+            .ok_or_else(|| GenApiError::EnumNoSuchEntry {
+                node: name.to_string(),
+                entry: entry.to_string(),
+            })?;
+        let raw = self.resolve_enum_entry_value(node, entry_decl, io)?;
         let bytes = i64_to_bytes(name, raw, len)?;
         debug!(node = %name, raw, entry, "write enum feature");
         io.write(address, &bytes).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
-        node.cache.replace(Some(entry.to_string()));
+        node.value_cache.replace(None);
         self.invalidate_dependents(name);
         Ok(())
+    }
+
+    /// List the available entry names for an enumeration feature.
+    pub fn enum_entries(&self, name: &str) -> Result<Vec<String>, GenApiError> {
+        let node = self.get_enum_node(name)?;
+        if let Some(mapping) = node.mapping_cache.borrow().as_ref() {
+            let mut names: Vec<_> = mapping.by_name.keys().cloned().collect();
+            names.sort();
+            names.dedup();
+            return Ok(names);
+        }
+        let mut names: Vec<_> = node
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Read a boolean feature.
@@ -471,6 +510,94 @@ impl NodeMap {
             }
         }
         Ok(())
+    }
+
+    fn lookup_enum_entry(
+        &self,
+        node: &EnumNode,
+        raw_value: i64,
+        io: &dyn RegisterIo,
+    ) -> Result<String, GenApiError> {
+        {
+            let mut cache = node.mapping_cache.borrow_mut();
+            if cache.is_none() {
+                *cache = Some(self.build_enum_mapping(node, io)?);
+            }
+            if let Some(mapping) = cache.as_ref() {
+                if let Some(entry) = mapping.by_value.get(&raw_value) {
+                    return Ok(entry.clone());
+                }
+            }
+            *cache = Some(self.build_enum_mapping(node, io)?);
+            if let Some(mapping) = cache.as_ref() {
+                if let Some(entry) = mapping.by_value.get(&raw_value) {
+                    return Ok(entry.clone());
+                }
+            }
+        }
+        Err(GenApiError::EnumValueUnknown {
+            node: node.name.clone(),
+            value: raw_value,
+        })
+    }
+
+    fn build_enum_mapping(
+        &self,
+        node: &EnumNode,
+        io: &dyn RegisterIo,
+    ) -> Result<EnumMapping, GenApiError> {
+        let mut by_value = HashMap::new();
+        let mut by_name = HashMap::new();
+
+        for entry in &node.entries {
+            let value = self.resolve_enum_entry_value(node, entry, io)?;
+            match by_value.entry(value) {
+                HashMapEntry::Vacant(slot) => {
+                    slot.insert(entry.name.clone());
+                }
+                HashMapEntry::Occupied(existing) => {
+                    warn!(
+                        enum_node = %node.name,
+                        value,
+                        kept = %existing.get(),
+                        dropped = %entry.name,
+                        "duplicate enum value"
+                    );
+                }
+            }
+            by_name.insert(entry.name.clone(), value);
+        }
+
+        let mut summary: Vec<_> = by_value
+            .iter()
+            .map(|(value, name)| (*value, name.clone()))
+            .collect();
+        summary.sort_by_key(|(value, _)| *value);
+        debug!(node = %node.name, entries = ?summary, "build enum mapping");
+
+        Ok(EnumMapping { by_value, by_name })
+    }
+
+    fn resolve_enum_entry_value(
+        &self,
+        node: &EnumNode,
+        entry: &EnumEntryDecl,
+        io: &dyn RegisterIo,
+    ) -> Result<i64, GenApiError> {
+        match &entry.value {
+            EnumValueSrc::Literal(value) => Ok(*value),
+            EnumValueSrc::FromNode(provider) => {
+                let value = self.get_integer(provider, io)?;
+                trace!(
+                    enum_node = %node.name,
+                    entry = %entry.name,
+                    provider = %provider,
+                    value,
+                    "resolved enum entry from provider"
+                );
+                Ok(value)
+            }
+        }
     }
 
     fn resolve_address(
@@ -663,12 +790,20 @@ impl From<XmlModel> for NodeMap {
                             .or_default()
                             .push(name.clone());
                     }
-                    let mut map_by_name = HashMap::new();
-                    let mut map_by_value = HashMap::new();
-                    for (entry, value) in &entries {
-                        map_by_name.insert(entry.clone(), *value);
-                        map_by_value.entry(*value).or_insert_with(|| entry.clone());
+                    let mut providers = Vec::new();
+                    let mut provider_set = HashSet::new();
+                    for entry in &entries {
+                        if let EnumValueSrc::FromNode(node_name) = &entry.value {
+                            dependents
+                                .entry(node_name.clone())
+                                .or_default()
+                                .push(name.clone());
+                            if provider_set.insert(node_name.clone()) {
+                                providers.push(node_name.clone());
+                            }
+                        }
                     }
+                    providers.sort();
                     let node = EnumNode {
                         name: name.clone(),
                         addressing,
@@ -677,9 +812,9 @@ impl From<XmlModel> for NodeMap {
                         default,
                         selectors,
                         selected_if,
-                        map_by_name,
-                        map_by_value,
-                        cache: RefCell::new(None),
+                        providers,
+                        value_cache: RefCell::new(None),
+                        mapping_cache: RefCell::new(None),
                     };
                     nodes.insert(name, Node::Enum(node));
                 }
@@ -894,6 +1029,29 @@ mod tests {
         </RegisterDescription>
     "#;
 
+    const ENUM_PVALUE_FIXTURE: &str = r#"
+        <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+            <Enumeration Name="Mode">
+                <Address>0x4000</Address>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <EnumEntry Name="Fixed10">
+                    <Value>10</Value>
+                </EnumEntry>
+                <EnumEntry Name="DynFromReg">
+                    <pValue>RegModeVal</pValue>
+                </EnumEntry>
+            </Enumeration>
+            <Integer Name="RegModeVal">
+                <Address>0x4100</Address>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <Min>0</Min>
+                <Max>65535</Max>
+            </Integer>
+        </RegisterDescription>
+    "#;
+
     #[derive(Default)]
     struct MockIo {
         regs: RefCell<HashMap<u64, Vec<u8>>>,
@@ -947,6 +1105,11 @@ mod tests {
 
     fn build_indirect_nodemap() -> NodeMap {
         let model = genapi_xml::parse(INDIRECT_FIXTURE).expect("parse indirect fixture");
+        NodeMap::from(model)
+    }
+
+    fn build_enum_pvalue_nodemap() -> NodeMap {
+        let model = genapi_xml::parse(ENUM_PVALUE_FIXTURE).expect("parse enum pvalue fixture");
         NodeMap::from(model)
     }
 
@@ -1112,5 +1275,103 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
         assert_eq!(io.read_count(0x2000), 0);
+    }
+
+    #[test]
+    fn enum_literal_entry_read() {
+        let nodemap = build_enum_pvalue_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x4000, i64_to_bytes("Mode", 10, 4).unwrap()),
+            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+        ]);
+
+        let value = nodemap.get_enum("Mode", &io).expect("read mode");
+        assert_eq!(value, "Fixed10");
+        assert_eq!(
+            io.read_count(0x4100),
+            1,
+            "provider should be read once for mapping"
+        );
+    }
+
+    #[test]
+    fn enum_provider_entry_read() {
+        let nodemap = build_enum_pvalue_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x4000, i64_to_bytes("Mode", 42, 4).unwrap()),
+            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+        ]);
+
+        let value = nodemap.get_enum("Mode", &io).expect("read dynamic mode");
+        assert_eq!(value, "DynFromReg");
+        assert_eq!(io.read_count(0x4100), 1);
+    }
+
+    #[test]
+    fn enum_set_uses_provider_value() {
+        let mut nodemap = build_enum_pvalue_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x4000, i64_to_bytes("Mode", 0, 4).unwrap()),
+            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+        ]);
+
+        nodemap
+            .set_enum("Mode", "DynFromReg", &io)
+            .expect("write enum");
+        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap()).unwrap();
+        assert_eq!(raw, 42);
+        assert_eq!(io.read_count(0x4100), 1);
+    }
+
+    #[test]
+    fn enum_provider_update_invalidates_mapping() {
+        let mut nodemap = build_enum_pvalue_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x4000, i64_to_bytes("Mode", 42, 4).unwrap()),
+            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+        ]);
+
+        assert_eq!(nodemap.get_enum("Mode", &io).unwrap(), "DynFromReg");
+        assert_eq!(io.read_count(0x4100), 1);
+
+        nodemap
+            .set_integer("RegModeVal", 17, &io)
+            .expect("update provider");
+        io.write(0x4000, &i64_to_bytes("Mode", 0, 4).unwrap())
+            .expect("reset mode register");
+
+        nodemap
+            .set_enum("Mode", "DynFromReg", &io)
+            .expect("write enum after provider change");
+        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap()).unwrap();
+        assert_eq!(raw, 17);
+    }
+
+    #[test]
+    fn enum_unknown_value_error() {
+        let nodemap = build_enum_pvalue_nodemap();
+        let io = MockIo::with_registers(&[
+            (0x4000, i64_to_bytes("Mode", 99, 4).unwrap()),
+            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+        ]);
+
+        let err = nodemap.get_enum("Mode", &io).unwrap_err();
+        match err {
+            GenApiError::EnumValueUnknown { node, value } => {
+                assert_eq!(node, "Mode");
+                assert_eq!(value, 99);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_entries_are_sorted() {
+        let nodemap = build_enum_pvalue_nodemap();
+        let entries = nodemap.enum_entries("Mode").expect("entries");
+        assert_eq!(
+            entries,
+            vec!["DynFromReg".to_string(), "Fixed10".to_string()]
+        );
     }
 }
