@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use crate::GenicamError;
 use tl_gige::{
     stats::TimeStats,
     time::{self, ControlChannel, TimeError, TimeSync},
 };
-use crate::GenicamError;
+use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 /// Shared wrapper around a timestamp synchroniser and control interface.
 pub struct TimeMapper<C: ControlChannel> {

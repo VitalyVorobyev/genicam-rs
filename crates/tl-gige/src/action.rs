@@ -86,12 +86,15 @@ pub async fn send_action(
     destination: SocketAddr,
     params: &ActionParams,
 ) -> Result<AckSummary, ActionError> {
-    let local = SocketAddr::new(match destination.ip() {
-        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        IpAddr::V6(_) => {
-            return Err(ActionError::Protocol("IPv6 destinations are not supported"));
-        }
-    }, 0);
+    let local = SocketAddr::new(
+        match destination.ip() {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(_) => {
+                return Err(ActionError::Protocol("IPv6 destinations are not supported"));
+            }
+        },
+        0,
+    );
     let socket = UdpSocket::bind(local).await?;
     if is_broadcast(destination) {
         socket.set_broadcast(true)?;
@@ -133,11 +136,18 @@ pub async fn send_action(
                 trace!(bytes = len, %src, "received action acknowledgement");
                 let header = parse_ack(&buf[..len])?;
                 if header.command != ACTION_ACK {
-                    debug!(opcode = header.command, "ignoring non-action acknowledgement");
+                    debug!(
+                        opcode = header.command,
+                        "ignoring non-action acknowledgement"
+                    );
                     continue;
                 }
                 if header.request_id != request_id {
-                    debug!(expected = request_id, got = header.request_id, "ack id mismatch");
+                    debug!(
+                        expected = request_id,
+                        got = header.request_id,
+                        "ack id mismatch"
+                    );
                     continue;
                 }
                 if header.status != genicp::StatusCode::Success {

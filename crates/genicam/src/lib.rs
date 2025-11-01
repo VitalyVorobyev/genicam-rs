@@ -8,10 +8,10 @@ use async_trait::async_trait;
 use genapi_core::{GenApiError, Node, NodeMap};
 use thiserror::Error;
 
-pub use tl_gige::action::{AckSummary, ActionParams};
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
 pub use time::TimeMapper;
+pub use tl_gige::action::{AckSummary, ActionParams};
 
 #[derive(Debug, Error)]
 pub enum GenicamError {

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use bytes::Buf;
-use tl_gige::gvsp::{self, ChunkRaw};
 use thiserror::Error;
+use tl_gige::gvsp::{self, ChunkRaw};
 use tracing::trace;
 
 /// Known chunk identifiers defined by SFNC.
@@ -51,7 +51,11 @@ pub enum ChunkError {
 pub fn decode_raw_chunks(chunks: &[ChunkRaw]) -> Result<ChunkMap, ChunkError> {
     let mut map = HashMap::new();
     for chunk in chunks {
-        trace!(chunk_id = chunk.id, len = chunk.data.len(), "decoding chunk");
+        trace!(
+            chunk_id = chunk.id,
+            len = chunk.data.len(),
+            "decoding chunk"
+        );
         match chunk.id {
             ids::TIMESTAMP => {
                 if chunk.data.len() != 8 {

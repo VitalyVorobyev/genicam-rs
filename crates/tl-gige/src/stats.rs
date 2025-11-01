@@ -150,8 +150,7 @@ impl ActionStats {
 
     /// Record a received acknowledgement.
     pub fn record_ack(&self) {
-        self.acknowledgements
-            .fetch_add(1, Ordering::Relaxed);
+        self.acknowledgements.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a failure while dispatching or waiting for acknowledgements.

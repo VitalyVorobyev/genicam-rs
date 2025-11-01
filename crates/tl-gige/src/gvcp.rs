@@ -1,7 +1,6 @@
 //! GVCP control plane utilities.
 
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -617,11 +616,6 @@ impl GigeDevice {
             Ok(Err(err)) => Err(err.into()),
             Err(_) => Err(GigeError::Timeout),
         }
-    }
-
-    /// Address of the remote device.
-    pub fn remote_addr(&self) -> SocketAddr {
-        self.remote
     }
 }
 

@@ -11,6 +11,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 
+#[cfg(test)]
 use crate::gvcp::consts;
 
 /// Default size of the receive buffer requested for the event socket.
@@ -113,7 +114,7 @@ impl EventSocket {
         let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;
         socket.set_nonblocking(true)?;
-        if let Err(err) = socket.set_recv_buffer_size(DEFAULT_RCVBUF as i32) {
+        if let Err(err) = socket.set_recv_buffer_size(DEFAULT_RCVBUF) {
             warn!(?err, "failed to set event socket receive buffer");
         }
         let addr = SocketAddr::new(local_ip, port);
@@ -175,8 +176,7 @@ mod tests {
         payload.extend_from_slice(&0u16.to_be_bytes());
         payload.extend_from_slice(&[1, 2, 3, 4]);
         let length = (payload.len() - MESSAGE_HEADER_LEN) as u16;
-        payload[length_placeholder..length_placeholder + 2]
-            .copy_from_slice(&length.to_be_bytes());
+        payload[length_placeholder..length_placeholder + 2].copy_from_slice(&length.to_be_bytes());
         let packet = MessagePacket::parse(src, &payload).expect("valid packet");
         assert_eq!(packet.event_id, 0x1234);
         assert_eq!(packet.stream_channel, 7);

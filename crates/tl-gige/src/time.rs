@@ -47,7 +47,9 @@ fn parse_u64_be(data: &[u8]) -> Result<u64, TimeError> {
     if data.len() != 8 {
         return Err(TimeError::Protocol("unexpected register size"));
     }
-    Ok(u64::from_be_bytes(data.try_into().expect("slice length checked")))
+    Ok(u64::from_be_bytes(
+        data.try_into().expect("slice length checked"),
+    ))
 }
 
 /// Issue a timestamp reset using the SFNC control register.
@@ -72,9 +74,7 @@ pub async fn read_timestamp_value<C: ControlChannel>(ctrl: &C) -> Result<u64, Ti
 
 /// Read the device tick frequency.
 pub async fn read_tick_frequency<C: ControlChannel>(ctrl: &C) -> Result<u64, TimeError> {
-    let bytes = ctrl
-        .read_register(REG_TIMESTAMP_TICK_FREQUENCY, 8)
-        .await?;
+    let bytes = ctrl.read_register(REG_TIMESTAMP_TICK_FREQUENCY, 8).await?;
     parse_u64_be(&bytes)
 }
 
@@ -131,7 +131,11 @@ impl TimeSync {
         let intercept = (sum_y - slope * sum_x) / n;
         self.a = slope;
         self.b = intercept;
-        debug!(slope = self.a, intercept = self.b, "recomputed time mapping");
+        debug!(
+            slope = self.a,
+            intercept = self.b,
+            "recomputed time mapping"
+        );
     }
 
     /// Add a new measurement pair to the regression window.

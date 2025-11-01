@@ -1,8 +1,8 @@
 //! GigE Vision TL: discovery (GVCP), control (GenCP/GVCP), streaming (GVSP).
 
+pub mod action;
 pub mod gvcp;
 pub mod gvsp;
-pub mod action;
 pub mod message;
 pub mod nic;
 pub mod stats;
