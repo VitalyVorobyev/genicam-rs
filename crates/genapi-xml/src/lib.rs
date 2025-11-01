@@ -13,6 +13,32 @@ const FIRST_URL_MAX_LEN: usize = 512;
 
 /// XML element name referencing another node that provides an address.
 const TAG_P_ADDRESS: &[u8] = b"pAddress";
+/// XML element holding an inline literal value.
+const TAG_VALUE: &[u8] = b"Value";
+/// XML element referencing another node supplying the value at runtime.
+const TAG_P_VALUE: &[u8] = b"pValue";
+/// XML element specifying a user friendly label for an enum entry.
+const TAG_DISPLAY_NAME: &[u8] = b"DisplayName";
+
+/// Source of the numeric value backing an enumeration entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnumValueSrc {
+    /// Numeric literal declared directly in the XML.
+    Literal(i64),
+    /// Value obtained from another node referenced via `<pValue>`.
+    FromNode(String),
+}
+
+/// Declaration for a single enumeration entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumEntryDecl {
+    /// Symbolic entry name exposed to clients.
+    pub name: String,
+    /// Source describing how to resolve the numeric value for this entry.
+    pub value: EnumValueSrc,
+    /// Optional user facing label.
+    pub display_name: Option<String>,
+}
 
 #[derive(Debug, Error)]
 pub enum XmlError {
@@ -113,7 +139,7 @@ pub enum NodeDecl {
         name: String,
         addressing: Addressing,
         access: AccessMode,
-        entries: Vec<(String, i64)>,
+        entries: Vec<EnumEntryDecl>,
         default: Option<String>,
         selectors: Vec<String>,
         selected_if: Vec<(String, Vec<String>)>,
@@ -1020,6 +1046,12 @@ fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeD
         buf.clear();
     }
 
+    if entries.is_empty() {
+        return Err(XmlError::Invalid(format!(
+            "Enumeration node {name} declares no <EnumEntry> elements"
+        )));
+    }
+
     let addressing = addressing.finalize(&name, Some(4))?;
 
     Ok(NodeDecl::Enum {
@@ -1321,20 +1353,36 @@ fn parse_category_empty(start: &BytesStart<'_>) -> Result<NodeDecl, XmlError> {
 fn parse_enum_entry(
     reader: &mut Reader<&[u8]>,
     start: BytesStart<'_>,
-) -> Result<(String, i64), XmlError> {
+) -> Result<EnumEntryDecl, XmlError> {
     let mut name = attribute_value_required(&start, b"Name")?;
-    let mut value = attribute_value(&start, b"Value")?;
+    let mut literal = attribute_value(&start, TAG_VALUE)?;
+    let mut provider = attribute_value(&start, TAG_P_VALUE)?;
+    let mut display_name = attribute_value(&start, TAG_DISPLAY_NAME)?;
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                b"Value" => {
+                TAG_VALUE => {
                     let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        value = Some(trimmed.to_string());
+                        literal = Some(trimmed.to_string());
+                    }
+                }
+                TAG_P_VALUE => {
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        provider = Some(trimmed.to_string());
+                    }
+                }
+                TAG_DISPLAY_NAME => {
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        display_name = Some(trimmed.to_string());
                     }
                 }
                 b"Name" => {
@@ -1356,16 +1404,62 @@ fn parse_enum_entry(
         buf.clear();
     }
 
-    let value = value.ok_or_else(|| XmlError::Invalid("EnumEntry missing Value".into()))?;
-    let value = parse_i64(&value)?;
-    Ok((name, value))
+    build_enum_entry(name, literal, provider, display_name)
 }
 
-fn parse_enum_entry_empty(start: &BytesStart<'_>) -> Result<(String, i64), XmlError> {
+fn parse_enum_entry_empty(start: &BytesStart<'_>) -> Result<EnumEntryDecl, XmlError> {
     let name = attribute_value_required(start, b"Name")?;
-    let value = attribute_value_required(start, b"Value")?;
-    let value = parse_i64(&value)?;
-    Ok((name, value))
+    let literal = attribute_value(start, TAG_VALUE)?;
+    let provider = attribute_value(start, TAG_P_VALUE)?;
+    let display_name = attribute_value(start, TAG_DISPLAY_NAME)?;
+    build_enum_entry(name, literal, provider, display_name)
+}
+
+fn build_enum_entry(
+    name: String,
+    literal: Option<String>,
+    provider: Option<String>,
+    display_name: Option<String>,
+) -> Result<EnumEntryDecl, XmlError> {
+    let literal = literal.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    let provider = provider.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    if literal.is_some() && provider.is_some() {
+        warn!(
+            entry = %name,
+            "EnumEntry specifies both <Value> and <pValue>; preferring provider"
+        );
+    }
+
+    let value = if let Some(node) = provider {
+        EnumValueSrc::FromNode(node)
+    } else if let Some(value) = literal {
+        EnumValueSrc::Literal(parse_i64(&value)?)
+    } else {
+        return Err(XmlError::Invalid(format!(
+            "EnumEntry {name} is missing <Value> or <pValue>"
+        )));
+    };
+
+    Ok(EnumEntryDecl {
+        name,
+        value,
+        display_name,
+    })
 }
 
 fn parse_scale(text: &str) -> Result<(i64, i64), XmlError> {
@@ -1723,6 +1817,8 @@ mod tests {
             NodeDecl::Enum { name, entries, .. } => {
                 assert_eq!(name, "GainSelector");
                 assert_eq!(entries.len(), 2);
+                assert!(matches!(entries[0].value, EnumValueSrc::Literal(0)));
+                assert!(matches!(entries[1].value, EnumValueSrc::Literal(1)));
             }
             other => panic!("unexpected node: {other:?}"),
         }
@@ -1734,6 +1830,46 @@ mod tests {
                 assert_eq!(selected_if.len(), 1);
                 assert_eq!(selected_if[0].0, "GainSelector");
                 assert_eq!(selected_if[0].1, vec!["AnalogAll".to_string()]);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_enum_entry_with_pvalue() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Enumeration Name="Mode">
+                    <Address>0x0000_4000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <EnumEntry Name="Fixed10">
+                        <Value>10</Value>
+                    </EnumEntry>
+                    <EnumEntry Name="DynFromReg">
+                        <pValue>RegModeVal</pValue>
+                    </EnumEntry>
+                </Enumeration>
+                <Integer Name="RegModeVal">
+                    <Address>0x0000_4100</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>65535</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse enum pvalue");
+        assert_eq!(model.nodes.len(), 2);
+        match &model.nodes[0] {
+            NodeDecl::Enum { entries, .. } => {
+                assert_eq!(entries.len(), 2);
+                assert!(matches!(entries[0].value, EnumValueSrc::Literal(10)));
+                match &entries[1].value {
+                    EnumValueSrc::FromNode(node) => assert_eq!(node, "RegModeVal"),
+                    other => panic!("unexpected entry value: {other:?}"),
+                }
             }
             other => panic!("unexpected node: {other:?}"),
         }

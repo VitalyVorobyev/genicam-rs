@@ -74,6 +74,11 @@ impl<T: RegisterIo> Camera<T> {
         &mut self.nodemap
     }
 
+    /// List available entries for an enumeration feature.
+    pub fn enum_entries(&self, name: &str) -> Result<Vec<String>, GenicamError> {
+        self.nodemap.enum_entries(name).map_err(Into::into)
+    }
+
     /// Retrieve a feature value as a string using the nodemap type to format it.
     pub fn get(&self, name: &str) -> Result<String, GenicamError> {
         match self.nodemap.node(name) {
