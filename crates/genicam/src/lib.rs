@@ -136,12 +136,13 @@ impl<T: RegisterIo> Camera<T> {
 
     /// Convenience wrapper for exposure time features expressed in microseconds.
     pub fn set_exposure_time_us(&mut self, value: f64) -> Result<(), GenicamError> {
-        self.set_float_feature(sfnc::EXPOSURE_TIME, value)
+        // Use SFNC name directly to avoid cross-crate constant lookup issues in docs
+        self.set_float_feature("ExposureTime", value)
     }
 
     /// Convenience wrapper for gain features expressed in decibel.
     pub fn set_gain_db(&mut self, value: f64) -> Result<(), GenicamError> {
-        self.set_float_feature(sfnc::GAIN, value)
+        self.set_float_feature("Gain", value)
     }
 
     fn set_float_feature(&mut self, name: &str, value: f64) -> Result<(), GenicamError> {
@@ -158,14 +159,14 @@ impl<T: RegisterIo> Camera<T> {
     /// Trigger acquisition start via the SFNC command feature.
     pub fn acquisition_start(&mut self) -> Result<(), GenicamError> {
         self.nodemap
-            .exec_command(sfnc::ACQUISITION_START, &self.transport)
+            .exec_command("AcquisitionStart", &self.transport)
             .map_err(Into::into)
     }
 
     /// Trigger acquisition stop via the SFNC command feature.
     pub fn acquisition_stop(&mut self) -> Result<(), GenicamError> {
         self.nodemap
-            .exec_command(sfnc::ACQUISITION_STOP, &self.transport)
+            .exec_command("AcquisitionStop", &self.transport)
             .map_err(Into::into)
     }
 }
