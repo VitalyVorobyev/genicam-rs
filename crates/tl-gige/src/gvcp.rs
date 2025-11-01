@@ -17,6 +17,8 @@ use tokio::task::JoinSet;
 use tokio::time;
 use tracing::{debug, info, trace, warn};
 
+use crate::nic::{self, Iface};
+
 /// GVCP protocol constants grouped by semantic area.
 pub mod consts {
     use std::time::Duration;
@@ -57,6 +59,19 @@ pub mod consts {
 
     /// Maximum number of bytes captured while listening for discovery responses.
     pub const DISCOVERY_BUFFER: usize = 2048;
+
+    /// Base register for stream channel configuration (GigE Vision 2.1, table 63).
+    pub const STREAM_CHANNEL_BASE: u64 = 0x0900_0400;
+    /// Stride in bytes between successive stream channel blocks.
+    pub const STREAM_CHANNEL_STRIDE: u64 = 0x40;
+    /// Offset for `GevSCPHostIPAddress` within a stream channel block.
+    pub const STREAM_DESTINATION_ADDRESS: u64 = 0x00;
+    /// Offset for `GevSCPHostPort` within a stream channel block.
+    pub const STREAM_DESTINATION_PORT: u64 = 0x04;
+    /// Offset for `GevSCPSPacketSize` within a stream channel block.
+    pub const STREAM_PACKET_SIZE: u64 = 0x24;
+    /// Offset for `GevSCPD` (packet delay) within a stream channel block.
+    pub const STREAM_PACKET_DELAY: u64 = 0x28;
 }
 
 /// Public alias for the GVCP well-known port.
@@ -338,6 +353,21 @@ pub struct GigeDevice {
     rng: Rng,
 }
 
+/// Stream negotiation outcome describing the values written to the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamParams {
+    /// Selected GVSP packet size (bytes).
+    pub packet_size: u32,
+    /// Packet delay expressed in GVSP clock ticks (80 ns units).
+    pub packet_delay: u32,
+    /// Link MTU used to derive the packet size.
+    pub mtu: u32,
+    /// Host IPv4 address configured on the device.
+    pub host: Ipv4Addr,
+    /// Host port configured on the device.
+    pub port: u16,
+}
+
 impl GigeDevice {
     /// Connect to a device GVCP endpoint.
     pub async fn open(addr: SocketAddr) -> Result<Self, GigeError> {
@@ -532,6 +562,84 @@ impl GigeDevice {
         self.write_mem(consts::MESSAGE_DESTINATION_PORT, &port.to_be_bytes())
             .await?;
         Ok(())
+    }
+
+    fn stream_reg(channel: u32, offset: u64) -> u64 {
+        consts::STREAM_CHANNEL_BASE + channel as u64 * consts::STREAM_CHANNEL_STRIDE + offset
+    }
+
+    /// Configure the GVSP host destination for the provided channel.
+    pub async fn set_stream_destination(
+        &mut self,
+        channel: u32,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), GigeError> {
+        info!(channel, %ip, port, "configuring stream destination");
+        let addr = Self::stream_reg(channel, consts::STREAM_DESTINATION_ADDRESS);
+        self.write_mem(addr, &ip.octets()).await?;
+        let addr = Self::stream_reg(channel, consts::STREAM_DESTINATION_PORT);
+        self.write_mem(addr, &port.to_be_bytes()).await?;
+        Ok(())
+    }
+
+    /// Configure the packet size for the stream channel.
+    pub async fn set_stream_packet_size(
+        &mut self,
+        channel: u32,
+        packet_size: u32,
+    ) -> Result<(), GigeError> {
+        info!(channel, packet_size, "configuring stream packet size");
+        let addr = Self::stream_reg(channel, consts::STREAM_PACKET_SIZE);
+        self.write_mem(addr, &packet_size.to_be_bytes()).await
+    }
+
+    /// Configure the packet delay (`GevSCPD`).
+    pub async fn set_stream_packet_delay(
+        &mut self,
+        channel: u32,
+        packet_delay: u32,
+    ) -> Result<(), GigeError> {
+        debug!(channel, packet_delay, "configuring stream packet delay");
+        let addr = Self::stream_reg(channel, consts::STREAM_PACKET_DELAY);
+        self.write_mem(addr, &packet_delay.to_be_bytes()).await
+    }
+
+    /// Negotiate GVSP parameters with the device given the host interface.
+    pub async fn negotiate_stream(
+        &mut self,
+        channel: u32,
+        iface: &Iface,
+        port: u16,
+        target_mtu: Option<u32>,
+    ) -> Result<StreamParams, GigeError> {
+        let host_ip = iface
+            .ipv4()
+            .ok_or_else(|| GigeError::Protocol("interface lacks IPv4 address".into()))?;
+        let iface_mtu = nic::mtu(iface)?;
+        let mtu = target_mtu.map_or(iface_mtu, |limit| limit.min(iface_mtu));
+        let packet_size = nic::best_packet_size(mtu);
+        let packet_delay = if mtu <= 1500 {
+            // When jumbo frames are unavailable we space out packets by 2 µs to
+            // prevent excessive buffering pressure on receivers. GVSP expresses
+            // `GevSCPD` in units of 80 ns.
+            const DELAY_NS: u32 = 2_000; // 2 µs.
+            DELAY_NS / 80
+        } else {
+            0
+        };
+
+        self.set_stream_destination(channel, host_ip, port).await?;
+        self.set_stream_packet_size(channel, packet_size).await?;
+        self.set_stream_packet_delay(channel, packet_delay).await?;
+
+        Ok(StreamParams {
+            packet_size,
+            packet_delay,
+            mtu,
+            host: host_ip,
+            port,
+        })
     }
 
     /// Enable or disable delivery of the provided event identifier.

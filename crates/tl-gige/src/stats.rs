@@ -1,5 +1,6 @@
 //! Streaming statistics helpers.
 
+use std::f64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -8,7 +9,11 @@ use std::time::Instant;
 pub struct StreamStats {
     packets: AtomicU64,
     resends: AtomicU64,
+    resend_ranges: AtomicU64,
     dropped_frames: AtomicU64,
+    backpressure_drops: AtomicU64,
+    late_frames: AtomicU64,
+    pool_exhaustions: AtomicU64,
     start: Instant,
 }
 
@@ -18,7 +23,11 @@ impl StreamStats {
         Self {
             packets: AtomicU64::new(0),
             resends: AtomicU64::new(0),
+            resend_ranges: AtomicU64::new(0),
             dropped_frames: AtomicU64::new(0),
+            backpressure_drops: AtomicU64::new(0),
+            late_frames: AtomicU64::new(0),
+            pool_exhaustions: AtomicU64::new(0),
             start: Instant::now(),
         }
     }
@@ -33,18 +42,46 @@ impl StreamStats {
         self.resends.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record the number of packet ranges covered by a resend request.
+    pub fn record_resend_ranges(&self, ranges: u64) {
+        if ranges > 0 {
+            self.resend_ranges.fetch_add(ranges, Ordering::Relaxed);
+        }
+    }
+
     /// Record a dropped frame event.
     pub fn record_drop(&self) {
         self.dropped_frames.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a drop caused by application backpressure.
+    pub fn record_backpressure_drop(&self) {
+        self.backpressure_drops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a frame that missed its presentation deadline.
+    pub fn record_late_frame(&self) {
+        self.late_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record an exhausted frame buffer pool event.
+    pub fn record_pool_exhaustion(&self) {
+        self.pool_exhaustions.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Snapshot the current counters.
     pub fn snapshot(&self) -> Snapshot {
+        let elapsed = self.start.elapsed().as_secs_f64().max(f64::EPSILON) as f32;
         Snapshot {
             packets: self.packets.load(Ordering::Relaxed),
             resends: self.resends.load(Ordering::Relaxed),
+            resend_ranges: self.resend_ranges.load(Ordering::Relaxed),
             dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
-            elapsed: self.start.elapsed().as_secs_f32(),
+            backpressure_drops: self.backpressure_drops.load(Ordering::Relaxed),
+            late_frames: self.late_frames.load(Ordering::Relaxed),
+            pool_exhaustions: self.pool_exhaustions.load(Ordering::Relaxed),
+            elapsed,
+            packets_per_second: self.packets.load(Ordering::Relaxed) as f32 / elapsed,
         }
     }
 }
@@ -60,8 +97,13 @@ impl Default for StreamStats {
 pub struct Snapshot {
     pub packets: u64,
     pub resends: u64,
+    pub resend_ranges: u64,
     pub dropped_frames: u64,
+    pub backpressure_drops: u64,
+    pub late_frames: u64,
+    pub pool_exhaustions: u64,
     pub elapsed: f32,
+    pub packets_per_second: f32,
 }
 
 /// Event channel statistics.
