@@ -12,7 +12,8 @@ tracing = { workspace = true }
 if-addrs = { workspace = true }
 bytes = { workspace = true }
 genicp = { path = "../genicp" }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "net", "time"] }
+fastrand = "2"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
