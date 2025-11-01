@@ -1,6 +1,7 @@
 //! GVCP control plane utilities.
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -31,6 +32,15 @@ pub mod consts {
     pub const PACKET_RESEND_COMMAND: u16 = 0x0040;
     /// Opcode of the packet resend acknowledgement.
     pub const PACKET_RESEND_ACK: u16 = 0x0041;
+
+    /// Address of the SFNC `GevMessageChannel0DestinationAddress` register.
+    pub const MESSAGE_DESTINATION_ADDRESS: u64 = 0x0900_0200;
+    /// Address of the SFNC `GevMessageChannel0DestinationPort` register.
+    pub const MESSAGE_DESTINATION_PORT: u64 = 0x0900_0204;
+    /// Base address of the event notification mask (`GevEventNotificationAll`).
+    pub const EVENT_NOTIFICATION_BASE: u64 = 0x0900_0300;
+    /// Stride between successive event notification mask registers (bytes).
+    pub const EVENT_NOTIFICATION_STRIDE: u64 = 4;
 
     /// Maximum number of bytes we read per GenCP `ReadMem` operation.
     pub const GENCP_MAX_BLOCK: usize = 512;
@@ -348,6 +358,11 @@ impl GigeDevice {
         })
     }
 
+    /// Return the remote GVCP socket address associated with this device.
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote
+    }
+
     fn next_request_id(&mut self) -> u16 {
         let id = self.request_id;
         self.request_id = self.request_id.wrapping_add(1);
@@ -503,6 +518,45 @@ impl GigeDevice {
             }
             offset += chunk;
         }
+        Ok(())
+    }
+
+    /// Configure the message channel destination address/port.
+    pub async fn set_message_destination(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), GigeError> {
+        info!(%ip, port, "configuring message channel destination");
+        self.write_mem(consts::MESSAGE_DESTINATION_ADDRESS, &ip.octets())
+            .await?;
+        self.write_mem(consts::MESSAGE_DESTINATION_PORT, &port.to_be_bytes())
+            .await?;
+        Ok(())
+    }
+
+    /// Enable or disable delivery of the provided event identifier.
+    pub async fn enable_event(&mut self, id: u16, on: bool) -> Result<(), GigeError> {
+        let index = (id / 32) as u64;
+        let bit = 1u32 << (id % 32);
+        let addr = consts::EVENT_NOTIFICATION_BASE + index * consts::EVENT_NOTIFICATION_STRIDE;
+        let current = self.read_mem(addr, 4).await?;
+        if current.len() != 4 {
+            return Err(GigeError::Protocol(
+                "event notification register length mismatch".into(),
+            ));
+        }
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&current);
+        let mut value = u32::from_be_bytes(bytes);
+        if on {
+            value |= bit;
+        } else {
+            value &= !bit;
+        }
+        let new_bytes = value.to_be_bytes();
+        self.write_mem(addr, &new_bytes).await?;
+        debug!(event_id = id, enabled = on, "updated event mask");
         Ok(())
     }
 

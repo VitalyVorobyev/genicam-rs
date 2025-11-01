@@ -14,6 +14,8 @@ bytes = { workspace = true }
 genicp = { version = "0.1.0", path = "../genicp" }
 tokio = { workspace = true, features = ["macros", "net", "time"] }
 fastrand = "2"
+async-trait = { workspace = true }
+socket2 = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
