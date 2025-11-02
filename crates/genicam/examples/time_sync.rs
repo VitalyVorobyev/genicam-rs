@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn find_alias<'a>(nodemap: &'a NodeMap, names: &[&'static str]) -> Option<&'static str> {
+fn find_alias(nodemap: &NodeMap, names: &[&'static str]) -> Option<&'static str> {
     names
         .iter()
         .copied()

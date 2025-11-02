@@ -396,7 +396,7 @@ impl<T: RegisterIo> Camera<T> {
         Ok(())
     }
 
-    fn find_alias<'a>(&'a self, names: &[&'static str]) -> Option<&'static str> {
+    fn find_alias(&self, names: &[&'static str]) -> Option<&'static str> {
         names
             .iter()
             .copied()

@@ -57,6 +57,11 @@ impl TimeSync {
         self.window.len()
     }
 
+    /// Check if samples window is empty
+    pub fn is_empty(&self) -> bool {
+        self.window.is_empty()
+    }
+
     /// Iterator over the samples contained in the sliding window.
     pub fn samples(&self) -> impl Iterator<Item = (u64, Instant)> + '_ {
         self.window.iter().copied()
