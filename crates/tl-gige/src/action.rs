@@ -131,11 +131,7 @@ pub async fn send_action(
     let start = Instant::now();
     let mut buf = vec![0u8; 512];
     let mut seen = HashSet::new();
-    loop {
-        let remaining = match timeout.checked_sub(start.elapsed()) {
-            Some(rem) => rem,
-            None => break,
-        };
+    while let Some(remaining) = timeout.checked_sub(start.elapsed()) {
         if remaining.is_zero() {
             break;
         }

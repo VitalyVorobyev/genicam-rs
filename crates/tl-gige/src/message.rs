@@ -50,7 +50,7 @@ impl EventPacket {
             return Err(io::Error::new(ErrorKind::InvalidData, "packet too large"));
         }
 
-        let mut cursor = &data[..];
+        let mut cursor = data;
         let status = cursor.get_u16();
         let opcode = cursor.get_u16();
         let length = cursor.get_u16() as usize;

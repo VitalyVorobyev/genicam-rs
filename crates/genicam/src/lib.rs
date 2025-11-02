@@ -551,7 +551,7 @@ impl<T: RegisterIo> Camera<T> {
         port: u16,
     ) -> Result<EventStream, GenicamError> {
         let socket = bind_event_socket_internal(IpAddr::V4(local_ip), port).await?;
-        let time_sync = if self.time_sync.len() > 0 {
+        let time_sync = if !self.time_sync.is_empty() {
             Some(Arc::new(self.time_sync.clone()))
         } else {
             None
