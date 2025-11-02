@@ -25,3 +25,37 @@ pub const ACQUISITION_STOP: &str = "AcquisitionStop";
 pub const ACQUISITION_MODE: &str = "AcquisitionMode";
 /// Device temperature float feature name (`DeviceTemperature`).
 pub const DEVICE_TEMPERATURE: &str = "DeviceTemperature";
+
+/// Timestamp latch commands ordered by preference.
+///
+/// Different vendors expose the SFNC timestamp latch using slightly different
+/// identifiers. Consumers should iterate the list and execute the first command
+/// present in the nodemap.
+pub const TS_LATCH_CMDS: &[&str] = &[
+    "GevTimestampControlLatch",
+    "TimestampControlLatch",
+    "TimestampLatch",
+];
+
+/// Timestamp value nodes ordered by preference.
+///
+/// Reading the node immediately after executing the latch command returns the
+/// device tick counter captured at the time of the latch.
+pub const TS_VALUE_NODES: &[&str] = &["GevTimestampValue", "TimestampValue", "TimestampLatchValue"];
+
+/// Timestamp frequency nodes ordered by preference.
+///
+/// Returns the number of device ticks per second when present. Some cameras
+/// omit the SFNC name in favour of a shortened alias, hence the list of
+/// fallbacks.
+pub const TS_FREQ_NODES: &[&str] = &["GevTimestampTickFrequency", "TimestampTickFrequency"];
+
+/// Timestamp reset commands ordered by preference.
+///
+/// Executing any of these commands restarts the device tick counter when the
+/// camera supports it. Not every device exposes a reset capability.
+pub const TS_RESET_CMDS: &[&str] = &[
+    "GevTimestampControlReset",
+    "TimestampControlReset",
+    "TimestampReset",
+];
