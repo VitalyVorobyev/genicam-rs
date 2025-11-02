@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use genapi_xml::{self, XmlError};
-use tl_gige::{self, GVCP_PORT};
+use genicam::gige::GVCP_PORT;
 use tokio::sync::Mutex;
 
 fn format_mac(mac: &[u8; 6]) -> String {
@@ -17,7 +17,7 @@ fn format_mac(mac: &[u8; 6]) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let timeout = Duration::from_millis(500);
-    let mut devices = tl_gige::discover(timeout).await?;
+    let mut devices = genicam::gige::discover(timeout).await?;
     if devices.is_empty() {
         println!("No cameras found.");
         return Ok(());
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = devices.remove(0);
     println!("Connecting to {} ({})", device.ip, format_mac(&device.mac));
     let addr = SocketAddr::new(IpAddr::V4(device.ip), GVCP_PORT);
-    let camera = Arc::new(Mutex::new(tl_gige::GigeDevice::open(addr).await?));
+    let camera = Arc::new(Mutex::new(genicam::gige::GigeDevice::open(addr).await?));
 
     let xml = {
         let cam = Arc::clone(&camera);

@@ -80,22 +80,11 @@ dependencies = [
  "bytes",
  "fastrand",
  "genapi-core",
+ "genapi-xml",
+ "genicp",
+ "pfnc",
  "sfnc",
  "thiserror",
- "tl-gige",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "genicam-rs"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "genapi-core",
- "genapi-xml",
- "genicam",
- "sfnc",
  "tl-gige",
  "tokio",
  "tracing",

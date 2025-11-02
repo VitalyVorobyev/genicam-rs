@@ -1,11 +1,18 @@
 [package]
 name = "tl-gige"
 version = "0.1.0"
+edition = "2021"
 description = "GigE Vision transport: GVCP discovery, GenCP over GVCP, and GVSP"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+license = "MIT"
+repository = "https://github.com/VitalyVorobyev/genicam-rs"
+readme = "README.md"
+keywords = ["genicam", "gige", "vision", "network"]
+categories = ["hardware-support", "network-programming", "science::robotics"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = { workspace = true }

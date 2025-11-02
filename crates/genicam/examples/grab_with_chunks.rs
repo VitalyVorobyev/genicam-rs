@@ -5,14 +5,14 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use bytes::BytesMut;
-use genapi_core::NodeMap;
+use genicam::genapi::NodeMap;
+use genicam::gige::gvsp::{self, GvspPacket};
+use genicam::gige::nic::Iface;
+use genicam::gige::GVCP_PORT;
 use genicam::{
     parse_chunk_bytes, Camera, ChunkConfig, ChunkKind, ChunkValue, Frame, GenicamError,
     GigeRegisterIo, StreamBuilder,
 };
-use tl_gige::gvsp::{self, GvspPacket};
-use tl_gige::nic::Iface;
-use tl_gige::{self, GVCP_PORT};
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let iface = Iface::from_system(iface_name)?;
     let timeout = Duration::from_millis(500);
-    let mut devices = tl_gige::discover(timeout).await?;
+    let mut devices = genicam::gige::discover(timeout).await?;
     if devices.is_empty() {
         println!("No GigE Vision devices discovered.");
         return Ok(());
@@ -80,7 +80,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let control_addr = SocketAddr::new(IpAddr::V4(device.ip), GVCP_PORT);
-    let control = std::sync::Arc::new(Mutex::new(tl_gige::GigeDevice::open(control_addr).await?));
+    let control = std::sync::Arc::new(Mutex::new(
+        genicam::gige::GigeDevice::open(control_addr).await?,
+    ));
     let xml = genapi_xml::fetch_and_load_xml({
         let control = control.clone();
         move |address, length| {
@@ -146,7 +148,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("Chunk mode enabled for selectors: {:?}", enable_selectors);
 
-    let mut stream_device = tl_gige::GigeDevice::open(control_addr).await?;
+    let mut stream_device = genicam::gige::GigeDevice::open(control_addr).await?;
     let stream = StreamBuilder::new(&mut stream_device)
         .iface(iface.clone())
         .build()

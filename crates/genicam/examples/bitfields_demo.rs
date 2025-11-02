@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 
-use genapi_core::{GenApiError, Node, NodeMap, RegisterIo};
+use genicam::genapi::{GenApiError, Node, NodeMap, RegisterIo};
 
 const XML: &str = r#"
 <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">

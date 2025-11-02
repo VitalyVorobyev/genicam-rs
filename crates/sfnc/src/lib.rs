@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! Standard Feature Naming Convention (SFNC) helpers.
 
 #![allow(dead_code)]

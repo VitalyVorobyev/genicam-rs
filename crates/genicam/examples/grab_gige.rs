@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::net::Ipv4Addr;
 
-use tl_gige::nic::Iface;
+use genicam::gige::nic::Iface;
 
 #[derive(Debug, Default, Clone)]
 struct Args {

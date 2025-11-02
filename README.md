@@ -24,7 +24,7 @@ crates/
   genapi-xml/    # GenICam XML loader & schema-lite parser
   genapi-core/   # NodeMap & evaluation
   genicam/       # Public API facade
-examples/        # Small demos (see below)
+crates/genicam/examples/  # Small demos (see below)
 
 ## Prereqs
 
@@ -49,48 +49,48 @@ cargo doc --workspace --no-deps
 
 ## Run examples
 
-Examples currently live at the workspace root. Run them via the appropriate crate target and adjust paths as needed.
+Examples live under the `genicam` crate. Run them via the facade crate target:
 
 - **Discover devices (GVCP broadcast):**
 
   ```bash
-  cargo run -p tl-gige --example list_cameras --features ""
+  cargo run -p genicam --example list_cameras
   ```
 
 - **Fetch XML & print minimal metadata (control path):**
 
   ```bash
-  cargo run -p tl-gige --example get_set_feature --features ""
+  cargo run -p genicam --example get_set_feature
   ```
 
 - **Grab frames (GVSP):**
 
   ```bash
-  cargo run -p tl-gige --example grab_gige --features ""
+  cargo run -p genicam --example grab_gige
   ```
 
 - **Events:**
 
   ```bash
-  cargo run -p tl-gige --example events_gige --features ""
+  cargo run -p genicam --example events_gige
   ```
 
 - **Action command (broadcast):**
 
   ```bash
-  cargo run -p tl-gige --example action_trigger --features ""
+  cargo run -p genicam --example action_trigger
   ```
 
 - **Timestamp mapping:**
 
   ```bash
-  cargo run -p tl-gige --example time_sync --features ""
+  cargo run -p genicam --example time_sync
   ```
 
 - **Selectors demo:**
 
   ```bash
-  cargo run -p genicam --example selectors_demo --features ""
+  cargo run -p genicam --example selectors_demo
   ```
 
 ## Troubleshooting

@@ -1,0 +1,9 @@
+[book]
+title = "genicam-rs"
+authors = ["Vitaly Vorobyev"]
+description = "Documentation for the genicam-rs workspace"
+multilingual = false
+src = "src"
+
+[output.html]
+no-section-label = true

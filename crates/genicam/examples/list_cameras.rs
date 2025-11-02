@@ -36,9 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (timeout, iface) = parse_args();
     info!(?timeout, iface = iface.as_deref(), "starting discovery");
     let devices = if let Some(name) = iface.as_deref() {
-        tl_gige::discover_on_interface(timeout, name).await?
+        genicam::gige::discover_on_interface(timeout, name).await?
     } else {
-        tl_gige::discover(timeout).await?
+        genicam::gige::discover(timeout).await?
     };
 
     if devices.is_empty() {

@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! Load and pre-parse GenICam XML using quick-xml.
 
 use std::future::Future;
