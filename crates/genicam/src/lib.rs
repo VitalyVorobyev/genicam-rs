@@ -90,7 +90,7 @@ use crate::events::{
     configure_message_channel_raw as configure_message_channel_fallback,
     enable_event_raw as enable_event_fallback, parse_event_id,
 };
-use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo};
+use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo, SkOutput};
 use gige::GigeDevice;
 use thiserror::Error;
 use tokio::time::sleep;
@@ -187,6 +187,12 @@ impl<T: RegisterIo> Camera<T> {
                 .get_enum(name, &self.transport)
                 .map_err(Into::into),
             Some(Node::Boolean(_)) => Ok(self.nodemap.get_bool(name, &self.transport)?.to_string()),
+            Some(Node::SwissKnife(sk)) => match sk.output {
+                SkOutput::Float => Ok(self.nodemap.get_float(name, &self.transport)?.to_string()),
+                SkOutput::Integer => {
+                    Ok(self.nodemap.get_integer(name, &self.transport)?.to_string())
+                }
+            },
             Some(Node::Command(_)) => {
                 Err(GenicamError::GenApi(GenApiError::Type(name.to_string())))
             }
@@ -226,6 +232,7 @@ impl<T: RegisterIo> Camera<T> {
                     .set_bool(name, parsed, &self.transport)
                     .map_err(Into::into)
             }
+            Some(Node::SwissKnife(_)) => Err(GenApiError::Type(name.to_string()).into()),
             Some(Node::Command(_)) => self
                 .nodemap
                 .exec_command(name, &self.transport)
