@@ -648,8 +648,8 @@ impl BitfieldBuilder {
                         "node {node} mask must be non-zero"
                     )));
                 }
-                let offset = mask.trailing_zeros() as u32;
-                let length = mask.count_ones() as u32;
+                let offset = mask.trailing_zeros();
+                let length = mask.count_ones();
                 (offset, length)
             }
         };
@@ -677,7 +677,7 @@ impl BitfieldBuilder {
             )));
         }
 
-        if offset_lsb + bit_length > total_bits as u32 {
+        if offset_lsb + bit_length > total_bits {
             return Err(XmlError::Invalid(format!(
                 "node {node} bitfield exceeds register width"
             )));
@@ -685,7 +685,7 @@ impl BitfieldBuilder {
 
         let offset = match byte_order {
             ByteOrder::Little => offset_lsb,
-            ByteOrder::Big => total_bits as u32 - bit_length - offset_lsb,
+            ByteOrder::Big => total_bits - bit_length - offset_lsb,
         };
 
         Ok(Some(BitField {

@@ -1,0 +1,59 @@
+name: Publish Rust Docs
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ '*' ]        # also publish on tag push
+  workflow_dispatch:     # allow manual trigger
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write        # required for OIDC deploy authentication
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-docs
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build documentation
+        env:
+          RUSTFLAGS: ""
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo doc --workspace --all-features --no-deps
+          echo "<meta http-equiv=\"refresh\" content=\"0; url=$(basename $(pwd))/index.html\">" > target/doc/index.html
+
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build-docs
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
