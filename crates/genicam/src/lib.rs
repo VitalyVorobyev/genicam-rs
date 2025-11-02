@@ -49,17 +49,22 @@ pub mod stream;
 pub mod time;
 
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo};
 use gige::GigeDevice;
 use thiserror::Error;
+use tokio::time::sleep;
+use tracing::{debug, info};
 
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
 pub use frame::Frame;
 pub use gige::action::{AckSummary, ActionParams};
 pub use stream::{Stream, StreamBuilder};
-pub use time::TimeMapper;
+pub use time::TimeSync;
+
+use crate::time::TimeSync as TimeSyncModel;
 
 /// Error type produced by the high level GenICam facade.
 #[derive(Debug, Error)]
@@ -93,12 +98,17 @@ impl GenicamError {
 pub struct Camera<T: RegisterIo> {
     transport: T,
     nodemap: NodeMap,
+    time_sync: TimeSyncModel,
 }
 
 impl<T: RegisterIo> Camera<T> {
     /// Create a new camera wrapper from a transport and a nodemap.
     pub fn new(transport: T, nodemap: NodeMap) -> Self {
-        Self { transport, nodemap }
+        Self {
+            transport,
+            nodemap,
+            time_sync: TimeSyncModel::new(64),
+        }
     }
 
     /// Return a reference to the underlying transport.
@@ -208,6 +218,131 @@ impl<T: RegisterIo> Camera<T> {
         }
     }
 
+    /// Capture device/host timestamp pairs and fit a mapping model.
+    pub async fn time_calibrate(
+        &mut self,
+        samples: usize,
+        interval_ms: u64,
+    ) -> Result<(), GenicamError> {
+        if samples < 2 {
+            return Err(GenicamError::transport(
+                "time calibration requires at least two samples",
+            ));
+        }
+
+        let cap = samples.max(self.time_sync.capacity());
+        self.time_sync = TimeSyncModel::new(cap);
+
+        let latch_cmd = self.find_alias(sfnc::TS_LATCH_CMDS);
+        let value_node = self
+            .find_alias(sfnc::TS_VALUE_NODES)
+            .ok_or_else(|| GenApiError::NodeNotFound("TimestampValue".into()))?;
+
+        let mut freq_hz = if let Some(name) = self.find_alias(sfnc::TS_FREQ_NODES) {
+            match self.nodemap.get_integer(name, &self.transport) {
+                Ok(value) if value > 0 => Some(value as f64),
+                Ok(_) => None,
+                Err(err) => {
+                    debug!(node = name, error = %err, "failed to read timestamp frequency");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        info!(samples, interval_ms, "starting time calibration");
+        let mut first_sample: Option<(u64, Instant)> = None;
+        let mut last_sample: Option<(u64, Instant)> = None;
+
+        for idx in 0..samples {
+            if let Some(cmd) = latch_cmd {
+                self.nodemap
+                    .exec_command(cmd, &self.transport)
+                    .map_err(GenicamError::from)?;
+            }
+
+            let raw_ticks = self
+                .nodemap
+                .get_integer(value_node, &self.transport)
+                .map_err(GenicamError::from)?;
+            let dev_ticks = u64::try_from(raw_ticks).map_err(|_| {
+                GenicamError::transport("timestamp value is negative; unsupported camera")
+            })?;
+            let host = Instant::now();
+            self.time_sync.update(dev_ticks, host);
+            if idx == 0 {
+                first_sample = Some((dev_ticks, host));
+            }
+            last_sample = Some((dev_ticks, host));
+            if let Some(origin) = self.time_sync.origin_instant() {
+                let ns = host.duration_since(origin).as_nanos();
+                debug!(
+                    sample = idx,
+                    ticks = dev_ticks,
+                    host_ns = ns,
+                    "timestamp sample"
+                );
+            } else {
+                debug!(sample = idx, ticks = dev_ticks, "timestamp sample");
+            }
+
+            if interval_ms > 0 && idx + 1 < samples {
+                sleep(Duration::from_millis(interval_ms)).await;
+            }
+        }
+
+        if freq_hz.is_none() {
+            if let (Some((first_ticks, first_host)), Some((last_ticks, last_host))) =
+                (first_sample, last_sample)
+            {
+                if last_ticks > first_ticks {
+                    if let Some(delta) = last_host.checked_duration_since(first_host) {
+                        let secs = delta.as_secs_f64();
+                        if secs > 0.0 {
+                            freq_hz = Some((last_ticks - first_ticks) as f64 / secs);
+                        }
+                    }
+                }
+            }
+        }
+
+        let (a, b) = self
+            .time_sync
+            .fit(freq_hz)
+            .ok_or_else(|| GenicamError::transport("insufficient samples for timestamp fit"))?;
+
+        if let Some(freq) = freq_hz {
+            info!(freq_hz = freq, a, b, "time calibration complete");
+        } else {
+            info!(a, b, "time calibration complete");
+        }
+
+        Ok(())
+    }
+
+    /// Map device tick counters to host time using the fitted model.
+    pub fn map_dev_ts(&self, dev_ticks: u64) -> SystemTime {
+        self.time_sync.to_host_time(dev_ticks)
+    }
+
+    /// Inspect the timestamp synchroniser state.
+    pub fn time_sync(&self) -> &TimeSync {
+        &self.time_sync
+    }
+
+    /// Reset the device timestamp counter when supported by the camera.
+    pub fn time_reset(&mut self) -> Result<(), GenicamError> {
+        if let Some(cmd) = self.find_alias(sfnc::TS_RESET_CMDS) {
+            self.nodemap
+                .exec_command(cmd, &self.transport)
+                .map_err(GenicamError::from)?;
+            self.time_sync = TimeSyncModel::new(self.time_sync.capacity());
+            info!(command = cmd, "timestamp counter reset");
+        }
+        Ok(())
+    }
+
     /// Trigger acquisition start via the SFNC command feature.
     pub fn acquisition_start(&mut self) -> Result<(), GenicamError> {
         self.nodemap
@@ -259,6 +394,13 @@ impl<T: RegisterIo> Camera<T> {
             return Err(GenicamError::MissingChunkFeature(name.to_string()));
         }
         Ok(())
+    }
+
+    fn find_alias<'a>(&'a self, names: &[&'static str]) -> Option<&'static str> {
+        names
+            .iter()
+            .copied()
+            .find(|name| self.nodemap.node(name).is_some())
     }
 }
 

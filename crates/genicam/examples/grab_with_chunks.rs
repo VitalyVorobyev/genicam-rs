@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::BytesMut;
 use genicam::genapi::NodeMap;
@@ -204,6 +204,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         HashMap::new()
                     }
                 };
+                let ts_dev = chunk_map.get(&ChunkKind::Timestamp).and_then(|value| {
+                    if let ChunkValue::U64(ts) = value {
+                        Some(*ts)
+                    } else {
+                        None
+                    }
+                });
+                let ts_host = ts_dev.map(|ticks| camera.map_dev_ts(ticks));
                 let frame = Frame {
                     payload: active.payload.freeze(),
                     chunks: if chunk_map.is_empty() {
@@ -211,6 +219,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     } else {
                         Some(chunk_map)
                     },
+                    ts_dev,
+                    ts_host,
                 };
                 frame_index += 1;
                 print_frame_summary(frame_index, &frame);
@@ -226,9 +236,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn print_frame_summary(index: usize, frame: &Frame) {
     println!("Frame #{index}: {} bytes payload", frame.payload.len());
-    match frame.chunk(ChunkKind::Timestamp) {
-        Some(ChunkValue::U64(ts)) => println!("  Timestamp: {ts}"),
-        _ => println!("  Timestamp: <not available>"),
+    match frame.ts_dev {
+        Some(ts) => println!("  Timestamp (device): {ts}"),
+        None => println!("  Timestamp (device): <not available>"),
+    }
+    match frame.host_time() {
+        Some(ts) => match ts.duration_since(UNIX_EPOCH) {
+            Ok(duration) => println!(
+                "  Timestamp (host): {}.{:09} s",
+                duration.as_secs(),
+                duration.subsec_nanos()
+            ),
+            Err(_) => println!("  Timestamp (host): <before UNIX_EPOCH>"),
+        },
+        None => println!("  Timestamp (host): <not available>"),
     }
     match frame.chunk(ChunkKind::ExposureTime) {
         Some(ChunkValue::F64(exposure)) => println!("  ExposureTime: {exposure:.3} us"),
