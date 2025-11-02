@@ -213,7 +213,7 @@ pub struct PacketBitmap {
 impl PacketBitmap {
     /// Create a bitmap with the given packet capacity.
     pub fn new(total: usize) -> Self {
-        let words = (total + 63) / 64;
+        let words = total.div_ceil(64);
         Self {
             words: vec![0; words],
             received: 0,
