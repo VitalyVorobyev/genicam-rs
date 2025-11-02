@@ -2134,7 +2134,7 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
     }
     let mut address = None;
     let mut length = None;
-    for part in trimmed.split(|c| c == ';' || c == ',') {
+    for part in trimmed.split([';', ',']) {
         let token = part.trim();
         if token.is_empty() {
             continue;
