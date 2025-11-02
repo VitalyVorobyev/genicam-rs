@@ -140,6 +140,41 @@ pub struct BitField {
     pub byte_order: ByteOrder,
 }
 
+/// Output type of a SwissKnife expression node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SkOutput {
+    /// Integer output. The runtime rounds the computed value to the nearest
+    /// integer with ties going towards zero.
+    Integer,
+    /// Floating point output. The runtime exposes the value as a `f64` without
+    /// any additional processing.
+    #[default]
+    Float,
+}
+
+impl SkOutput {
+    fn parse(tag: &str) -> Option<Self> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "integer" => Some(SkOutput::Integer),
+            "float" => Some(SkOutput::Float),
+            _ => None,
+        }
+    }
+}
+
+/// Declaration of a SwissKnife node consisting of an arithmetic expression.
+#[derive(Debug, Clone)]
+pub struct SwissKnifeDecl {
+    /// Feature name exposed to clients.
+    pub name: String,
+    /// Raw expression string to be parsed by the runtime.
+    pub expr: String,
+    /// Mapping of variables used in the expression to provider node names.
+    pub variables: Vec<(String, String)>,
+    /// Desired output type (integer or float).
+    pub output: SkOutput,
+}
+
 /// Declaration of a node extracted from the GenICam XML description.
 #[derive(Debug, Clone)]
 pub enum NodeDecl {
@@ -211,6 +246,8 @@ pub enum NodeDecl {
     },
     /// Category used to organise features.
     Category { name: String, children: Vec<String> },
+    /// Computed value backed by an arithmetic expression referencing other nodes.
+    SwissKnife(SwissKnifeDecl),
 }
 
 /// Full XML model describing the GenICam schema version and all declared nodes.
@@ -333,6 +370,10 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                 }
                 b"Category" => {
                     let node = parse_category(&mut reader, e.clone())?;
+                    nodes.push(node);
+                }
+                b"SwissKnife" => {
+                    let node = parse_swissknife(&mut reader, e.clone())?;
                     nodes.push(node);
                 }
                 _ => {
@@ -1829,6 +1870,113 @@ fn parse_category_empty(start: &BytesStart<'_>) -> Result<NodeDecl, XmlError> {
     })
 }
 
+fn parse_swissknife(
+    reader: &mut Reader<&[u8]>,
+    start: BytesStart<'_>,
+) -> Result<NodeDecl, XmlError> {
+    let name = attribute_value_required(&start, b"Name")?;
+    let mut expr: Option<String> = None;
+    let mut variables: Vec<(String, String)> = Vec::new();
+    let mut output = SkOutput::Float;
+    let node_name = start.name().as_ref().to_vec();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"Expression" => {
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        return Err(XmlError::Invalid(format!(
+                            "SwissKnife node {name} has empty <Expression>"
+                        )));
+                    }
+                    expr = Some(trimmed.to_string());
+                }
+                b"pVariable" => {
+                    let var_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let target = text.trim();
+                    if target.is_empty() {
+                        return Err(XmlError::Invalid(format!(
+                            "SwissKnife node {name} has empty <pVariable>"
+                        )));
+                    }
+                    variables.push((var_name, target.to_string()));
+                }
+                b"Output" => {
+                    let text = read_text_start(reader, e)?;
+                    if let Some(kind) = SkOutput::parse(&text) {
+                        output = kind;
+                    }
+                }
+                _ => skip_element(reader, e.name().as_ref())?,
+            },
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"pVariable" => {
+                    let var_name = attribute_value_required(e, b"Name")?;
+                    if let Some(target) = attribute_value(e, TAG_VALUE)? {
+                        if target.is_empty() {
+                            return Err(XmlError::Invalid(format!(
+                                "SwissKnife node {name} has empty <pVariable/>"
+                            )));
+                        }
+                        variables.push((var_name, target));
+                    } else {
+                        return Err(XmlError::Invalid(format!(
+                            "SwissKnife node {name} missing variable target"
+                        )));
+                    }
+                }
+                b"Expression" => {
+                    let text = attribute_value_required(e, TAG_VALUE)?;
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        return Err(XmlError::Invalid(format!(
+                            "SwissKnife node {name} has empty <Expression/>"
+                        )));
+                    }
+                    expr = Some(trimmed.to_string());
+                }
+                b"Output" => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        if let Some(kind) = SkOutput::parse(&value) {
+                            output = kind;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == node_name.as_slice() => break,
+            Ok(Event::Eof) => {
+                return Err(XmlError::Invalid(format!(
+                    "unterminated SwissKnife node {name}"
+                )))
+            }
+            Err(err) => return Err(XmlError::Xml(err.to_string())),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    let expr = expr.ok_or_else(|| {
+        XmlError::Invalid(format!("SwissKnife node {name} is missing <Expression>"))
+    })?;
+    if variables.is_empty() {
+        return Err(XmlError::Invalid(format!(
+            "SwissKnife node {name} must declare at least one <pVariable>"
+        )));
+    }
+
+    Ok(NodeDecl::SwissKnife(SwissKnifeDecl {
+        name,
+        expr,
+        variables,
+        output,
+    }))
+}
+
 fn parse_enum_entry(
     reader: &mut Reader<&[u8]>,
     start: BytesStart<'_>,
@@ -2312,6 +2460,57 @@ mod tests {
             }
             other => panic!("unexpected node: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_swissknife_node() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="GainRaw">
+                    <Address>0x3000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>1000</Max>
+                </Integer>
+                <Float Name="Offset">
+                    <Address>0x3008</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>-100.0</Min>
+                    <Max>100.0</Max>
+                </Float>
+                <SwissKnife Name="ComputedGain">
+                    <Expression>(GainRaw * 0.5) + Offset</Expression>
+                    <pVariable Name="GainRaw">GainRaw</pVariable>
+                    <pVariable Name="Offset">Offset</pVariable>
+                    <Output>Float</Output>
+                </SwissKnife>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse swissknife xml");
+        assert_eq!(model.nodes.len(), 3);
+        let swiss = model
+            .nodes
+            .iter()
+            .find_map(|decl| match decl {
+                NodeDecl::SwissKnife(node) => Some(node),
+                _ => None,
+            })
+            .expect("swissknife present");
+        assert_eq!(swiss.name, "ComputedGain");
+        assert_eq!(swiss.expr, "(GainRaw * 0.5) + Offset");
+        assert_eq!(swiss.output, SkOutput::Float);
+        assert_eq!(swiss.variables.len(), 2);
+        assert_eq!(
+            swiss.variables[0],
+            ("GainRaw".to_string(), "GainRaw".to_string())
+        );
+        assert_eq!(
+            swiss.variables[1],
+            ("Offset".to_string(), "Offset".to_string())
+        );
     }
 
     #[test]
