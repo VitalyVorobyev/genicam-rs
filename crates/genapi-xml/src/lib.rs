@@ -19,6 +19,20 @@ const TAG_VALUE: &[u8] = b"Value";
 const TAG_P_VALUE: &[u8] = b"pValue";
 /// XML element specifying a user friendly label for an enum entry.
 const TAG_DISPLAY_NAME: &[u8] = b"DisplayName";
+/// XML element describing the least significant bit of a bitfield.
+const TAG_LSB: &[u8] = b"Lsb";
+/// XML element describing the most significant bit of a bitfield.
+const TAG_MSB: &[u8] = b"Msb";
+/// XML element describing the starting bit index of a bitfield.
+const TAG_BIT: &[u8] = b"Bit";
+/// XML element describing a bitmask for a bitfield.
+const TAG_MASK: &[u8] = b"Mask";
+/// XML element providing the register byte order (common spelling).
+const TAG_ENDIANNESS: &[u8] = b"Endianness";
+/// XML element providing the register byte order (alternate spelling).
+const TAG_ENDIANESS: &[u8] = b"Endianess";
+/// XML element providing the register byte order (PFNC style).
+const TAG_BYTE_ORDER: &[u8] = b"ByteOrder";
 
 /// Source of the numeric value backing an enumeration entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +109,36 @@ pub enum Addressing {
     },
 }
 
+/// Byte order used to interpret a multi-byte register payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// The first byte contains the least significant bits.
+    Little,
+    /// The first byte contains the most significant bits.
+    Big,
+}
+
+impl ByteOrder {
+    fn parse(tag: &str) -> Option<Self> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "littleendian" => Some(ByteOrder::Little),
+            "bigendian" => Some(ByteOrder::Big),
+            _ => None,
+        }
+    }
+}
+
+/// Bitfield metadata describing a sub-range of a register payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitField {
+    /// Starting bit offset within the interpreted register value.
+    pub bit_offset: u16,
+    /// Number of bits covered by the field.
+    pub bit_length: u16,
+    /// Byte order used when interpreting the enclosing register.
+    pub byte_order: ByteOrder,
+}
+
 /// Declaration of a node extracted from the GenICam XML description.
 #[derive(Debug, Clone)]
 pub enum NodeDecl {
@@ -104,6 +148,8 @@ pub enum NodeDecl {
         name: String,
         /// Addressing metadata.
         addressing: Addressing,
+        /// Length in bytes of the register payload.
+        len: u32,
         /// Access privileges.
         access: AccessMode,
         /// Minimum allowed user value.
@@ -114,6 +160,8 @@ pub enum NodeDecl {
         inc: Option<i64>,
         /// Engineering unit (if provided).
         unit: Option<String>,
+        /// Optional bitfield metadata describing the active bit range.
+        bitfield: Option<BitField>,
         /// Selector nodes referencing this feature.
         selectors: Vec<String>,
         /// Selector gating rules in the form (selector name, allowed values).
@@ -148,7 +196,9 @@ pub enum NodeDecl {
     Boolean {
         name: String,
         addressing: Addressing,
+        len: u32,
         access: AccessMode,
+        bitfield: BitField,
         selectors: Vec<String>,
         selected_if: Vec<(String, Vec<String>)>,
     },
@@ -450,6 +500,216 @@ impl AddressingBuilder {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BitfieldSource {
+    LsbMsb,
+    BitLength,
+    Mask,
+}
+
+#[derive(Debug, Default)]
+struct BitfieldBuilder {
+    lsb: Option<u32>,
+    msb: Option<u32>,
+    bit: Option<u32>,
+    bit_length: Option<u32>,
+    mask: Option<u64>,
+    byte_order: Option<ByteOrder>,
+    source: Option<BitfieldSource>,
+}
+
+impl BitfieldBuilder {
+    fn note_lsb(&mut self, value: u32) {
+        if self
+            .source
+            .map(|source| source != BitfieldSource::LsbMsb)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.source.get_or_insert(BitfieldSource::LsbMsb);
+        self.lsb = Some(value);
+    }
+
+    fn note_msb(&mut self, value: u32) {
+        if self
+            .source
+            .map(|source| source != BitfieldSource::LsbMsb)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.source.get_or_insert(BitfieldSource::LsbMsb);
+        self.msb = Some(value);
+    }
+
+    fn note_bit(&mut self, value: u32) {
+        if self
+            .source
+            .map(|source| source != BitfieldSource::BitLength)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.source.get_or_insert(BitfieldSource::BitLength);
+        self.bit = Some(value);
+    }
+
+    fn note_bit_length(&mut self, value: u32) {
+        if self
+            .source
+            .map(|source| source != BitfieldSource::BitLength)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.source.get_or_insert(BitfieldSource::BitLength);
+        self.bit_length = Some(value);
+    }
+
+    fn note_mask(&mut self, mask: u64) {
+        if self.source.is_some() {
+            return;
+        }
+        self.source = Some(BitfieldSource::Mask);
+        self.mask = Some(mask);
+    }
+
+    fn note_byte_order(&mut self, order: ByteOrder) {
+        self.byte_order = Some(order);
+    }
+
+    fn finish(self, node: &str, lengths: &[u32]) -> Result<Option<BitField>, XmlError> {
+        let source = match self.source {
+            Some(source) => source,
+            None => return Ok(None),
+        };
+        let byte_order = self.byte_order.unwrap_or(ByteOrder::Little);
+        if lengths.is_empty() {
+            return Err(XmlError::Invalid(format!(
+                "node {node} is missing register length information"
+            )));
+        }
+        let mut unique_len = None;
+        for len in lengths {
+            if *len == 0 {
+                return Err(XmlError::Invalid(format!(
+                    "node {node} declares zero-length register"
+                )));
+            }
+            if let Some(existing) = unique_len {
+                if existing != *len {
+                    return Err(XmlError::Invalid(format!(
+                        "node {node} uses inconsistent register lengths"
+                    )));
+                }
+            } else {
+                unique_len = Some(*len);
+            }
+        }
+        let len_bytes = unique_len.unwrap_or(0);
+        let total_bits = len_bytes
+            .checked_mul(8)
+            .ok_or_else(|| XmlError::Invalid(format!("node {node} register length overflow")))?;
+
+        let (offset_lsb, bit_length) = match source {
+            BitfieldSource::LsbMsb => {
+                let lsb = self
+                    .lsb
+                    .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Lsb>")))?;
+                let msb = self
+                    .msb
+                    .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Msb>")))?;
+                let lower = lsb.min(msb);
+                let upper = lsb.max(msb);
+                let length = upper
+                    .checked_sub(lower)
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| {
+                        XmlError::Invalid(format!(
+                            "node {node} has invalid bit range <Lsb>={lsb}, <Msb>={msb}"
+                        ))
+                    })?;
+                (lower, length)
+            }
+            BitfieldSource::BitLength => {
+                let bit = self
+                    .bit
+                    .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Bit>")))?;
+                let length = self.bit_length.unwrap_or(1);
+                (bit, length)
+            }
+            BitfieldSource::Mask => {
+                let mask = self.mask.ok_or_else(|| {
+                    XmlError::Invalid(format!("node {node} is missing <Mask> value"))
+                })?;
+                if mask == 0 {
+                    return Err(XmlError::Invalid(format!(
+                        "node {node} mask must be non-zero"
+                    )));
+                }
+                let offset = mask.trailing_zeros();
+                let length = mask.count_ones();
+                (offset, length)
+            }
+        };
+
+        if bit_length == 0 {
+            return Err(XmlError::Invalid(format!(
+                "node {node} bitfield must have positive length"
+            )));
+        }
+        if bit_length > 64 {
+            return Err(XmlError::Invalid(format!(
+                "node {node} bitfield length {bit_length} exceeds 64 bits"
+            )));
+        }
+
+        if offset_lsb > u16::MAX as u32 {
+            return Err(XmlError::Invalid(format!(
+                "node {node} bit offset {offset_lsb} exceeds u16 range"
+            )));
+        }
+
+        if bit_length > u16::MAX as u32 {
+            return Err(XmlError::Invalid(format!(
+                "node {node} bit length {bit_length} exceeds u16 range"
+            )));
+        }
+
+        if offset_lsb + bit_length > total_bits {
+            return Err(XmlError::Invalid(format!(
+                "node {node} bitfield exceeds register width"
+            )));
+        }
+
+        let offset = match byte_order {
+            ByteOrder::Little => offset_lsb,
+            ByteOrder::Big => total_bits - bit_length - offset_lsb,
+        };
+
+        Ok(Some(BitField {
+            bit_offset: u16::try_from(offset).map_err(|_| {
+                XmlError::Invalid(format!("node {node} bit offset {offset} exceeds u16 range"))
+            })?,
+            bit_length: u16::try_from(bit_length).map_err(|_| {
+                XmlError::Invalid(format!(
+                    "node {node} bit length {bit_length} exceeds u16 range"
+                ))
+            })?,
+            byte_order,
+        }))
+    }
+}
+
+fn addressing_lengths(addressing: &Addressing) -> Vec<u32> {
+    match addressing {
+        Addressing::Fixed { len, .. } => vec![*len],
+        Addressing::Indirect { len, .. } => vec![*len],
+        Addressing::BySelector { map, .. } => map.iter().map(|(_, (_, len))| *len).collect(),
+    }
+}
+
 fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<NodeDecl, XmlError> {
     let name = attribute_value_required(&start, b"Name")?;
     let mut addressing = AddressingBuilder::default();
@@ -472,6 +732,8 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let mut last_selector: Option<usize> = None;
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
+    let mut bitfield = BitfieldBuilder::default();
+    let mut pending_bit_length = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -490,10 +752,24 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
-                    let len = u32::try_from(value).map_err(|_| {
-                        XmlError::Invalid(format!("length out of range for node {name}"))
-                    })?;
-                    addressing.apply_length(len);
+                    let mut handled = false;
+                    if pending_bit_length {
+                        if let Ok(bit_len) = u32::try_from(value) {
+                            bitfield.note_bit_length(bit_len);
+                            pending_bit_length = false;
+                            handled = true;
+                        } else {
+                            return Err(XmlError::Invalid(format!(
+                                "bitfield length out of range for node {name}"
+                            )));
+                        }
+                    }
+                    if !handled {
+                        let len = u32::try_from(value).map_err(|_| {
+                            XmlError::Invalid(format!("length out of range for node {name}"))
+                        })?;
+                        addressing.apply_length(len);
+                    }
                 }
                 b"AccessMode" => {
                     let text = read_text_start(reader, e)?;
@@ -516,6 +792,43 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         unit = Some(trimmed.to_string());
+                    }
+                }
+                TAG_LSB => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let lsb = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Lsb> out of range for node {name}"))
+                    })?;
+                    bitfield.note_lsb(lsb);
+                }
+                TAG_MSB => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let msb = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Msb> out of range for node {name}"))
+                    })?;
+                    bitfield.note_msb(msb);
+                }
+                TAG_BIT => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let bit = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Bit> out of range for node {name}"))
+                    })?;
+                    bitfield.note_bit(bit);
+                    pending_bit_length = true;
+                }
+                TAG_MASK => {
+                    let text = read_text_start(reader, e)?;
+                    let mask = parse_u64(&text)?;
+                    bitfield.note_mask(mask);
+                    pending_bit_length = false;
+                }
+                TAG_ENDIANNESS | TAG_ENDIANESS | TAG_BYTE_ORDER => {
+                    let text = read_text_start(reader, e)?;
+                    if let Some(order) = ByteOrder::parse(&text) {
+                        bitfield.note_byte_order(order);
                     }
                 }
                 b"pSelected" => {
@@ -591,6 +904,48 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                         }
                     }
                 }
+                TAG_LSB => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let lsb = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Lsb> out of range for node {name}"))
+                        })?;
+                        bitfield.note_lsb(lsb);
+                    }
+                }
+                TAG_MSB => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let msb = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Msb> out of range for node {name}"))
+                        })?;
+                        bitfield.note_msb(msb);
+                    }
+                }
+                TAG_BIT => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let bit = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Bit> out of range for node {name}"))
+                        })?;
+                        bitfield.note_bit(bit);
+                        pending_bit_length = true;
+                    }
+                }
+                TAG_MASK => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let mask = parse_u64(&value)?;
+                        bitfield.note_mask(mask);
+                        pending_bit_length = false;
+                    }
+                }
+                TAG_ENDIANNESS | TAG_ENDIANESS | TAG_BYTE_ORDER => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        if let Some(order) = ByteOrder::parse(&value) {
+                            bitfield.note_byte_order(order);
+                        }
+                    }
+                }
                 b"Selected" => {
                     if let Some(val) = attribute_value(e, b"Value")? {
                         addressing.push_selected_value(val.clone());
@@ -639,15 +994,23 @@ fn parse_integer(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
         max.ok_or_else(|| XmlError::Invalid(format!("Integer node {name} is missing <Max>")))?;
 
     let addressing = addressing.finalize(&name, Some(4))?;
+    let lengths = addressing_lengths(&addressing);
+    let len = lengths
+        .first()
+        .copied()
+        .ok_or_else(|| XmlError::Invalid(format!("node {name} is missing <Length>")))?;
+    let bitfield = bitfield.finish(&name, &lengths)?;
 
     Ok(NodeDecl::Integer {
         name,
         addressing,
+        len,
         access,
         min,
         max,
         inc,
         unit,
+        bitfield,
         selectors,
         selected_if,
     })
@@ -1083,6 +1446,8 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     let mut last_selector = None;
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
+    let mut bitfield = BitfieldBuilder::default();
+    let mut pending_bit_length = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1101,14 +1466,65 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                 b"Length" => {
                     let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
-                    let len = u32::try_from(value).map_err(|_| {
-                        XmlError::Invalid(format!("length out of range for node {name}"))
-                    })?;
-                    addressing.apply_length(len);
+                    let mut handled = false;
+                    if pending_bit_length {
+                        if let Ok(bit_len) = u32::try_from(value) {
+                            bitfield.note_bit_length(bit_len);
+                            pending_bit_length = false;
+                            handled = true;
+                        } else {
+                            return Err(XmlError::Invalid(format!(
+                                "bitfield length out of range for node {name}"
+                            )));
+                        }
+                    }
+                    if !handled {
+                        let len = u32::try_from(value).map_err(|_| {
+                            XmlError::Invalid(format!("length out of range for node {name}"))
+                        })?;
+                        addressing.apply_length(len);
+                    }
                 }
                 b"AccessMode" => {
                     let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
+                }
+                TAG_LSB => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let lsb = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Lsb> out of range for node {name}"))
+                    })?;
+                    bitfield.note_lsb(lsb);
+                }
+                TAG_MSB => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let msb = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Msb> out of range for node {name}"))
+                    })?;
+                    bitfield.note_msb(msb);
+                }
+                TAG_BIT => {
+                    let text = read_text_start(reader, e)?;
+                    let value = parse_u64(&text)?;
+                    let bit = u32::try_from(value).map_err(|_| {
+                        XmlError::Invalid(format!("<Bit> out of range for node {name}"))
+                    })?;
+                    bitfield.note_bit(bit);
+                    pending_bit_length = true;
+                }
+                TAG_MASK => {
+                    let text = read_text_start(reader, e)?;
+                    let mask = parse_u64(&text)?;
+                    bitfield.note_mask(mask);
+                    pending_bit_length = false;
+                }
+                TAG_ENDIANNESS | TAG_ENDIANESS | TAG_BYTE_ORDER => {
+                    let text = read_text_start(reader, e)?;
+                    if let Some(order) = ByteOrder::parse(&text) {
+                        bitfield.note_byte_order(order);
+                    }
                 }
                 b"pSelected" => {
                     let text = read_text_start(reader, e)?;
@@ -1183,6 +1599,48 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
                         }
                     }
                 }
+                TAG_LSB => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let lsb = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Lsb> out of range for node {name}"))
+                        })?;
+                        bitfield.note_lsb(lsb);
+                    }
+                }
+                TAG_MSB => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let msb = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Msb> out of range for node {name}"))
+                        })?;
+                        bitfield.note_msb(msb);
+                    }
+                }
+                TAG_BIT => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let parsed = parse_u64(&value)?;
+                        let bit = u32::try_from(parsed).map_err(|_| {
+                            XmlError::Invalid(format!("<Bit> out of range for node {name}"))
+                        })?;
+                        bitfield.note_bit(bit);
+                        pending_bit_length = true;
+                    }
+                }
+                TAG_MASK => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        let mask = parse_u64(&value)?;
+                        bitfield.note_mask(mask);
+                        pending_bit_length = false;
+                    }
+                }
+                TAG_ENDIANNESS | TAG_ENDIANESS | TAG_BYTE_ORDER => {
+                    if let Some(value) = attribute_value(e, TAG_VALUE)? {
+                        if let Some(order) = ByteOrder::parse(&value) {
+                            bitfield.note_byte_order(order);
+                        }
+                    }
+                }
                 b"Selected" => {
                     if let Some(val) = attribute_value(e, b"Value")? {
                         addressing.push_selected_value(val.clone());
@@ -1226,11 +1684,31 @@ fn parse_boolean(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<No
     }
 
     let addressing = addressing.finalize(&name, Some(4))?;
+    let lengths = addressing_lengths(&addressing);
+    let len = lengths
+        .first()
+        .copied()
+        .ok_or_else(|| XmlError::Invalid(format!("node {name} is missing <Length>")))?;
+    let bitfield = match bitfield.finish(&name, &lengths)? {
+        Some(field) => field,
+        None if len == 1 => BitField {
+            bit_offset: 0,
+            bit_length: 1,
+            byte_order: ByteOrder::Little,
+        },
+        None => {
+            return Err(XmlError::Invalid(format!(
+                "Boolean node {name} requires explicit bitfield metadata"
+            )))
+        }
+    };
 
     Ok(NodeDecl::Boolean {
         name,
         addressing,
+        len,
         access,
+        bitfield,
         selectors,
         selected_if,
     })
@@ -1924,6 +2402,91 @@ mod tests {
                     }
                     other => panic!("expected indirect addressing, got {other:?}"),
                 }
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_integer_bitfield_big_endian() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="Packed">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>65535</Max>
+                    <Lsb>8</Lsb>
+                    <Msb>15</Msb>
+                    <Endianness>BigEndian</Endianness>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse big-endian bitfield");
+        assert_eq!(model.nodes.len(), 1);
+        match &model.nodes[0] {
+            NodeDecl::Integer { len, bitfield, .. } => {
+                assert_eq!(*len, 4);
+                let field = bitfield.expect("bitfield present");
+                assert_eq!(field.byte_order, ByteOrder::Big);
+                assert_eq!(field.bit_length, 8);
+                assert_eq!(field.bit_offset, 16);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_boolean_bitfield_default_length() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Boolean Name="Flag">
+                    <Address>0x2000</Address>
+                    <Length>1</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Bit>3</Bit>
+                </Boolean>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse boolean bitfield");
+        assert_eq!(model.nodes.len(), 1);
+        match &model.nodes[0] {
+            NodeDecl::Boolean { len, bitfield, .. } => {
+                assert_eq!(*len, 1);
+                assert_eq!(bitfield.byte_order, ByteOrder::Little);
+                assert_eq!(bitfield.bit_length, 1);
+                assert_eq!(bitfield.bit_offset, 3);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_integer_bitfield_mask() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="Masked">
+                    <Address>0x3000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>65535</Max>
+                    <Mask>0x0000FF00</Mask>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse mask bitfield");
+        assert_eq!(model.nodes.len(), 1);
+        match &model.nodes[0] {
+            NodeDecl::Integer { bitfield, .. } => {
+                let field = bitfield.expect("bitfield present");
+                assert_eq!(field.byte_order, ByteOrder::Little);
+                assert_eq!(field.bit_length, 8);
+                assert_eq!(field.bit_offset, 8);
             }
             other => panic!("unexpected node: {other:?}"),
         }
