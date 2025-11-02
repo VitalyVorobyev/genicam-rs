@@ -2,6 +2,7 @@
 
 pub mod chunks;
 pub mod events;
+pub mod frame;
 pub mod stream;
 pub mod time;
 
@@ -13,6 +14,7 @@ use tl_gige::GigeDevice;
 
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
+pub use frame::Frame;
 pub use stream::{Stream, StreamBuilder};
 pub use time::TimeMapper;
 pub use tl_gige::action::{AckSummary, ActionParams};
@@ -29,6 +31,9 @@ pub enum GenicamError {
     /// Parsing a user supplied value failed.
     #[error("parse error: {0}")]
     Parse(String),
+    /// Required chunk feature missing from the nodemap.
+    #[error("chunk feature '{0}' not found; verify camera supports chunk data")]
+    MissingChunkFeature(String),
 }
 
 impl GenicamError {
@@ -174,6 +179,54 @@ impl<T: RegisterIo> Camera<T> {
             .exec_command("AcquisitionStop", &self.transport)
             .map_err(Into::into)
     }
+
+    /// Configure chunk mode and enable the requested selectors.
+    pub fn configure_chunks(&mut self, cfg: &ChunkConfig) -> Result<(), GenicamError> {
+        self.ensure_chunk_feature(sfnc::CHUNK_MODE_ACTIVE)?;
+        self.ensure_chunk_feature(sfnc::CHUNK_SELECTOR)?;
+        self.ensure_chunk_feature(sfnc::CHUNK_ENABLE)?;
+
+        let transport = &self.transport as *const T;
+        unsafe {
+            // SAFETY: `transport` points to `self.transport`, which is only accessed immutably
+            // while the nodemap borrow is active.
+            self.nodemap_mut()
+                .set_bool(sfnc::CHUNK_MODE_ACTIVE, cfg.active, &*transport)
+                .map_err(GenicamError::from)?;
+        }
+
+        for selector in &cfg.selectors {
+            let transport = &self.transport as *const T;
+            unsafe {
+                // SAFETY: see rationale above; the nodemap mutation does not alias with
+                // the immutable transport access.
+                self.nodemap_mut()
+                    .set_enum(sfnc::CHUNK_SELECTOR, selector, &*transport)
+                    .map_err(GenicamError::from)?;
+                self.nodemap_mut()
+                    .set_bool(sfnc::CHUNK_ENABLE, true, &*transport)
+                    .map_err(GenicamError::from)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_chunk_feature(&self, name: &str) -> Result<(), GenicamError> {
+        if self.nodemap.node(name).is_none() {
+            return Err(GenicamError::MissingChunkFeature(name.to_string()));
+        }
+        Ok(())
+    }
+}
+
+/// Configuration for enabling chunk data via SFNC features.
+#[derive(Debug, Clone, Default)]
+pub struct ChunkConfig {
+    /// Names of chunk selectors that should be enabled on the device.
+    pub selectors: Vec<String>,
+    /// Whether chunk mode should be active after configuration.
+    pub active: bool,
 }
 
 /// Blocking adapter turning an asynchronous [`GigeDevice`] into a [`RegisterIo`]
