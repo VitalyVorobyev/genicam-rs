@@ -10,7 +10,6 @@ use genicam::{
     parse_chunk_bytes, Camera, ChunkConfig, ChunkKind, ChunkValue, Frame, GenicamError,
     GigeRegisterIo, StreamBuilder,
 };
-use sfnc;
 use tl_gige::gvsp::{self, GvspPacket};
 use tl_gige::nic::Iface;
 use tl_gige::{self, GVCP_PORT};

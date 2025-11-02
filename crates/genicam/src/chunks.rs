@@ -144,7 +144,6 @@ pub fn parse_chunk_bytes(data: &[u8]) -> Result<ChunkMap, ChunkError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
 
     fn chunk_buffer(id: u16, payload: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();
