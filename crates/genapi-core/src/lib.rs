@@ -3,9 +3,14 @@
 use std::cell::RefCell;
 use std::collections::{hash_map::Entry as HashMapEntry, HashMap, HashSet};
 
-use genapi_xml::{AccessMode, Addressing, EnumEntryDecl, EnumValueSrc, NodeDecl, XmlModel};
+use genapi_xml::{
+    AccessMode, Addressing, BitField, EnumEntryDecl, EnumValueSrc, NodeDecl, XmlModel,
+};
 use thiserror::Error;
 use tracing::{debug, trace, warn};
+
+mod bitops;
+use crate::bitops::{extract, insert, BitOpsError};
 
 /// Error type produced by GenApi operations.
 #[derive(Debug, Error)]
@@ -40,6 +45,23 @@ pub enum GenApiError {
     /// Indirect addressing resolved to an invalid register.
     #[error("node {name} resolved invalid indirect address {addr:#X}")]
     BadIndirectAddress { name: String, addr: i64 },
+    /// Bitfield metadata exceeded the backing register width.
+    #[error(
+        "bitfield for node {name} exceeds register length {len} (offset {bit_offset}, length {bit_length})"
+    )]
+    BitfieldOutOfRange {
+        name: String,
+        bit_offset: u16,
+        bit_length: u16,
+        len: usize,
+    },
+    /// Provided value does not fit into the declared bitfield.
+    #[error("value {value} too wide for {bit_length}-bit field on node {name}")]
+    ValueTooWide {
+        name: String,
+        value: i64,
+        bit_length: u16,
+    },
 }
 
 /// Register access abstraction backed by transports such as GVCP/GenCP.
@@ -72,6 +94,7 @@ impl Node {
         match self {
             Node::Integer(node) => {
                 node.cache.replace(None);
+                node.raw_cache.replace(None);
             }
             Node::Float(node) => {
                 node.cache.replace(None);
@@ -79,6 +102,7 @@ impl Node {
             Node::Enum(node) => node.invalidate(),
             Node::Boolean(node) => {
                 node.cache.replace(None);
+                node.raw_cache.replace(None);
             }
             Node::Command(_) | Node::Category(_) => {}
         }
@@ -114,6 +138,8 @@ pub struct IntegerNode {
     pub name: String,
     /// Register addressing metadata (fixed, selector-based, or indirect).
     pub addressing: Addressing,
+    /// Nominal register length in bytes.
+    pub len: u32,
     /// Declared access rights.
     pub access: AccessMode,
     /// Minimum permitted user value.
@@ -124,11 +150,14 @@ pub struct IntegerNode {
     pub inc: Option<i64>,
     /// Optional engineering unit such as "us".
     pub unit: Option<String>,
+    /// Optional bitfield metadata restricting active bits.
+    pub bitfield: Option<BitField>,
     /// Selector nodes controlling the visibility of this node.
     pub selectors: Vec<String>,
     /// Selector gating rules in the form `(selector, allowed values)`.
     pub selected_if: Vec<(String, Vec<String>)>,
     cache: RefCell<Option<i64>>,
+    raw_cache: RefCell<Option<Vec<u8>>>,
 }
 
 /// Floating point feature metadata.
@@ -175,10 +204,13 @@ struct EnumMapping {
 pub struct BooleanNode {
     pub name: String,
     pub addressing: Addressing,
+    pub len: u32,
     pub access: AccessMode,
+    pub bitfield: BitField,
     pub selectors: Vec<String>,
     pub selected_if: Vec<(String, Vec<String>)>,
     cache: RefCell<Option<bool>>,
+    raw_cache: RefCell<Option<Vec<u8>>>,
 }
 
 impl EnumNode {
@@ -236,9 +268,15 @@ impl NodeMap {
             GenApiError::Io(_) => err,
             other => other,
         })?;
-        let value = bytes_to_i64(name, &raw)?;
+        let value = if let Some(bitfield) = node.bitfield {
+            let extracted = extract(&raw, bitfield).map_err(|err| map_bitops_error(name, err))?;
+            interpret_bitfield_value(name, extracted, bitfield.bit_length, node.min < 0)?
+        } else {
+            bytes_to_i64(name, &raw)?
+        };
         debug!(node = %name, raw = value, "read integer feature");
         node.cache.replace(Some(value));
+        node.raw_cache.replace(Some(raw));
         Ok(value)
     }
 
@@ -261,13 +299,42 @@ impl NodeMap {
                 return Err(GenApiError::Range(name.to_string()));
             }
         }
-        let bytes = i64_to_bytes(name, value, len)?;
-        debug!(node = %name, raw = value, "write integer feature");
-        io.write(address, &bytes).map_err(|err| match err {
-            GenApiError::Io(_) => err,
-            other => other,
-        })?;
-        node.cache.replace(Some(value));
+        if let Some(bitfield) = node.bitfield {
+            let encoded = encode_bitfield_value(name, value, bitfield.bit_length, node.min < 0)?;
+            let cached = node.raw_cache.borrow().clone();
+            let mut raw = if let Some(bytes) = cached {
+                if bytes.len() == len as usize {
+                    bytes
+                } else {
+                    io.read(address, len as usize).map_err(|err| match err {
+                        GenApiError::Io(_) => err,
+                        other => other,
+                    })?
+                }
+            } else {
+                io.read(address, len as usize).map_err(|err| match err {
+                    GenApiError::Io(_) => err,
+                    other => other,
+                })?
+            };
+            insert(&mut raw, bitfield, encoded).map_err(|err| map_bitops_error(name, err))?;
+            debug!(node = %name, raw = value, "write integer feature");
+            io.write(address, &raw).map_err(|err| match err {
+                GenApiError::Io(_) => err,
+                other => other,
+            })?;
+            node.cache.replace(Some(value));
+            node.raw_cache.replace(Some(raw));
+        } else {
+            let bytes = i64_to_bytes(name, value, len)?;
+            debug!(node = %name, raw = value, "write integer feature");
+            io.write(address, &bytes).map_err(|err| match err {
+                GenApiError::Io(_) => err,
+                other => other,
+            })?;
+            node.cache.replace(Some(value));
+            node.raw_cache.replace(Some(bytes));
+        }
         self.invalidate_dependents(name);
         Ok(())
     }
@@ -401,10 +468,11 @@ impl NodeMap {
             GenApiError::Io(_) => err,
             other => other,
         })?;
-        let raw_value = bytes_to_i64(name, &raw)?;
+        let raw_value = extract(&raw, node.bitfield).map_err(|err| map_bitops_error(name, err))?;
         let value = raw_value != 0;
         debug!(node = %name, raw = raw_value, value, "read boolean feature");
         node.cache.replace(Some(value));
+        node.raw_cache.replace(Some(raw));
         Ok(value)
     }
 
@@ -419,14 +487,31 @@ impl NodeMap {
         ensure_writable(&node.access, name)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         let (address, len) = self.resolve_address(name, &node.addressing, io)?;
-        let raw = if value { 1 } else { 0 };
-        let bytes = i64_to_bytes(name, raw, len)?;
-        debug!(node = %name, raw, value, "write boolean feature");
-        io.write(address, &bytes).map_err(|err| match err {
+        let encoded = if value { 1 } else { 0 };
+        let cached = node.raw_cache.borrow().clone();
+        let mut raw = if let Some(bytes) = cached {
+            if bytes.len() == len as usize {
+                bytes
+            } else {
+                io.read(address, len as usize).map_err(|err| match err {
+                    GenApiError::Io(_) => err,
+                    other => other,
+                })?
+            }
+        } else {
+            io.read(address, len as usize).map_err(|err| match err {
+                GenApiError::Io(_) => err,
+                other => other,
+            })?
+        };
+        insert(&mut raw, node.bitfield, encoded).map_err(|err| map_bitops_error(name, err))?;
+        debug!(node = %name, raw = encoded, value, "write boolean feature");
+        io.write(address, &raw).map_err(|err| match err {
             GenApiError::Io(_) => err,
             other => other,
         })?;
         node.cache.replace(Some(value));
+        node.raw_cache.replace(Some(raw));
         self.invalidate_dependents(name);
         Ok(())
     }
@@ -711,11 +796,13 @@ impl From<XmlModel> for NodeMap {
                 NodeDecl::Integer {
                     name,
                     addressing,
+                    len,
                     access,
                     min,
                     max,
                     inc,
                     unit,
+                    bitfield,
                     selectors,
                     selected_if,
                 } => {
@@ -729,14 +816,17 @@ impl From<XmlModel> for NodeMap {
                     let node = IntegerNode {
                         name: name.clone(),
                         addressing,
+                        len,
                         access,
                         min,
                         max,
                         inc,
                         unit,
+                        bitfield,
                         selectors,
                         selected_if,
                         cache: RefCell::new(None),
+                        raw_cache: RefCell::new(None),
                     };
                     nodes.insert(name, Node::Integer(node));
                 }
@@ -821,7 +911,9 @@ impl From<XmlModel> for NodeMap {
                 NodeDecl::Boolean {
                     name,
                     addressing,
+                    len,
                     access,
+                    bitfield,
                     selectors,
                     selected_if,
                 } => {
@@ -835,10 +927,13 @@ impl From<XmlModel> for NodeMap {
                     let node = BooleanNode {
                         name: name.clone(),
                         addressing,
+                        len,
                         access,
+                        bitfield,
                         selectors,
                         selected_if,
                         cache: RefCell::new(None),
+                        raw_cache: RefCell::new(None),
                     };
                     nodes.insert(name, Node::Boolean(node));
                 }
@@ -921,6 +1016,107 @@ fn i64_to_bytes(name: &str, value: i64, width: u32) -> Result<Vec<u8>, GenApiErr
         )));
     }
     Ok(data)
+}
+
+fn interpret_bitfield_value(
+    name: &str,
+    raw: u64,
+    bit_length: u16,
+    signed: bool,
+) -> Result<i64, GenApiError> {
+    if signed {
+        Ok(sign_extend(raw, bit_length))
+    } else {
+        i64::try_from(raw).map_err(|_| {
+            GenApiError::Parse(format!(
+                "bitfield value {raw} exceeds i64 range for node {name}"
+            ))
+        })
+    }
+}
+
+fn encode_bitfield_value(
+    name: &str,
+    value: i64,
+    bit_length: u16,
+    signed: bool,
+) -> Result<u64, GenApiError> {
+    if bit_length == 0 || bit_length > 64 {
+        return Err(GenApiError::Parse(format!(
+            "node {name} uses unsupported bitfield width {bit_length}"
+        )));
+    }
+    if signed {
+        let width = bit_length as u32;
+        let min_allowed = -(1i128 << (width - 1));
+        let max_allowed = (1i128 << (width - 1)) - 1;
+        let value_i128 = value as i128;
+        if value_i128 < min_allowed || value_i128 > max_allowed {
+            return Err(GenApiError::ValueTooWide {
+                name: name.to_string(),
+                value,
+                bit_length,
+            });
+        }
+        let mask = mask_u128(bit_length) as i128;
+        Ok((value_i128 & mask) as u64)
+    } else {
+        if value < 0 {
+            return Err(GenApiError::ValueTooWide {
+                name: name.to_string(),
+                value,
+                bit_length,
+            });
+        }
+        let mask = mask_u128(bit_length);
+        if (value as u128) > mask {
+            return Err(GenApiError::ValueTooWide {
+                name: name.to_string(),
+                value,
+                bit_length,
+            });
+        }
+        Ok(value as u64)
+    }
+}
+
+fn mask_u128(bit_length: u16) -> u128 {
+    if bit_length == 64 {
+        u64::MAX as u128
+    } else {
+        (1u128 << bit_length) - 1
+    }
+}
+
+fn sign_extend(value: u64, bits: u16) -> i64 {
+    let shift = 64 - bits as u32;
+    ((value << shift) as i64) >> shift
+}
+
+fn map_bitops_error(name: &str, err: BitOpsError) -> GenApiError {
+    match err {
+        BitOpsError::UnsupportedWidth { len } => {
+            GenApiError::Parse(format!("node {name} uses unsupported register width {len}"))
+        }
+        BitOpsError::UnsupportedLength { bit_length } => GenApiError::Parse(format!(
+            "node {name} uses unsupported bitfield length {bit_length}"
+        )),
+        BitOpsError::OutOfRange {
+            len,
+            bit_offset,
+            bit_length,
+        } => GenApiError::BitfieldOutOfRange {
+            name: name.to_string(),
+            bit_offset,
+            bit_length,
+            len,
+        },
+        BitOpsError::ValueTooWide { bit_length, value } => GenApiError::ValueTooWide {
+            name: name.to_string(),
+            value: i64::try_from(value).unwrap_or(i64::MAX),
+            bit_length,
+        },
+    }
 }
 
 fn apply_scale(node: &FloatNode, raw: f64) -> f64 {
@@ -1052,6 +1248,35 @@ mod tests {
         </RegisterDescription>
     "#;
 
+    const BITFIELD_FIXTURE: &str = r#"
+        <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+            <Integer Name="LeByte">
+                <Address>0x5000</Address>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <Min>0</Min>
+                <Max>65535</Max>
+                <Mask>0x0000FF00</Mask>
+            </Integer>
+            <Integer Name="BeBits">
+                <Address>0x5004</Address>
+                <Length>2</Length>
+                <AccessMode>RW</AccessMode>
+                <Min>0</Min>
+                <Max>15</Max>
+                <Lsb>13</Lsb>
+                <Msb>15</Msb>
+                <Endianness>BigEndian</Endianness>
+            </Integer>
+            <Boolean Name="PackedFlag">
+                <Address>0x5006</Address>
+                <Length>4</Length>
+                <AccessMode>RW</AccessMode>
+                <Bit>13</Bit>
+            </Boolean>
+        </RegisterDescription>
+    "#;
+
     #[derive(Default)]
     struct MockIo {
         regs: RefCell<HashMap<u64, Vec<u8>>>,
@@ -1110,6 +1335,11 @@ mod tests {
 
     fn build_enum_pvalue_nodemap() -> NodeMap {
         let model = genapi_xml::parse(ENUM_PVALUE_FIXTURE).expect("parse enum pvalue fixture");
+        NodeMap::from(model)
+    }
+
+    fn build_bitfield_nodemap() -> NodeMap {
+        let model = genapi_xml::parse(BITFIELD_FIXTURE).expect("parse bitfield fixture");
         NodeMap::from(model)
     }
 
@@ -1373,5 +1603,76 @@ mod tests {
             entries,
             vec!["DynFromReg".to_string(), "Fixed10".to_string()]
         );
+    }
+
+    #[test]
+    fn bitfield_le_integer_roundtrip() {
+        let mut nodemap = build_bitfield_nodemap();
+        let io = MockIo::with_registers(&[(0x5000, vec![0xAA, 0xBB, 0xCC, 0xDD])]);
+
+        let value = nodemap
+            .get_integer("LeByte", &io)
+            .expect("read little-endian field");
+        assert_eq!(value, 0xBB);
+
+        nodemap
+            .set_integer("LeByte", 0x55, &io)
+            .expect("write little-endian field");
+        let data = io.read(0x5000, 4).expect("read back register");
+        assert_eq!(data, vec![0xAA, 0x55, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn bitfield_be_integer_roundtrip() {
+        let mut nodemap = build_bitfield_nodemap();
+        let io = MockIo::with_registers(&[(0x5004, vec![0b1010_0000, 0b0000_0000])]);
+
+        let value = nodemap
+            .get_integer("BeBits", &io)
+            .expect("read big-endian bits");
+        assert_eq!(value, 0b101);
+
+        nodemap
+            .set_integer("BeBits", 0b010, &io)
+            .expect("write big-endian bits");
+        let data = io.read(0x5004, 2).expect("read back register");
+        assert_eq!(data, vec![0b0100_0000, 0b0000_0000]);
+    }
+
+    #[test]
+    fn bitfield_boolean_toggle() {
+        let mut nodemap = build_bitfield_nodemap();
+        let io = MockIo::with_registers(&[(0x5006, vec![0x00, 0x20, 0x00, 0x00])]);
+
+        assert!(nodemap.get_bool("PackedFlag", &io).expect("read flag"));
+
+        nodemap
+            .set_bool("PackedFlag", false, &io)
+            .expect("clear flag");
+        let data = io.read(0x5006, 4).expect("read cleared");
+        assert_eq!(data, vec![0x00, 0x00, 0x00, 0x00]);
+
+        nodemap.set_bool("PackedFlag", true, &io).expect("set flag");
+        let data = io.read(0x5006, 4).expect("read set");
+        assert_eq!(data, vec![0x00, 0x20, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn bitfield_value_too_wide() {
+        let mut nodemap = build_bitfield_nodemap();
+        let io = MockIo::with_registers(&[(0x5004, vec![0x00, 0x00])]);
+
+        let err = nodemap
+            .set_integer("BeBits", 8, &io)
+            .expect_err("value too wide");
+        match err {
+            GenApiError::ValueTooWide {
+                name, bit_length, ..
+            } => {
+                assert_eq!(name, "BeBits");
+                assert_eq!(bit_length, 3);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
