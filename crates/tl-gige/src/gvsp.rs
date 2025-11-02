@@ -15,6 +15,7 @@ use crate::nic::Iface;
 use crate::stats::StreamStats;
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
+use tracing::{debug, warn};
 
 /// GVSP payload type for image data as defined by the specification (Table
 /// 36). Other payload types are currently not supported by the reassembler but
@@ -60,11 +61,12 @@ pub struct ChunkRaw {
 }
 
 /// Parse a chunk payload following the `[id][reserved][length][data...]` layout.
-pub fn parse_chunks(mut payload: &[u8]) -> Result<Vec<ChunkRaw>, GvspError> {
+pub fn parse_chunks(mut payload: &[u8]) -> Vec<ChunkRaw> {
     let mut chunks = Vec::new();
     while !payload.is_empty() {
         if payload.len() < 8 {
-            return Err(GvspError::Invalid("chunk header truncated"));
+            warn!(remaining = payload.len(), "chunk header truncated");
+            break;
         }
         let mut cursor = payload;
         let id = cursor.get_u16();
@@ -72,13 +74,24 @@ pub fn parse_chunks(mut payload: &[u8]) -> Result<Vec<ChunkRaw>, GvspError> {
         let length = cursor.get_u32() as usize;
         let total = 8 + length;
         if payload.len() < total {
-            return Err(GvspError::Invalid("chunk data truncated"));
+            warn!(
+                chunk_id = format_args!("{:#06x}", id),
+                len = payload.len(),
+                expected = total,
+                "chunk data truncated"
+            );
+            break;
         }
         let data = Bytes::copy_from_slice(&payload[8..total]);
+        debug!(
+            chunk_id = format_args!("{:#06x}", id),
+            len = length,
+            "parsed chunk"
+        );
         chunks.push(ChunkRaw { id, data });
         payload = &payload[total..];
     }
-    Ok(chunks)
+    chunks
 }
 
 /// Representation of a GVSP packet.
@@ -105,6 +118,7 @@ pub enum GvspPacket {
         block_id: u16,
         packet_id: u16,
         status: u16,
+        chunk_data: Bytes,
     },
 }
 
@@ -175,10 +189,16 @@ fn parse_trailer(packet_id: u16, block_id: u16, payload: &[u8]) -> Result<GvspPa
     }
     let mut cursor = payload;
     let status = cursor.get_u16();
+    let chunk_data = if payload.len() > 2 {
+        Bytes::copy_from_slice(&payload[2..])
+    } else {
+        Bytes::new()
+    };
     Ok(GvspPacket::Trailer {
         block_id,
         packet_id,
         status,
+        chunk_data,
     })
 }
 
@@ -519,7 +539,7 @@ mod tests {
         payload.extend_from_slice(&0u16.to_be_bytes());
         payload.extend_from_slice(&2u32.to_be_bytes());
         payload.extend_from_slice(&[5, 6]);
-        let chunks = parse_chunks(&payload).expect("chunks");
+        let chunks = parse_chunks(&payload);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].id, 0x0001);
         assert_eq!(chunks[0].data.as_ref(), &[1, 2, 3, 4]);
@@ -528,10 +548,42 @@ mod tests {
     }
 
     #[test]
-    fn reject_truncated_chunk() {
+    fn truncated_chunk_is_ignored() {
         let payload = vec![0u8; 6];
-        let err = parse_chunks(&payload).unwrap_err();
-        assert!(matches!(err, GvspError::Invalid("chunk header truncated")));
+        let chunks = parse_chunks(&payload);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn parse_chunks_tolerates_padding() {
+        for _ in 0..128 {
+            let count = fastrand::usize(..6);
+            let mut payload = Vec::new();
+            let mut entries = Vec::new();
+            for _ in 0..count {
+                let id = fastrand::u16(..);
+                let len = fastrand::usize(..16);
+                let mut data = vec![0u8; len];
+                for byte in &mut data {
+                    *byte = fastrand::u8(..);
+                }
+                payload.extend_from_slice(&id.to_be_bytes());
+                payload.extend_from_slice(&0u16.to_be_bytes());
+                payload.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                payload.extend_from_slice(&data);
+                entries.push((id, data));
+            }
+            let padding_len = fastrand::usize(..8);
+            for _ in 0..padding_len {
+                payload.push(fastrand::u8(..));
+            }
+            let parsed = parse_chunks(&payload);
+            assert!(parsed.len() <= entries.len());
+            for (idx, chunk) in parsed.iter().enumerate() {
+                assert_eq!(chunk.id, entries[idx].0);
+                assert_eq!(chunk.data.as_ref(), entries[idx].1.as_slice());
+            }
+        }
     }
 
     #[test]

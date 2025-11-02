@@ -10,6 +10,12 @@ pub const GAIN: &str = "Gain";
 pub const GAIN_SELECTOR: &str = "GainSelector";
 /// Pixel format feature name (`PixelFormat`).
 pub const PIXEL_FORMAT: &str = "PixelFormat";
+/// Chunk mode enable feature name (`ChunkModeActive`).
+pub const CHUNK_MODE_ACTIVE: &str = "ChunkModeActive";
+/// Chunk selector enumeration feature name (`ChunkSelector`).
+pub const CHUNK_SELECTOR: &str = "ChunkSelector";
+/// Chunk enable boolean feature name (`ChunkEnable`).
+pub const CHUNK_ENABLE: &str = "ChunkEnable";
 /// Acquisition start command feature name (`AcquisitionStart`).
 pub const ACQUISITION_START: &str = "AcquisitionStart";
 /// Acquisition stop command feature name (`AcquisitionStop`).

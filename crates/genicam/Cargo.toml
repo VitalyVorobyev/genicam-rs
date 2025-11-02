@@ -16,3 +16,6 @@ tracing = { workspace = true }
 tl-gige = { version = "0.1.0", path = "../tl-gige" }
 async-trait = { workspace = true }
 sfnc = { path = "../sfnc" }
+
+[dev-dependencies]
+fastrand = "2"

@@ -78,6 +78,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "fastrand",
  "genapi-core",
  "sfnc",
  "thiserror",
@@ -90,6 +91,7 @@ dependencies = [
 name = "genicam-rs"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "genapi-core",
  "genapi-xml",
  "genicam",
