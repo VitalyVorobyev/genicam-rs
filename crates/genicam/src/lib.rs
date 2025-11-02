@@ -35,6 +35,39 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ```rust,no_run
+//! # async fn events_example(
+//! #     mut camera: genicam::Camera<genicam::GigeRegisterIo>,
+//! # ) -> Result<(), genicam::GenicamError> {
+//! use std::net::Ipv4Addr;
+//! let ids = ["FrameStart", "ExposureEnd"];
+//! let iface = Ipv4Addr::new(127, 0, 0, 1);
+//! camera.configure_events(iface, 10020, &ids).await?;
+//! let stream = camera.open_event_stream(iface, 10020).await?;
+//! let event = stream.next().await?;
+//! println!("event id=0x{:04X} payload={} bytes", event.id, event.data.len());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ```rust,no_run
+//! # async fn action_example() -> Result<(), std::io::Error> {
+//! use genicam::gige::action::{send_action, ActionParams};
+//! use std::net::SocketAddr;
+//! let params = ActionParams {
+//!     device_key: 0,
+//!     group_key: 1,
+//!     group_mask: 0xFFFF_FFFF,
+//!     scheduled_time: None,
+//!     channel: 0,
+//! };
+//! let dest: SocketAddr = "255.255.255.255:3956".parse().unwrap();
+//! let summary = send_action(dest, &params, 200).await?;
+//! println!("acks={}", summary.acks);
+//! Ok(())
+//! # }
+//! ```
 
 pub use genapi_core as genapi;
 pub use genicp;
@@ -48,17 +81,23 @@ pub mod frame;
 pub mod stream;
 pub mod time;
 
-use std::sync::{Mutex, MutexGuard};
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::events::{
+    bind_socket as bind_event_socket_internal,
+    configure_message_channel_raw as configure_message_channel_fallback,
+    enable_event_raw as enable_event_fallback, parse_event_id,
+};
 use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo};
 use gige::GigeDevice;
 use thiserror::Error;
 use tokio::time::sleep;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
-pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
+pub use events::{Event, EventStream};
 pub use frame::Frame;
 pub use gige::action::{AckSummary, ActionParams};
 pub use stream::{Stream, StreamBuilder};
@@ -387,6 +426,137 @@ impl<T: RegisterIo> Camera<T> {
         }
 
         Ok(())
+    }
+
+    /// Configure the GVCP message channel and enable delivery of the requested events.
+    pub async fn configure_events(
+        &mut self,
+        local_ip: Ipv4Addr,
+        port: u16,
+        enable_ids: &[&str],
+    ) -> Result<(), GenicamError> {
+        info!(%local_ip, port, "configuring GVCP events");
+        let transport_ptr = &self.transport as *const T;
+        let mut channel_configured = true;
+
+        if let Some(selector) = self.find_alias(sfnc::MSG_SEL) {
+            match self.nodemap.enum_entries(selector) {
+                Ok(entries) => {
+                    if let Some(entry) = entries.into_iter().next() {
+                        unsafe {
+                            self.nodemap_mut()
+                                .set_enum(selector, &entry, &*transport_ptr)
+                                .map_err(GenicamError::from)?;
+                        }
+                    } else {
+                        warn!(node = selector, "message selector missing entries");
+                        channel_configured = false;
+                    }
+                }
+                Err(err) => {
+                    warn!(feature = selector, error = %err, "failed to query message selector");
+                    channel_configured = false;
+                }
+            }
+        } else {
+            channel_configured = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::MSG_IP) {
+            let value = u32::from(local_ip) as i64;
+            unsafe {
+                if let Err(err) = self.nodemap_mut().set_integer(node, value, &*transport_ptr) {
+                    warn!(feature = node, error = %err, "failed to write message IP");
+                    channel_configured = false;
+                }
+            }
+        } else {
+            channel_configured = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::MSG_PORT) {
+            unsafe {
+                if let Err(err) = self
+                    .nodemap_mut()
+                    .set_integer(node, port as i64, &*transport_ptr)
+                {
+                    warn!(feature = node, error = %err, "failed to write message port");
+                    channel_configured = false;
+                }
+            }
+        } else {
+            channel_configured = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::MSG_EN) {
+            unsafe {
+                if let Err(err) = self.nodemap_mut().set_bool(node, true, &*transport_ptr) {
+                    warn!(feature = node, error = %err, "failed to enable message channel");
+                    channel_configured = false;
+                }
+            }
+        } else {
+            channel_configured = false;
+        }
+
+        if !channel_configured {
+            configure_message_channel_fallback(&self.transport, local_ip, port)?;
+        }
+
+        let mut used_sfnc = self.nodemap.node(sfnc::EVENT_SELECTOR).is_some()
+            && self.nodemap.node(sfnc::EVENT_NOTIFICATION).is_some();
+
+        if used_sfnc {
+            for &name in enable_ids {
+                unsafe {
+                    if let Err(err) =
+                        self.nodemap_mut()
+                            .set_enum(sfnc::EVENT_SELECTOR, name, &*transport_ptr)
+                    {
+                        warn!(event = name, error = %err, "failed to select event via SFNC");
+                        used_sfnc = false;
+                        break;
+                    }
+                    if let Err(err) = self.nodemap_mut().set_enum(
+                        sfnc::EVENT_NOTIFICATION,
+                        sfnc::EVENT_NOTIF_ON,
+                        &*transport_ptr,
+                    ) {
+                        warn!(event = name, error = %err, "failed to enable event via SFNC");
+                        used_sfnc = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !used_sfnc {
+            for &name in enable_ids {
+                let Some(event_id) = parse_event_id(name) else {
+                    return Err(GenicamError::transport(format!(
+                        "event '{name}' missing from nodemap and not numeric"
+                    )));
+                };
+                enable_event_fallback(&self.transport, event_id, true)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Open a GVCP event stream bound to the provided local endpoint.
+    pub async fn open_event_stream(
+        &self,
+        local_ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<EventStream, GenicamError> {
+        let socket = bind_event_socket_internal(IpAddr::V4(local_ip), port).await?;
+        let time_sync = if self.time_sync.len() > 0 {
+            Some(Arc::new(self.time_sync.clone()))
+        } else {
+            None
+        };
+        Ok(EventStream::new(socket, time_sync))
     }
 
     fn ensure_chunk_feature(&self, name: &str) -> Result<(), GenicamError> {

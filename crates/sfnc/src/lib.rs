@@ -26,6 +26,22 @@ pub const ACQUISITION_MODE: &str = "AcquisitionMode";
 /// Device temperature float feature name (`DeviceTemperature`).
 pub const DEVICE_TEMPERATURE: &str = "DeviceTemperature";
 
+/// Event selector enumeration feature name (`EventSelector`).
+pub const EVENT_SELECTOR: &str = "EventSelector";
+/// Event notification mode enumeration feature (`EventNotification`).
+pub const EVENT_NOTIFICATION: &str = "EventNotification";
+/// Event notification value used to enable delivery (`On`).
+pub const EVENT_NOTIF_ON: &str = "On";
+
+/// Message channel selector aliases ordered by preference.
+pub const MSG_SEL: &[&str] = &["GevMessageChannelSelector", "MessageChannelSelector"];
+/// Message channel IP address aliases ordered by preference.
+pub const MSG_IP: &[&str] = &["GevMessageChannelIPAddress", "MessageChannelIPAddress"];
+/// Message channel UDP port aliases ordered by preference.
+pub const MSG_PORT: &[&str] = &["GevMessageChannelPort", "MessageChannelPort"];
+/// Message channel enable aliases ordered by preference.
+pub const MSG_EN: &[&str] = &["GevMessageChannelEnable", "MessageChannelEnable"];
+
 /// Timestamp latch commands ordered by preference.
 ///
 /// Different vendors expose the SFNC timestamp latch using slightly different

@@ -8,7 +8,7 @@ use tracing::trace;
 
 /// Maintains a sliding window of timestamp samples and computes a linear model
 /// mapping device ticks to host time.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TimeSync {
     /// Linear fit slope (seconds per tick).
     a: f64,
