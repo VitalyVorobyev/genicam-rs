@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 # This is an aggregator/CLI; not intended for crates.io publishing yet.
 publish = false
+documentation = "https://vitalyvorobyev.github.io/genicam-rs/"
 
 [workspace]
 members = [
@@ -55,3 +56,6 @@ genapi-xml = { version = "0.1.0", path = "crates/genapi-xml" }
 genicam = { version = "0.1.0", path = "crates/genicam" }
 genapi-core = { version = "0.1.0", path = "crates/genapi-core" }
 sfnc = { version = "0.1.0", path = "crates/sfnc" }
+
+[package.metadata.docs]
+html_root_url = "https://vitalyvorobyev.github.io/genicam-rs"
