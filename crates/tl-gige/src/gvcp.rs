@@ -643,7 +643,7 @@ impl GigeDevice {
     }
 
     /// Enable or disable delivery of the provided event identifier.
-    pub async fn enable_event(&mut self, id: u16, on: bool) -> Result<(), GigeError> {
+    pub async fn enable_event_raw(&mut self, id: u16, on: bool) -> Result<(), GigeError> {
         let index = (id / 32) as u64;
         let bit = 1u32 << (id % 32);
         let addr = consts::EVENT_NOTIFICATION_BASE + index * consts::EVENT_NOTIFICATION_STRIDE;
