@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! GigE Vision TL: discovery (GVCP), control (GenCP/GVCP), streaming (GVSP).
 
 pub mod action;

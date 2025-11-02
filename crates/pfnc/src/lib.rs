@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! PFNC pixel format helpers (placeholder).
 
 #![allow(dead_code)]

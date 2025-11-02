@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! GenApi node system: typed feature access backed by register IO.
 
 use std::cell::RefCell;

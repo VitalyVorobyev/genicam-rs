@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! GenCP: generic control protocol encode/decode (transport-agnostic).
 
 use bitflags::bitflags;

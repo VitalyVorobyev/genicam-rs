@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::time::Duration;
 
-use tl_gige::stats::StreamStats;
+use genicam::gige::stats::StreamStats;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

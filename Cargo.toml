@@ -1,15 +1,3 @@
-[package]
-name = "genicam-rs"
-version = "0.1.0"
-description = "GenICam workspace: GigE Vision + GenApi tooling (aggregator)"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
-# This is an aggregator/CLI; not intended for crates.io publishing yet.
-publish = false
-documentation = "https://vitalyvorobyev.github.io/genicam-rs/"
-
 [workspace]
 members = [
   "crates/genicp",
@@ -30,6 +18,9 @@ license = "MIT"
 repository = "https://github.com/VitalyVorobyev/genicam-rs"
 rust-version = "1.75"
 
+[workspace.metadata]
+homepage = "https://github.com/VitalyVorobyev/genicam-rs"
+
 [workspace.dependencies]
 thiserror = "1"
 bytes = "1"
@@ -47,16 +38,3 @@ if-addrs = "0.11"
 async-trait = "0.1"
 socket2 = "0.5"
 
-[dependencies]
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
-tl-gige = { version = "0.1.0", path = "crates/tl-gige" }
-genapi-xml = { version = "0.1.0", path = "crates/genapi-xml" }
-genicam = { version = "0.1.0", path = "crates/genicam" }
-genapi-core = { version = "0.1.0", path = "crates/genapi-core" }
-sfnc = { version = "0.1.0", path = "crates/sfnc" }
-bytes = { workspace = true }
-
-[package.metadata.docs]
-html_root_url = "https://vitalyvorobyev.github.io/genicam-rs"

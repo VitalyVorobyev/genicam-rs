@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use std::convert::TryInto;
 
-use genapi_core::{GenApiError, NodeMap, RegisterIo};
+use genicam::genapi::{GenApiError, NodeMap, RegisterIo};
+use genicam::gige::GigeDevice;
 use genicam::{Camera, GigeRegisterIo};
-use tl_gige::{self, GigeDevice};
 
 const MODE_ADDR: u64 = 0x4000;
 const PROVIDER_ADDR: u64 = 0x4100;
@@ -78,7 +78,7 @@ fn run_mock() -> Result<(), Box<dyn Error>> {
 
 fn run_real() -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    let devices = rt.block_on(tl_gige::discover(Duration::from_secs(1)))?;
+    let devices = rt.block_on(genicam::gige::discover(Duration::from_secs(1)))?;
     let Some(info) = devices.first() else {
         println!("No GigE Vision devices discovered.");
         return Ok(());
@@ -88,7 +88,7 @@ fn run_real() -> Result<(), Box<dyn Error>> {
         "Connecting to {}",
         info.model.clone().unwrap_or_else(|| "camera".into())
     );
-    let addr = SocketAddr::new(IpAddr::V4(info.ip), tl_gige::GVCP_PORT);
+    let addr = SocketAddr::new(IpAddr::V4(info.ip), genicam::gige::GVCP_PORT);
     let device = rt.block_on(GigeDevice::open(addr))?;
     let device = std::sync::Arc::new(tokio::sync::Mutex::new(device));
     let xml = rt.block_on(genapi_xml::fetch_and_load_xml({

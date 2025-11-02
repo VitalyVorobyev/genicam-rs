@@ -5,10 +5,10 @@ use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use genapi_core::{GenApiError, Node, NodeMap, RegisterIo};
 use genapi_xml::{self, Addressing, NodeDecl};
+use genicam::genapi::{GenApiError, Node, NodeMap, RegisterIo};
+use genicam::gige::GigeDevice;
 use genicam::{Camera, GigeRegisterIo};
-use tl_gige::{self, GigeDevice};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -73,7 +73,7 @@ fn run_mock() -> Result<()> {
 
 fn run_real() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    let devices = rt.block_on(tl_gige::discover(Duration::from_secs(1)))?;
+    let devices = rt.block_on(genicam::gige::discover(Duration::from_secs(1)))?;
     let Some(info) = devices.first() else {
         println!("No GigE Vision devices discovered.");
         return Ok(());
@@ -83,7 +83,7 @@ fn run_real() -> Result<()> {
         "Connecting to {}",
         info.model.clone().unwrap_or_else(|| "camera".into())
     );
-    let addr = SocketAddr::new(IpAddr::V4(info.ip), tl_gige::GVCP_PORT);
+    let addr = SocketAddr::new(IpAddr::V4(info.ip), genicam::gige::GVCP_PORT);
     let device = rt.block_on(GigeDevice::open(addr))?;
     let device = std::sync::Arc::new(tokio::sync::Mutex::new(device));
     let xml = rt.block_on(genapi_xml::fetch_and_load_xml({
@@ -162,7 +162,7 @@ fn collect_indirect_integers(model: &genapi_xml::XmlModel) -> Vec<(String, Strin
 }
 
 fn print_indirect_nodes(node: Option<&Node>) {
-    if let Some(Node::Integer(genapi_core::IntegerNode {
+    if let Some(Node::Integer(genicam::genapi::IntegerNode {
         addressing: Addressing::Indirect {
             p_address_node,
             len,

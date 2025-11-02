@@ -1,4 +1,46 @@
-//! Public API: Camera, Stream, Image, Feature access bridging TL <-> GenApi.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+//! High level GenICam facade that re-exports the workspace crates and provides
+//! convenience wrappers.
+//!
+//! ```rust,no_run
+//! use genicam::{gige, genapi, Camera, GenicamError};
+//! use std::time::Duration;
+//!
+//! # struct DummyTransport;
+//! # impl genapi::RegisterIo for DummyTransport {
+//! #     fn read(&self, _addr: u64, len: usize) -> Result<Vec<u8>, genapi::GenApiError> {
+//! #         Ok(vec![0; len])
+//! #     }
+//! #     fn write(&self, _addr: u64, _data: &[u8]) -> Result<(), genapi::GenApiError> {
+//! #         Ok(())
+//! #     }
+//! # }
+//! # #[allow(dead_code)]
+//! # fn load_nodemap() -> genapi::NodeMap {
+//! #     unimplemented!("replace with GenApi XML parsing")
+//! # }
+//! # #[allow(dead_code)]
+//! # async fn open_transport() -> Result<DummyTransport, GenicamError> {
+//! #     Ok(DummyTransport)
+//! # }
+//! # #[allow(dead_code)]
+//! # async fn run() -> Result<(), GenicamError> {
+//! let timeout = Duration::from_millis(500);
+//! let devices = gige::discover(timeout)
+//!     .await
+//!     .expect("discover cameras");
+//! println!("found {} cameras", devices.len());
+//! let mut camera = Camera::new(open_transport().await?, load_nodemap());
+//! camera.set("ExposureTime", "5000")?;
+//! # Ok(())
+//! # }
+//! ```
+
+pub use genapi_core as genapi;
+pub use genicp;
+pub use pfnc;
+pub use sfnc;
+pub use tl_gige as gige;
 
 pub mod chunks;
 pub mod events;
@@ -8,16 +50,16 @@ pub mod time;
 
 use std::sync::{Mutex, MutexGuard};
 
-use genapi_core::{GenApiError, Node, NodeMap, RegisterIo};
+use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo};
+use gige::GigeDevice;
 use thiserror::Error;
-use tl_gige::GigeDevice;
 
 pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{bind_event_socket, configure_message_channel, Event, EventStream};
 pub use frame::Frame;
+pub use gige::action::{AckSummary, ActionParams};
 pub use stream::{Stream, StreamBuilder};
 pub use time::TimeMapper;
-pub use tl_gige::action::{AckSummary, ActionParams};
 
 /// Error type produced by the high level GenICam facade.
 #[derive(Debug, Error)]

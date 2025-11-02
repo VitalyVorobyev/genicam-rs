@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! Load and pre-parse GenICam XML using quick-xml.
 
 use std::future::Future;
@@ -2133,7 +2134,7 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
     }
     let mut address = None;
     let mut length = None;
-    for part in trimmed.split(|c| c == ';' || c == ',') {
+    for part in trimmed.split([';', ',']) {
         let token = part.trim();
         if token.is_empty() {
             continue;
