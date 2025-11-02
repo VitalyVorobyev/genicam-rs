@@ -141,13 +141,14 @@ pub struct BitField {
 }
 
 /// Output type of a SwissKnife expression node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkOutput {
     /// Integer output. The runtime rounds the computed value to the nearest
     /// integer with ties going towards zero.
     Integer,
     /// Floating point output. The runtime exposes the value as a `f64` without
     /// any additional processing.
+    #[default]
     Float,
 }
 
@@ -158,12 +159,6 @@ impl SkOutput {
             "float" => Some(SkOutput::Float),
             _ => None,
         }
-    }
-}
-
-impl Default for SkOutput {
-    fn default() -> Self {
-        SkOutput::Float
     }
 }
 
