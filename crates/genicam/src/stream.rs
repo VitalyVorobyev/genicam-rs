@@ -7,7 +7,6 @@
 //! [`StreamStats`] accumulator for monitoring.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 use tracing::info;
@@ -16,7 +15,7 @@ use crate::GenicamError;
 use tl_gige::gvcp::{GigeDevice, StreamParams};
 use tl_gige::gvsp::StreamConfig;
 use tl_gige::nic::{self, Iface};
-use tl_gige::stats::StreamStats;
+use tl_gige::stats::{StreamStats, StreamStatsAccumulator};
 
 /// Builder for configuring a GVSP stream.
 pub struct StreamBuilder<'a> {
@@ -174,7 +173,7 @@ impl<'a> StreamBuilder<'a> {
                 .map_err(|err| GenicamError::transport(err.to_string()))?;
         }
 
-        let stats = Arc::new(StreamStats::new());
+        let stats = StreamStatsAccumulator::new();
         Ok(Stream {
             socket,
             stats,
@@ -188,7 +187,7 @@ impl<'a> StreamBuilder<'a> {
 /// and statistics.
 pub struct Stream {
     socket: UdpSocket,
-    stats: Arc<StreamStats>,
+    stats: StreamStatsAccumulator,
     params: StreamParams,
     config: StreamConfig,
 }
@@ -200,7 +199,14 @@ impl Stream {
     }
 
     /// Consume the stream and return the UDP socket together with the shared statistics handle.
-    pub fn into_parts(self) -> (UdpSocket, Arc<StreamStats>, StreamParams, StreamConfig) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        UdpSocket,
+        StreamStatsAccumulator,
+        StreamParams,
+        StreamConfig,
+    ) {
         (self.socket, self.stats, self.params, self.config)
     }
 
@@ -209,9 +215,14 @@ impl Stream {
         self.params
     }
 
-    /// Obtain a clone of the statistics accumulator.
-    pub fn stats(&self) -> Arc<StreamStats> {
-        Arc::clone(&self.stats)
+    /// Obtain a clone of the statistics accumulator handle for updates.
+    pub fn stats_handle(&self) -> StreamStatsAccumulator {
+        self.stats.clone()
+    }
+
+    /// Snapshot the collected statistics.
+    pub fn stats(&self) -> StreamStats {
+        self.stats.snapshot()
     }
 
     /// Immutable view of the stream configuration.

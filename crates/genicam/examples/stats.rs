@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::time::Duration;
 
-use genicam::gige::stats::StreamStats;
+use genicam::gige::stats::StreamStatsAccumulator;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .find_map(|arg| arg.strip_prefix("--drop-rate=").map(|v| v.to_string()))
         .unwrap_or_else(|| "0.0".into())
         .parse::<f32>()?;
-    let stats = StreamStats::new();
+    let stats = StreamStatsAccumulator::new();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     println!(
         "Simulated stream stats (drop rate {:.1}%)",
@@ -29,10 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let snapshot = stats.snapshot();
         println!(
             "packets={:>6} drops={:>3} resends={:>3} backpressure={:>3}",
-            snapshot.packets,
-            snapshot.dropped_frames,
-            snapshot.resends,
-            snapshot.backpressure_drops
+            snapshot.packets, snapshot.drops, snapshot.resends, snapshot.backpressure_drops
         );
     }
     Ok(())
