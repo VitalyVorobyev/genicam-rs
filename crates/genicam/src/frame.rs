@@ -145,10 +145,12 @@ impl Frame {
     fn bayer_to_rgb8(&self) -> Result<Vec<u8>, crate::GenicamError> {
         let pixels = self.total_pixels()?;
         self.expect_payload_len(pixels, "Bayer8")?;
-        let (pattern, x_offset, y_offset) = self
-            .pixel_format
-            .cfa_pattern()
-            .ok_or(crate::GenicamError::UnsupportedPixelFormat(self.pixel_format))?;
+        let (pattern, x_offset, y_offset) =
+            self.pixel_format
+                .cfa_pattern()
+                .ok_or(crate::GenicamError::UnsupportedPixelFormat(
+                    self.pixel_format,
+                ))?;
         debug!(
             width = self.width,
             height = self.height,
