@@ -72,9 +72,9 @@ impl Frame {
             .map_err(|_| crate::GenicamError::Parse("frame width exceeds address space".into()))?;
         let height = usize::try_from(self.height)
             .map_err(|_| crate::GenicamError::Parse("frame height exceeds address space".into()))?;
-        Ok(width
+        width
             .checked_mul(height)
-            .ok_or_else(|| crate::GenicamError::Parse("frame dimensions overflow".into()))?)
+            .ok_or_else(|| crate::GenicamError::Parse("frame dimensions overflow".into()))
     }
 
     fn expect_payload_len(&self, expected: usize, fmt: &str) -> Result<(), crate::GenicamError> {
@@ -148,7 +148,7 @@ impl Frame {
         let (pattern, x_offset, y_offset) = self
             .pixel_format
             .cfa_pattern()
-            .ok_or_else(|| crate::GenicamError::UnsupportedPixelFormat(self.pixel_format))?;
+            .ok_or(crate::GenicamError::UnsupportedPixelFormat(self.pixel_format))?;
         debug!(
             width = self.width,
             height = self.height,

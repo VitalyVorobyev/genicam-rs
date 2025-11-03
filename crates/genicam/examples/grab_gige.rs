@@ -326,7 +326,7 @@ fn write_pgm(
     height: usize,
     data: &[u8],
 ) -> Result<(), Box<dyn Error>> {
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path)?;
     writeln!(file, "P5\n{} {}\n255", width, height)?;
     file.write_all(data)?;
     Ok(())
@@ -338,7 +338,7 @@ fn write_ppm(
     height: usize,
     data: &[u8],
 ) -> Result<(), Box<dyn Error>> {
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path)?;
     writeln!(file, "P6\n{} {}\n255", width, height)?;
     file.write_all(data)?;
     Ok(())
