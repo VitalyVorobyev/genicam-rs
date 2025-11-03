@@ -120,6 +120,9 @@ pub enum GenicamError {
     /// Required chunk feature missing from the nodemap.
     #[error("chunk feature '{0}' not found; verify camera supports chunk data")]
     MissingChunkFeature(String),
+    /// The camera reported a pixel format without a conversion path.
+    #[error("unsupported pixel format: {0}")]
+    UnsupportedPixelFormat(pfnc::PixelFormat),
 }
 
 impl GenicamError {

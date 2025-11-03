@@ -2,19 +2,20 @@ use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::BytesMut;
 use genicam::genapi::NodeMap;
 use genicam::gige::gvsp::{self, GvspPacket};
 use genicam::gige::nic::Iface;
 use genicam::gige::GVCP_PORT;
+use genicam::{gige::stats::StreamStats, pfnc::PixelFormat};
 use genicam::{
     parse_chunk_bytes, Camera, ChunkConfig, ChunkKind, ChunkValue, Frame, GenicamError,
     GigeRegisterIo, StreamBuilder,
 };
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Debug, Default)]
 struct Args {
@@ -49,6 +50,10 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
 #[derive(Debug)]
 struct BlockState {
     block_id: u16,
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    timestamp: u64,
     payload: BytesMut,
 }
 
@@ -160,6 +165,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut frames_remaining = 5usize;
     let mut state: Option<BlockState> = None;
     let mut frame_index = 0usize;
+    let stats = stream.stats_handle();
+    let mut last_overlay = Instant::now();
+    let mut last_pixel_format: Option<PixelFormat> = None;
 
     while frames_remaining > 0 {
         let (len, _) = stream.socket().recv_from(&mut recv_buffer).await?;
@@ -171,9 +179,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         };
         match packet {
-            GvspPacket::Leader { block_id, .. } => {
+            GvspPacket::Leader {
+                block_id,
+                width,
+                height,
+                pixel_format,
+                timestamp,
+                ..
+            } => {
+                let pixel_format = PixelFormat::from_code(pixel_format);
+                if last_pixel_format != Some(pixel_format) {
+                    info!(
+                        block_id,
+                        width,
+                        height,
+                        pixel_format = %pixel_format,
+                        "detected pixel format"
+                    );
+                    last_pixel_format = Some(pixel_format);
+                }
                 state = Some(BlockState {
                     block_id,
+                    width,
+                    height,
+                    pixel_format,
+                    timestamp,
                     payload: BytesMut::new(),
                 });
             }
@@ -204,16 +234,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         HashMap::new()
                     }
                 };
-                let ts_dev = chunk_map.get(&ChunkKind::Timestamp).and_then(|value| {
-                    if let ChunkValue::U64(ts) = value {
-                        Some(*ts)
-                    } else {
-                        None
-                    }
-                });
+                let ts_dev = chunk_map
+                    .get(&ChunkKind::Timestamp)
+                    .and_then(|value| match value {
+                        ChunkValue::U64(ts) => Some(*ts),
+                        _ => None,
+                    })
+                    .or(Some(active.timestamp));
                 let ts_host = ts_dev.map(|ticks| camera.map_dev_ts(ticks));
                 let frame = Frame {
                     payload: active.payload.freeze(),
+                    width: active.width,
+                    height: active.height,
+                    pixel_format: active.pixel_format,
                     chunks: if chunk_map.is_empty() {
                         None
                     } else {
@@ -222,9 +255,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     ts_dev,
                     ts_host,
                 };
+                let latency = frame
+                    .host_time()
+                    .and_then(|ts| SystemTime::now().duration_since(ts).ok());
+                stats.record_frame(frame.payload.len(), latency);
                 frame_index += 1;
                 print_frame_summary(frame_index, &frame);
                 frames_remaining -= 1;
+                if last_overlay.elapsed() >= Duration::from_secs(1) {
+                    let snapshot = stats.snapshot();
+                    print_overlay(&snapshot);
+                    last_overlay = Instant::now();
+                }
             }
         }
     }
@@ -236,6 +278,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn print_frame_summary(index: usize, frame: &Frame) {
     println!("Frame #{index}: {} bytes payload", frame.payload.len());
+    println!(
+        "  Dimensions: {}x{} ({})",
+        frame.width, frame.height, frame.pixel_format
+    );
     match frame.ts_dev {
         Some(ts) => println!("  Timestamp (device): {ts}"),
         None => println!("  Timestamp (device): <not available>"),
@@ -270,4 +316,15 @@ fn print_frame_summary(index: usize, frame: &Frame) {
     } else {
         println!("  No chunk data reported.");
     }
+}
+
+fn print_overlay(stats: &StreamStats) {
+    let latency = stats
+        .avg_latency_ms
+        .map(|ms| format!("{ms:.2} ms"))
+        .unwrap_or_else(|| "n/a".to_string());
+    println!(
+        "[stats] fps={:.1} Mbps={:.2} drops={} resends={} latency={}",
+        stats.avg_fps, stats.avg_mbps, stats.drops, stats.resends, latency
+    );
 }

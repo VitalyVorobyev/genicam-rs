@@ -12,7 +12,7 @@ use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use crate::nic::Iface;
-use crate::stats::StreamStats;
+use crate::stats::StreamStatsAccumulator;
 use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -442,7 +442,7 @@ impl FrameQueue {
         }
     }
 
-    pub fn push(&mut self, frame: CompletedFrame, stats: &StreamStats) {
+    pub fn push(&mut self, frame: CompletedFrame, stats: &StreamStatsAccumulator) {
         if self.inner.len() == self.capacity {
             self.inner.pop_front();
             stats.record_backpressure_drop();
@@ -485,11 +485,11 @@ fn split_range(range: RangeInclusive<u16>, max_len: usize) -> Vec<RangeInclusive
 pub struct Reassembler {
     active: Option<FrameAssembly>,
     packet_payload: usize,
-    stats: StreamStats,
+    stats: StreamStatsAccumulator,
 }
 
 impl Reassembler {
-    pub fn new(packet_payload: usize, stats: StreamStats) -> Self {
+    pub fn new(packet_payload: usize, stats: StreamStatsAccumulator) -> Self {
         Self {
             active: None,
             packet_payload,
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn reassembler_finishes_frame() {
-        let stats = StreamStats::new();
+        let stats = StreamStatsAccumulator::new();
         let mut reassembler = Reassembler::new(4, stats);
         reassembler.start_block(1, 3, BytesMut::with_capacity(12));
         reassembler.push_packet(0, &[1, 2, 3]);

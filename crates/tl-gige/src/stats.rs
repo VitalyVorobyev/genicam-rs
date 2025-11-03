@@ -1,109 +1,230 @@
 //! Streaming statistics helpers.
 
-use std::f64;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Basic streaming statistics shared between GVSP and higher layers.
-#[derive(Debug)]
+const EWMA_ALPHA: f64 = 0.2;
+
+/// Immutable view of streaming statistics suitable for UI overlays.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamStats {
-    packets: AtomicU64,
-    resends: AtomicU64,
-    resend_ranges: AtomicU64,
-    dropped_frames: AtomicU64,
-    backpressure_drops: AtomicU64,
-    late_frames: AtomicU64,
-    pool_exhaustions: AtomicU64,
+    pub frames: u64,
+    pub bytes: u64,
+    pub drops: u64,
+    pub resends: u64,
+    pub last_frame_dt: Duration,
+    pub avg_fps: f64,
+    pub avg_mbps: f64,
+    pub avg_latency_ms: Option<f64>,
+    pub packets: u64,
+    pub resend_ranges: u64,
+    pub backpressure_drops: u64,
+    pub late_frames: u64,
+    pub pool_exhaustions: u64,
+    pub elapsed: Duration,
+    pub packets_per_second: f64,
+}
+
+impl Default for StreamStats {
+    fn default() -> Self {
+        StreamStats {
+            frames: 0,
+            bytes: 0,
+            drops: 0,
+            resends: 0,
+            last_frame_dt: Duration::ZERO,
+            avg_fps: 0.0,
+            avg_mbps: 0.0,
+            avg_latency_ms: None,
+            packets: 0,
+            resend_ranges: 0,
+            backpressure_drops: 0,
+            late_frames: 0,
+            pool_exhaustions: 0,
+            elapsed: Duration::ZERO,
+            packets_per_second: 0.0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StatsState {
+    frames: u64,
+    bytes: u64,
+    packets: u64,
+    resends: u64,
+    resend_ranges: u64,
+    drops: u64,
+    backpressure_drops: u64,
+    late_frames: u64,
+    pool_exhaustions: u64,
+    last_frame_dt: Duration,
+    avg_fps: f64,
+    avg_mbps: f64,
+    avg_latency_ms: Option<f64>,
+    last_frame_instant: Option<Instant>,
     start: Instant,
 }
 
-impl StreamStats {
+impl StatsState {
+    fn new() -> Self {
+        Self {
+            frames: 0,
+            bytes: 0,
+            packets: 0,
+            resends: 0,
+            resend_ranges: 0,
+            drops: 0,
+            backpressure_drops: 0,
+            late_frames: 0,
+            pool_exhaustions: 0,
+            last_frame_dt: Duration::ZERO,
+            avg_fps: 0.0,
+            avg_mbps: 0.0,
+            avg_latency_ms: None,
+            last_frame_instant: None,
+            start: Instant::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamStatsAccumulator {
+    inner: Arc<StatsInner>,
+}
+
+#[derive(Debug)]
+struct StatsInner {
+    state: Mutex<StatsState>,
+}
+
+impl StreamStatsAccumulator {
     /// Create a new statistics accumulator.
     pub fn new() -> Self {
         Self {
-            packets: AtomicU64::new(0),
-            resends: AtomicU64::new(0),
-            resend_ranges: AtomicU64::new(0),
-            dropped_frames: AtomicU64::new(0),
-            backpressure_drops: AtomicU64::new(0),
-            late_frames: AtomicU64::new(0),
-            pool_exhaustions: AtomicU64::new(0),
-            start: Instant::now(),
+            inner: Arc::new(StatsInner {
+                state: Mutex::new(StatsState::new()),
+            }),
         }
     }
 
     /// Record a received packet.
     pub fn record_packet(&self) {
-        self.packets.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.packets += 1;
     }
 
     /// Record a resend request.
     pub fn record_resend(&self) {
-        self.resends.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.resends += 1;
     }
 
     /// Record the number of packet ranges covered by a resend request.
     pub fn record_resend_ranges(&self, ranges: u64) {
-        if ranges > 0 {
-            self.resend_ranges.fetch_add(ranges, Ordering::Relaxed);
+        if ranges == 0 {
+            return;
         }
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.resend_ranges += ranges;
     }
 
     /// Record a dropped frame event.
     pub fn record_drop(&self) {
-        self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.drops += 1;
     }
 
     /// Record a drop caused by application backpressure.
     pub fn record_backpressure_drop(&self) {
-        self.backpressure_drops.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.backpressure_drops += 1;
     }
 
     /// Record a frame that missed its presentation deadline.
     pub fn record_late_frame(&self) {
-        self.late_frames.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.late_frames += 1;
     }
 
     /// Record an exhausted frame buffer pool event.
     pub fn record_pool_exhaustion(&self) {
-        self.pool_exhaustions.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.pool_exhaustions += 1;
     }
 
-    /// Snapshot the current counters.
-    pub fn snapshot(&self) -> Snapshot {
-        let elapsed = self.start.elapsed().as_secs_f64().max(f64::EPSILON) as f32;
-        Snapshot {
-            packets: self.packets.load(Ordering::Relaxed),
-            resends: self.resends.load(Ordering::Relaxed),
-            resend_ranges: self.resend_ranges.load(Ordering::Relaxed),
-            dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
-            backpressure_drops: self.backpressure_drops.load(Ordering::Relaxed),
-            late_frames: self.late_frames.load(Ordering::Relaxed),
-            pool_exhaustions: self.pool_exhaustions.load(Ordering::Relaxed),
+    /// Update metrics for a fully received frame.
+    pub fn record_frame(&self, bytes: usize, latency: Option<Duration>) {
+        let now = Instant::now();
+        let mut state = self.inner.state.lock().expect("stats mutex poisoned");
+        state.frames += 1;
+        state.bytes += bytes as u64;
+
+        if let Some(prev) = state.last_frame_instant.replace(now) {
+            let dt = now.saturating_duration_since(prev);
+            if dt > Duration::ZERO {
+                state.last_frame_dt = dt;
+                let fps = 1.0 / dt.as_secs_f64();
+                state.avg_fps = if state.avg_fps == 0.0 {
+                    fps
+                } else {
+                    state.avg_fps + EWMA_ALPHA * (fps - state.avg_fps)
+                };
+                let mbps = (bytes as f64 * 8.0) / 1_000_000.0 / dt.as_secs_f64();
+                state.avg_mbps = if state.avg_mbps == 0.0 {
+                    mbps
+                } else {
+                    state.avg_mbps + EWMA_ALPHA * (mbps - state.avg_mbps)
+                };
+            }
+        } else {
+            state.last_frame_dt = Duration::ZERO;
+        }
+
+        if let Some(latency) = latency {
+            let ms = latency.as_secs_f64() * 1_000.0;
+            state.avg_latency_ms = Some(match state.avg_latency_ms {
+                Some(prev) => prev + EWMA_ALPHA * (ms - prev),
+                None => ms,
+            });
+        }
+    }
+
+    /// Produce a snapshot of the accumulated statistics.
+    pub fn snapshot(&self) -> StreamStats {
+        let state = self.inner.state.lock().expect("stats mutex poisoned");
+        let elapsed = state.start.elapsed();
+        let packets_per_second = if elapsed > Duration::ZERO {
+            state.packets as f64 / elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        StreamStats {
+            frames: state.frames,
+            bytes: state.bytes,
+            drops: state.drops + state.backpressure_drops,
+            resends: state.resends,
+            last_frame_dt: state.last_frame_dt,
+            avg_fps: state.avg_fps,
+            avg_mbps: state.avg_mbps,
+            avg_latency_ms: state.avg_latency_ms,
+            packets: state.packets,
+            resend_ranges: state.resend_ranges,
+            backpressure_drops: state.backpressure_drops,
+            late_frames: state.late_frames,
+            pool_exhaustions: state.pool_exhaustions,
             elapsed,
-            packets_per_second: self.packets.load(Ordering::Relaxed) as f32 / elapsed,
+            packets_per_second,
         }
     }
 }
 
-impl Default for StreamStats {
+impl Default for StreamStatsAccumulator {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Immutable view of collected statistics.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Snapshot {
-    pub packets: u64,
-    pub resends: u64,
-    pub resend_ranges: u64,
-    pub dropped_frames: u64,
-    pub backpressure_drops: u64,
-    pub late_frames: u64,
-    pub pool_exhaustions: u64,
-    pub elapsed: f32,
-    pub packets_per_second: f32,
 }
 
 /// Event channel statistics.
