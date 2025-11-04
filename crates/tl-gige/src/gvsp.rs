@@ -27,19 +27,67 @@ const PAYLOAD_TYPE_IMAGE: u8 = 0x01;
 /// negotiated packet size.
 const GVSP_HEADER_SIZE: usize = 8;
 
+/// Destination for GVSP packets received by the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDest {
+    /// Standard unicast delivery towards a single host.
+    Unicast {
+        /// Destination IPv4 address configured on the camera.
+        dst_ip: Ipv4Addr,
+        /// UDP port used for streaming.
+        dst_port: u16,
+    },
+    /// Multicast delivery towards one or more hosts joined to the group.
+    Multicast {
+        /// Multicast group IPv4 address.
+        group: Ipv4Addr,
+        /// UDP port used for streaming.
+        port: u16,
+        /// Whether loopback is enabled on the local socket.
+        loopback: bool,
+        /// Outbound multicast time-to-live.
+        ttl: u32,
+    },
+}
+
+impl StreamDest {
+    /// Retrieve the configured UDP port.
+    pub fn port(&self) -> u16 {
+        match self {
+            StreamDest::Unicast { dst_port, .. } => *dst_port,
+            StreamDest::Multicast { port, .. } => *port,
+        }
+    }
+
+    /// Retrieve the configured IPv4 destination address.
+    pub fn addr(&self) -> Ipv4Addr {
+        match self {
+            StreamDest::Unicast { dst_ip, .. } => *dst_ip,
+            StreamDest::Multicast { group, .. } => *group,
+        }
+    }
+
+    /// Whether the destination represents multicast delivery.
+    pub fn is_multicast(&self) -> bool {
+        matches!(self, StreamDest::Multicast { .. })
+    }
+}
+
 /// Stream configuration shared between the control plane and GVSP receiver.
 #[derive(Debug, Clone)]
 pub struct StreamConfig {
-    /// Optional multicast address when the device is configured for multi-cast delivery.
-    pub multicast: Option<Ipv4Addr>,
+    /// Destination configuration for the GVSP stream.
+    pub dest: StreamDest,
     /// Interface used for receiving packets and multicast subscription.
     pub iface: Iface,
-    /// Destination UDP port where GVSP packets are expected.
-    pub dst_port: u16,
     /// Override for GVSP packet size determined via control plane.
     pub packet_size: Option<u32>,
     /// Override for GVSP packet delay determined via control plane.
     pub packet_delay: Option<u32>,
+    /// Optional source filter restricting packets to the configured IPv4 address.
+    pub source_filter: Option<Ipv4Addr>,
+    /// Whether GVCP resend requests should be issued when drops are detected.
+    pub resend_enabled: bool,
 }
 
 /// Errors raised while handling GVSP packets.

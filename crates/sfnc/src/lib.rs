@@ -42,6 +42,15 @@ pub const MSG_PORT: &[&str] = &["GevMessageChannelPort", "MessageChannelPort"];
 /// Message channel enable aliases ordered by preference.
 pub const MSG_EN: &[&str] = &["GevMessageChannelEnable", "MessageChannelEnable"];
 
+/// Stream channel selector feature name (`GevStreamChannelSelector`).
+pub const STREAM_CH_SELECTOR: &str = "GevStreamChannelSelector";
+/// Stream channel destination UDP port aliases ordered by preference.
+pub const SCP_HOST_PORT: &[&str] = &["GevSCPHostPort", "SCPHostPort"];
+/// Stream channel destination address aliases ordered by preference.
+pub const SCP_DEST_ADDR: &[&str] = &["GevSCPDA", "SCPDestinationAddress"];
+/// Multicast enable aliases ordered by preference.
+pub const MULTICAST_ENABLE: &[&str] = &["GevSCPSDoNotFragment", "GevMulticastEnable"];
+
 /// Timestamp latch commands ordered by preference.
 ///
 /// Different vendors expose the SFNC timestamp latch using slightly different
