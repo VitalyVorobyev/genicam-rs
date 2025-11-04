@@ -1,22 +1,22 @@
 # Welcome & Goals
 
-**genicam-rs** provides *pure Rust* building blocks for the GenICam ecosystem with an Ethernet-first focus (GigE Vision), while keeping Windows, Linux, and macOS equally supported.
+**genicam-rs** provides *pure Rust* building blocks for the GenICam ecosystem with an Ethernet-first focus (GigE Vision) and **first-class support for Windows, Linux, and macOS**.
 
 ## Who is this book for?
-- **End‑users** building camera applications who want a practical, high‑level API and copy‑pasteable examples.
-- **Contributors** extending transports, GenApi features, and streaming—who need a clear mental model of crates and internal boundaries.
+- **End‑users** building camera applications who want a practical high‑level API and copy‑pasteable examples.
+- **Contributors** extending transports, GenApi features (incl. expression nodes), and streaming—who need a clear mental model of crates and internal boundaries.
 
 ## What works today
 - Device **discovery** over GigE Vision (GVCP) on a selected network interface.
 - **Control path**: reading/writing device memory via GenCP over GVCP; fetching the device’s GenApi XML.
-- **GenApi (tier 1)**: a basic NodeMap with common node kinds (Integer/Float/Enum/Bool/Command), ranges, access modes, and selector-based addressing.
+- **GenApi**: NodeMap with common node kinds (Integer/Float/Enum/Bool/Command/**SwissKnife**), ranges, access modes, and selector-based addressing.
 - **CLI** (`gencamctl`) for common operations: discovery, feature get/set, streaming, events, chunks, and benchmarks.
-- Early **streaming (GVSP)** support with reassembly, resend handling, MTU/packet sizing, and stats (evolving).
+- **Streaming (GVSP)**: packet reassembly, resend handling, MTU/packet sizing & delay, and stats (evolving).
 
 > Details evolve fast—check examples and release notes for the latest capabilities.
 
 ## What’s coming next
-- Deeper GenApi evaluation (e.g., SwissKnife, formulas, dependencies).
+- Additional GenApi nodes (e.g., Converter, complex formulas), dependency evaluation/caching improvements.
 - USB3 Vision transport.
 - GenTL producer (.cti) and PFNC/SFNC coverage.
 
