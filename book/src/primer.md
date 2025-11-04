@@ -7,8 +7,6 @@ This chapter orients you in the standards and shows how they map to the crates i
 - **Data**: receive image/metadata stream(s). In GigE Vision, data is **GVSP** (GigE Vision Streaming Protocol, UDP), typically one-way from camera → host.
 - **Events & Actions**: GVCP supports device→host events and host→device action commands for sync/triggering.
 
-````
-
 ```
    +------------------------+        +--------------------+
    |        Host            |        |     Camera         |
@@ -22,8 +20,6 @@ This chapter orients you in the standards and shows how they map to the crates i
                ^                                v
                | GVSP (UDP, data)         Image/Chunks
                | (streaming)                    |
-```
-
 ```
 
 ## 2) GenApi XML & NodeMap
@@ -61,4 +57,3 @@ This chapter orients you in the standards and shows how they map to the crates i
 - **Architecture Overview** for a code‑level view of modules, traits, and async/concurrency.
 - **Crate Guides** for deep dives (APIs, examples, edge cases).
 - **Tutorials** to configure features and receive frames end‑to‑end.
-```
