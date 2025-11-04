@@ -1,9 +1,20 @@
 [book]
-title = "genicam-rs"
-authors = ["Vitaly Vorobyev"]
-description = "Documentation for the genicam-rs workspace"
+title = "genicam-rs Book"
+authors = ["The genicam-rs contributors"]
+language = "en"
 multilingual = false
 src = "src"
 
+[build]
+create-missing = true
+
 [output.html]
-no-section-label = true
+# Single-site: host the book at the site root (e.g. /genicam-rs/ on GitHub Pages)
+site-url = "/genicam-rs/"
+git-repository-url = "https://github.com/VitalyVorobyev/genicam-rs"
+# Add a navbar link to the API reference (generated rustdoc) that you'll place under /api/
+additional-css = []
+additional-js = []
+
+[preprocessor]
+# (optional) add preprocessors later, e.g. mermaid or links-checker
