@@ -18,13 +18,13 @@ use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::info;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use tracing::warn;
 
 /// Default socket receive buffer size used when the caller does not provide a
 /// custom value. The number mirrors what many operating systems allow without
 /// requiring elevated privileges.
-const DEFAULT_RCVBUF_BYTES: usize = 4 << 20; // 4 MiB
+pub const DEFAULT_RCVBUF_BYTES: usize = 4 << 20; // 4 MiB
 
 /// Maximum size for interface names supported by the kernel on Linux. The
 /// constant is used to validate the provided names before using them when
@@ -75,6 +75,21 @@ impl Iface {
             ipv4,
             ipv6,
         })
+    }
+
+    /// Resolve an interface by its primary IPv4 address.
+    pub fn from_ipv4(addr: Ipv4Addr) -> io::Result<Self> {
+        for iface in if_addrs::get_if_addrs()? {
+            if let IfAddr::V4(v4) = iface.addr {
+                if v4.ip == addr {
+                    return Self::from_system(&iface.name);
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no interface with IPv4 {addr}"),
+        ))
     }
 
     /// Interface name as provided by the operating system (e.g. `eth0`).
@@ -139,6 +154,30 @@ pub fn best_packet_size(mtu: u32) -> u32 {
     mtu.saturating_sub(ETHERNET_L2 + IPV4_HEADER + UDP_HEADER)
 }
 
+/// Multicast socket options applied while binding.
+#[derive(Debug, Clone)]
+pub struct McOptions {
+    /// Whether multicast packets sent locally should be looped back.
+    pub loopback: bool,
+    /// IPv4 time-to-live for outbound multicast packets.
+    pub ttl: u32,
+    /// Receive buffer size in bytes.
+    pub rcvbuf_bytes: usize,
+    /// Whether to enable address/port reuse when binding.
+    pub reuse_addr: bool,
+}
+
+impl Default for McOptions {
+    fn default() -> Self {
+        Self {
+            loopback: false,
+            ttl: 1,
+            rcvbuf_bytes: DEFAULT_RCVBUF_BYTES,
+            reuse_addr: true,
+        }
+    }
+}
+
 /// Bind a UDP socket configured for GVSP traffic.
 pub async fn bind_udp(
     bind: IpAddr,
@@ -174,6 +213,63 @@ pub async fn bind_udp(
 
     let addr = SocketAddr::new(bind, port);
     socket.bind(&addr.into())?;
+
+    let std_socket: std::net::UdpSocket = socket.into();
+    std_socket.set_nonblocking(true)?;
+    UdpSocket::from_std(std_socket)
+}
+
+fn validate_multicast_inputs(group: Ipv4Addr, ttl: u32) -> io::Result<()> {
+    if ttl > 255 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "multicast TTL must be <= 255",
+        ));
+    }
+    if (group.octets()[0] & 0xF0) != 0xE0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "multicast group must be within 224.0.0.0/4",
+        ));
+    }
+    Ok(())
+}
+
+/// Bind a UDP socket subscribed to the provided multicast group on the interface.
+pub async fn bind_multicast(
+    iface: &Iface,
+    group: Ipv4Addr,
+    port: u16,
+    opts: &McOptions,
+) -> io::Result<UdpSocket> {
+    validate_multicast_inputs(group, opts.ttl)?;
+    let iface_addr = iface
+        .ipv4()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "interface lacks IPv4"))?;
+
+    info!(name = iface.name(), %group, port, "binding multicast GVSP socket");
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+
+    if opts.reuse_addr {
+        socket.set_reuse_address(true)?;
+        #[cfg(all(unix, not(target_os = "solaris")))]
+        socket.set_reuse_port(true)?;
+    }
+
+    socket.set_recv_buffer_size(opts.rcvbuf_bytes)?;
+    socket.set_multicast_loop_v4(opts.loopback)?;
+    socket.set_multicast_ttl_v4(opts.ttl)?;
+    socket.set_multicast_if_v4(&iface_addr)?;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Err(err) = socket.bind_device(Some(iface.name().as_bytes())) {
+        warn!(name = iface.name(), error = %err, "SO_BINDTODEVICE failed");
+    }
+
+    let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    socket.bind(&bind_addr.into())?;
+    socket.join_multicast_v4(&group, &iface_addr)?;
 
     let std_socket: std::net::UdpSocket = socket.into();
     std_socket.set_nonblocking(true)?;
@@ -234,6 +330,23 @@ pub fn default_bind_addr() -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reject_invalid_ttl() {
+        let err = validate_multicast_inputs(Ipv4Addr::new(239, 0, 0, 1), 512).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn reject_non_multicast_group() {
+        let err = validate_multicast_inputs(Ipv4Addr::new(192, 168, 1, 1), 1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn accept_valid_group() {
+        assert!(validate_multicast_inputs(Ipv4Addr::new(239, 192, 1, 10), 1).is_ok());
+    }
 
     #[test]
     fn packet_size_respects_headers() {

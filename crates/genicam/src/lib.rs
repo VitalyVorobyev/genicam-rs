@@ -91,6 +91,7 @@ use crate::events::{
     enable_event_raw as enable_event_fallback, parse_event_id,
 };
 use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo, SkOutput};
+use gige::gvcp::consts as gvcp_consts;
 use gige::GigeDevice;
 use thiserror::Error;
 use tokio::time::sleep;
@@ -100,7 +101,7 @@ pub use chunks::{parse_chunk_bytes, ChunkKind, ChunkMap, ChunkValue};
 pub use events::{Event, EventStream};
 pub use frame::Frame;
 pub use gige::action::{AckSummary, ActionParams};
-pub use stream::{Stream, StreamBuilder};
+pub use stream::{Stream, StreamBuilder, StreamDest};
 pub use time::TimeSync;
 
 use crate::time::TimeSync as TimeSyncModel;
@@ -549,6 +550,107 @@ impl<T: RegisterIo> Camera<T> {
                 };
                 enable_event_fallback(&self.transport, event_id, true)?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Configure the stream channel for multicast delivery.
+    pub fn configure_stream_multicast(
+        &mut self,
+        stream_idx: u32,
+        group: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), GenicamError> {
+        if (group.octets()[0] & 0xF0) != 0xE0 {
+            return Err(GenicamError::transport(
+                "multicast group must be within 224.0.0.0/4",
+            ));
+        }
+        info!(stream_idx, %group, port, "configuring multicast stream");
+
+        let transport_ptr = &self.transport as *const T;
+        let mut used_sfnc = true;
+
+        if self.nodemap.node(sfnc::STREAM_CH_SELECTOR).is_some() {
+            unsafe {
+                if let Err(err) = self.nodemap_mut().set_integer(
+                    sfnc::STREAM_CH_SELECTOR,
+                    stream_idx as i64,
+                    &*transport_ptr,
+                ) {
+                    warn!(
+                        channel = stream_idx,
+                        error = %err,
+                        "failed to select stream channel via SFNC"
+                    );
+                    used_sfnc = false;
+                }
+            }
+        } else {
+            used_sfnc = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::SCP_DEST_ADDR) {
+            unsafe {
+                if let Err(err) =
+                    self.nodemap_mut()
+                        .set_integer(node, u32::from(group) as i64, &*transport_ptr)
+                {
+                    warn!(feature = node, error = %err, "failed to write multicast address");
+                    used_sfnc = false;
+                }
+            }
+        } else {
+            used_sfnc = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::SCP_HOST_PORT) {
+            unsafe {
+                if let Err(err) = self
+                    .nodemap_mut()
+                    .set_integer(node, port as i64, &*transport_ptr)
+                {
+                    warn!(feature = node, error = %err, "failed to write multicast port");
+                    used_sfnc = false;
+                }
+            }
+        } else {
+            used_sfnc = false;
+        }
+
+        if let Some(node) = self.find_alias(sfnc::MULTICAST_ENABLE) {
+            unsafe {
+                if let Err(err) = self.nodemap_mut().set_bool(node, true, &*transport_ptr) {
+                    warn!(feature = node, error = %err, "failed to enable multicast flag");
+                }
+            }
+        }
+
+        if !used_sfnc {
+            let base = gvcp_consts::STREAM_CHANNEL_BASE
+                + stream_idx as u64 * gvcp_consts::STREAM_CHANNEL_STRIDE;
+            let addr_reg = base + gvcp_consts::STREAM_DESTINATION_ADDRESS;
+            self.transport
+                .write(addr_reg, &group.octets())
+                .map_err(|err| GenicamError::transport(format!("write multicast addr: {err}")))?;
+            let port_reg = base + gvcp_consts::STREAM_DESTINATION_PORT;
+            self.transport
+                .write(port_reg, &port.to_be_bytes())
+                .map_err(|err| GenicamError::transport(format!("write multicast port: {err}")))?;
+            info!(
+                stream_idx,
+                %group,
+                port,
+                "configured multicast destination via raw registers"
+            );
+        } else {
+            info!(
+                stream_idx,
+                %group,
+                port,
+                "configured multicast destination via SFNC"
+            );
         }
 
         Ok(())
