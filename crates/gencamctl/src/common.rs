@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Context, Result};
+use std::convert::TryInto;
 use genapi_xml::{self, XmlError};
 use genicam::genapi::NodeMap;
 use genicam::{Camera, GigeRegisterIo};
@@ -144,25 +145,37 @@ pub fn format_system_time(ts: SystemTime) -> Result<String> {
 }
 
 pub fn encode_pgm(width: u32, height: u32, data: &[u8]) -> Result<Vec<u8>> {
-    if usize::from(width) * usize::from(height) != data.len() {
-        bail!("PGM payload length mismatch");
+    // Lossless, portable conversions (works on any pointer width)
+    let w: usize = width.try_into().context("width doesn't fit in usize")?;
+    let h: usize = height.try_into().context("height doesn't fit in usize")?;
+
+    // Guard against overflow in w * h
+    let expected = w.checked_mul(h).context("image area overflow")?;
+
+    if expected != data.len() {
+        bail!("PGM payload length mismatch: expected {expected}, got {}", data.len());
     }
-    let mut buf = Vec::with_capacity(16 + data.len());
-    buf.extend_from_slice(format!("P5\n{} {}\n255\n", width, height).as_bytes());
+
+    let header = format!("P5\n{width} {height}\n255\n");
+    let mut buf = Vec::with_capacity(header.len() + data.len());
+    buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(data);
     Ok(buf)
 }
 
 pub fn encode_ppm(width: u32, height: u32, data: &[u8]) -> Result<Vec<u8>> {
-    let expected = usize::from(width)
-        .checked_mul(usize::from(height))
-        .and_then(|px| px.checked_mul(3))
-        .ok_or_else(|| anyhow!("PPM dimensions overflow"))?;
+    let w: usize = width.try_into().context("width doesn't fit in usize")?;
+    let h: usize = height.try_into().context("height doesn't fit in usize")?;
+
+    // Guard against overflow in w * h
+    let expected = w.checked_mul(h).context("image area overflow")?;
+
     if expected != data.len() {
-        bail!("PPM payload length mismatch");
+        bail!("PPM payload length mismatch: expected {expected}, got {}", data.len());
     }
-    let mut buf = Vec::with_capacity(16 + data.len());
-    buf.extend_from_slice(format!("P6\n{} {}\n255\n", width, height).as_bytes());
+    let header = format!("P6\n{width} {height}\n255\n");
+    let mut buf = Vec::with_capacity(header.len() + data.len());
+    buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(data);
     Ok(buf)
 }

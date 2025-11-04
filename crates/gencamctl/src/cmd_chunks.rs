@@ -5,8 +5,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use tracing::info;
 
-use sfnc;
-
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 #[derive(Serialize)]
@@ -39,33 +37,13 @@ pub async fn run(
         .await
         .context("open camera for chunk configuration")?;
 
-    if enable {
-        let cfg = genicam::ChunkConfig {
-            selectors: selected.clone(),
-            active: true,
-        };
-        camera
-            .configure_chunks(&cfg)
-            .context("enable chunk selectors")?;
-    } else {
-        let transport = camera.transport();
-        if let Err(err) = camera
-            .nodemap_mut()
-            .set_bool(sfnc::CHUNK_MODE_ACTIVE, false, transport)
-        {
-            tracing::warn!(error = %err, "failed to disable chunk mode via nodemap");
-        }
-        for selector in &selected {
-            let nodemap = camera.nodemap_mut();
-            if let Err(err) = nodemap.set_enum(sfnc::CHUNK_SELECTOR, selector, transport) {
-                tracing::warn!(selector, error = %err, "failed to select chunk");
-                continue;
-            }
-            if let Err(err) = nodemap.set_bool(sfnc::CHUNK_ENABLE, false, transport) {
-                tracing::warn!(selector, error = %err, "failed to disable chunk selector");
-            }
-        }
-    }
+    let cfg: genicam::ChunkConfig = genicam::ChunkConfig {
+        selectors: selected.clone(),
+        active: enable,
+    };
+    camera
+        .configure_chunks(&cfg)
+        .context("enable/disable chunk selectors")?;
 
     if json {
         let status = ChunkStatus {

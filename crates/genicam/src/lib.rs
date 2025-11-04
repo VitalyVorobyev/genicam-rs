@@ -154,6 +154,13 @@ impl<T: RegisterIo> Camera<T> {
         }
     }
 
+    #[inline]
+    fn with_map<R>(&mut self, f: impl FnOnce(&mut NodeMap, &T) -> R) -> R {
+        let transport = &self.transport;
+        let nodemap = &mut self.nodemap;
+        f(nodemap, transport)
+    }
+
     /// Return a reference to the underlying transport.
     pub fn transport(&self) -> &T {
         &self.transport
@@ -413,30 +420,15 @@ impl<T: RegisterIo> Camera<T> {
         self.ensure_chunk_feature(sfnc::CHUNK_SELECTOR)?;
         self.ensure_chunk_feature(sfnc::CHUNK_ENABLE)?;
 
-        let transport = &self.transport as *const T;
-        unsafe {
-            // SAFETY: `transport` points to `self.transport`, which is only accessed immutably
-            // while the nodemap borrow is active.
-            self.nodemap_mut()
-                .set_bool(sfnc::CHUNK_MODE_ACTIVE, cfg.active, &*transport)
-                .map_err(GenicamError::from)?;
-        }
-
-        for selector in &cfg.selectors {
-            let transport = &self.transport as *const T;
-            unsafe {
-                // SAFETY: see rationale above; the nodemap mutation does not alias with
-                // the immutable transport access.
-                self.nodemap_mut()
-                    .set_enum(sfnc::CHUNK_SELECTOR, selector, &*transport)
-                    .map_err(GenicamError::from)?;
-                self.nodemap_mut()
-                    .set_bool(sfnc::CHUNK_ENABLE, true, &*transport)
-                    .map_err(GenicamError::from)?;
+        // SAFE: split-borrow distinct fields of `self`
+        self.with_map(|nm, tr| {
+            nm.set_bool(sfnc::CHUNK_MODE_ACTIVE, cfg.active, tr)?;
+            for s in &cfg.selectors {
+                nm.set_enum(sfnc::CHUNK_SELECTOR, s, tr)?;
+                nm.set_bool(sfnc::CHUNK_ENABLE, cfg.active, tr)?;
             }
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Configure the GVCP message channel and enable delivery of the requested events.
@@ -447,67 +439,66 @@ impl<T: RegisterIo> Camera<T> {
         enable_ids: &[&str],
     ) -> Result<(), GenicamError> {
         info!(%local_ip, port, "configuring GVCP events");
-        let transport_ptr = &self.transport as *const T;
+        // Pre-compute aliases before taking a mutable borrow of the nodemap
+        let msg_sel = self.find_alias(sfnc::MSG_SEL);
+        let msg_ip = self.find_alias(sfnc::MSG_IP);
+        let msg_port = self.find_alias(sfnc::MSG_PORT);
+        let msg_en = self.find_alias(sfnc::MSG_EN);
+
         let mut channel_configured = true;
 
-        if let Some(selector) = self.find_alias(sfnc::MSG_SEL) {
-            match self.nodemap.enum_entries(selector) {
-                Ok(entries) => {
-                    if let Some(entry) = entries.into_iter().next() {
-                        unsafe {
-                            self.nodemap_mut()
-                                .set_enum(selector, &entry, &*transport_ptr)
+        {
+            let transport = &self.transport;
+            let nodemap = &mut self.nodemap;
+
+            if let Some(selector) = msg_sel {
+                match nodemap.enum_entries(selector) {
+                    Ok(entries) => {
+                        if let Some(entry) = entries.into_iter().next() {
+                            nodemap
+                                .set_enum(selector, &entry, transport)
                                 .map_err(GenicamError::from)?;
+                        } else {
+                            warn!(node = selector, "message selector missing entries");
+                            channel_configured = false;
                         }
-                    } else {
-                        warn!(node = selector, "message selector missing entries");
+                    }
+                    Err(err) => {
+                        warn!(feature = selector, error = %err, "failed to query message selector");
                         channel_configured = false;
                     }
                 }
-                Err(err) => {
-                    warn!(feature = selector, error = %err, "failed to query message selector");
-                    channel_configured = false;
-                }
+            } else {
+                channel_configured = false;
             }
-        } else {
-            channel_configured = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::MSG_IP) {
-            let value = u32::from(local_ip) as i64;
-            unsafe {
-                if let Err(err) = self.nodemap_mut().set_integer(node, value, &*transport_ptr) {
+            if let Some(node) = msg_ip {
+                let value = u32::from(local_ip) as i64;
+                if let Err(err) = nodemap.set_integer(node, value, transport) {
                     warn!(feature = node, error = %err, "failed to write message IP");
                     channel_configured = false;
                 }
+            } else {
+                channel_configured = false;
             }
-        } else {
-            channel_configured = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::MSG_PORT) {
-            unsafe {
-                if let Err(err) = self
-                    .nodemap_mut()
-                    .set_integer(node, port as i64, &*transport_ptr)
-                {
+            if let Some(node) = msg_port {
+                if let Err(err) = nodemap.set_integer(node, port as i64, transport) {
                     warn!(feature = node, error = %err, "failed to write message port");
                     channel_configured = false;
                 }
+            } else {
+                channel_configured = false;
             }
-        } else {
-            channel_configured = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::MSG_EN) {
-            unsafe {
-                if let Err(err) = self.nodemap_mut().set_bool(node, true, &*transport_ptr) {
+            if let Some(node) = msg_en {
+                if let Err(err) = nodemap.set_bool(node, true, transport) {
                     warn!(feature = node, error = %err, "failed to enable message channel");
                     channel_configured = false;
                 }
+            } else {
+                channel_configured = false;
             }
-        } else {
-            channel_configured = false;
         }
 
         if !channel_configured {
@@ -517,21 +508,21 @@ impl<T: RegisterIo> Camera<T> {
         let mut used_sfnc = self.nodemap.node(sfnc::EVENT_SELECTOR).is_some()
             && self.nodemap.node(sfnc::EVENT_NOTIFICATION).is_some();
 
-        if used_sfnc {
-            for &name in enable_ids {
-                unsafe {
-                    if let Err(err) =
-                        self.nodemap_mut()
-                            .set_enum(sfnc::EVENT_SELECTOR, name, &*transport_ptr)
-                    {
+        {
+            let transport = &self.transport;
+            let nodemap = &mut self.nodemap;
+
+            if used_sfnc {
+                for &name in enable_ids {
+                    if let Err(err) = nodemap.set_enum(sfnc::EVENT_SELECTOR, name, transport) {
                         warn!(event = name, error = %err, "failed to select event via SFNC");
                         used_sfnc = false;
                         break;
                     }
-                    if let Err(err) = self.nodemap_mut().set_enum(
+                    if let Err(err) = nodemap.set_enum(
                         sfnc::EVENT_NOTIFICATION,
                         sfnc::EVENT_NOTIF_ON,
-                        &*transport_ptr,
+                        transport,
                     ) {
                         warn!(event = name, error = %err, "failed to enable event via SFNC");
                         used_sfnc = false;
@@ -569,15 +560,21 @@ impl<T: RegisterIo> Camera<T> {
         }
         info!(stream_idx, %group, port, "configuring multicast stream");
 
-        let transport_ptr = &self.transport as *const T;
-        let mut used_sfnc = true;
+        // Precompute node names before taking &mut self.nodemap
+        let dest_addr_node  = self.find_alias(sfnc::SCP_DEST_ADDR);
+        let host_port_node  = self.find_alias(sfnc::SCP_HOST_PORT);
+        let mcast_en_node   = self.find_alias(sfnc::MULTICAST_ENABLE);
 
-        if self.nodemap.node(sfnc::STREAM_CH_SELECTOR).is_some() {
-            unsafe {
-                if let Err(err) = self.nodemap_mut().set_integer(
+        let mut used_sfnc = true;
+        {
+            let transport = &self.transport;
+            let nodemap = &mut self.nodemap;
+
+            if nodemap.node(sfnc::STREAM_CH_SELECTOR).is_some() {
+                if let Err(err) = nodemap.set_integer(
                     sfnc::STREAM_CH_SELECTOR,
                     stream_idx as i64,
-                    &*transport_ptr,
+                    transport,
                 ) {
                     warn!(
                         channel = stream_idx,
@@ -586,44 +583,32 @@ impl<T: RegisterIo> Camera<T> {
                     );
                     used_sfnc = false;
                 }
+            } else {
+                used_sfnc = false;
             }
-        } else {
-            used_sfnc = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::SCP_DEST_ADDR) {
-            unsafe {
+            if let Some(node) = dest_addr_node {
                 if let Err(err) =
-                    self.nodemap_mut()
-                        .set_integer(node, u32::from(group) as i64, &*transport_ptr)
+                    nodemap.set_integer(node, u32::from(group) as i64, transport)
                 {
                     warn!(feature = node, error = %err, "failed to write multicast address");
                     used_sfnc = false;
                 }
+            } else {
+                used_sfnc = false;
             }
-        } else {
-            used_sfnc = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::SCP_HOST_PORT) {
-            unsafe {
-                if let Err(err) = self
-                    .nodemap_mut()
-                    .set_integer(node, port as i64, &*transport_ptr)
-                {
+            if let Some(node) = host_port_node {
+                if let Err(err) = nodemap.set_integer(node, port as i64, transport) {
                     warn!(feature = node, error = %err, "failed to write multicast port");
                     used_sfnc = false;
                 }
+            } else {
+                used_sfnc = false;
             }
-        } else {
-            used_sfnc = false;
-        }
 
-        if let Some(node) = self.find_alias(sfnc::MULTICAST_ENABLE) {
-            unsafe {
-                if let Err(err) = self.nodemap_mut().set_bool(node, true, &*transport_ptr) {
-                    warn!(feature = node, error = %err, "failed to enable multicast flag");
-                }
+            if let Some(node) = mcast_en_node {
+                let _ = nodemap.set_bool(node, true, transport);
             }
         }
 
