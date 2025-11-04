@@ -159,10 +159,8 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     if ttl > 255 {
         return Err("--ttl must be <= 255".into());
     }
-    if matches!(mode, DestMode::Multicast) {
-        if group.is_none() || port.is_none() {
-            return Err("multicast mode requires --group and --port".into());
-        }
+    if matches!(mode, DestMode::Multicast) && (group.is_none() || port.is_none()) {
+        return Err("multicast mode requires --group and --port".into());
     }
 
     Ok(Args {
@@ -290,9 +288,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut state: Option<BlockState> = None;
     let mut last_overlay = Instant::now();
 
-    let mut duration_timer = time::sleep(args.duration);
+    let duration_timer = time::sleep(args.duration);
     tokio::pin!(duration_timer);
-    let mut ctrl_c = signal::ctrl_c();
     let mut interrupted = false;
 
     loop {
@@ -301,7 +298,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 info!("duration elapsed; stopping bench");
                 break;
             }
-            res = &mut ctrl_c => {
+            res = signal::ctrl_c() => {
                 if let Err(err) = res {
                     warn!(error = %err, "failed to await ctrl-c");
                 }

@@ -284,28 +284,6 @@ pub fn join_multicast(sock: &UdpSocket, group: Ipv4Addr, iface: &Iface) -> io::R
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reject_invalid_ttl() {
-        let err = validate_multicast_inputs(Ipv4Addr::new(239, 0, 0, 1), 512).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn reject_non_multicast_group() {
-        let err = validate_multicast_inputs(Ipv4Addr::new(192, 168, 1, 1), 1).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn accept_valid_group() {
-        assert!(validate_multicast_inputs(Ipv4Addr::new(239, 192, 1, 10), 1).is_ok());
-    }
-}
-
 /// Simple lock-free pool for reusable buffers backing frame assembly.
 #[derive(Debug)]
 pub struct BufferPool {
@@ -352,6 +330,23 @@ pub fn default_bind_addr() -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reject_invalid_ttl() {
+        let err = validate_multicast_inputs(Ipv4Addr::new(239, 0, 0, 1), 512).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn reject_non_multicast_group() {
+        let err = validate_multicast_inputs(Ipv4Addr::new(192, 168, 1, 1), 1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn accept_valid_group() {
+        assert!(validate_multicast_inputs(Ipv4Addr::new(239, 192, 1, 10), 1).is_ok());
+    }
 
     #[test]
     fn packet_size_respects_headers() {

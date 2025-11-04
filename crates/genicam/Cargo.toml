@@ -29,3 +29,7 @@ genicp = { version = "0.1.0", path = "../genicp" }
 fastrand = "2"
 tracing-subscriber = { workspace = true }
 genapi-xml = { version = "0.1.0", path = "../genapi-xml" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Enable Tokio's signal support for examples like `soak_bench`.
+tokio = { workspace = true, features = ["signal"] }

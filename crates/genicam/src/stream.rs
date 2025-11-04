@@ -229,10 +229,12 @@ impl<'a> StreamBuilder<'a> {
                 loopback,
                 ttl,
             } => {
-                let mut opts = McOptions::default();
-                opts.loopback = *loopback;
-                opts.ttl = *ttl;
-                opts.rcvbuf_bytes = self.rcvbuf_bytes.unwrap_or(DEFAULT_RCVBUF_BYTES);
+                let opts = McOptions {
+                    loopback: *loopback,
+                    ttl: *ttl,
+                    rcvbuf_bytes: self.rcvbuf_bytes.unwrap_or(DEFAULT_RCVBUF_BYTES),
+                    ..McOptions::default()
+                };
                 nic::bind_multicast(&iface, *group, *port, &opts)
                     .await
                     .map_err(|err| GenicamError::transport(err.to_string()))?
