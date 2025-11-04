@@ -90,8 +90,38 @@ Examples live under the `genicam` crate. Run them via the facade crate target:
 - **Selectors demo:**
 
   ```bash
-  cargo run -p genicam --example selectors_demo
-  ```
+cargo run -p genicam --example selectors_demo
+```
+
+## gencamctl CLI
+
+The workspace now provides a `gencamctl` binary offering common camera control
+operations from the command line. Enable more verbose logging with `-v` or
+`RUST_LOG`, prefer JSON output with `--json`, and use `--iface <IPv4>` to select
+the capture interface.
+
+Examples:
+
+```bash
+# Discover GigE Vision cameras on the network
+cargo run -p gencamctl -- list
+
+# Inspect and configure GenApi features
+cargo run -p gencamctl -- get --ip 192.168.0.10 --name ExposureTime
+cargo run -p gencamctl -- set --ip 192.168.0.10 --name ExposureTime --value 5000
+
+# Receive a GVSP stream, auto-negotiate packet size, and save the first two frames
+cargo run -p gencamctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --auto --save 2
+
+# Configure and read GVCP events
+cargo run -p gencamctl -- events --iface 192.168.0.5 --enable FrameStart,ExposureEnd --count 5
+
+# Toggle chunk data features
+cargo run -p gencamctl -- chunks --ip 192.168.0.10 --enable true --selectors Timestamp,ExposureTime
+
+# Run a sustained streaming benchmark with a JSON report
+cargo run -p gencamctl -- bench --ip 192.168.0.10 --duration-s 60 --json-out bench.json
+```
 
 ## Troubleshooting
 
