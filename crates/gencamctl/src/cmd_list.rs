@@ -43,8 +43,8 @@ pub async fn run(timeout_ms: u64, iface: Option<Ipv4Addr>, json: bool) -> Result
     }
 
     println!(
-        "{:<6} {:<16} {:<18} {:<20} {}",
-        "INDEX", "IP", "MAC", "Manufacturer", "Model"
+        "{:<6} {:<16} {:<18} {:<20} Model",
+        "INDEX", "IP", "MAC", "Manufacturer"
     );
     for (idx, dev) in devices.iter().enumerate() {
         println!(

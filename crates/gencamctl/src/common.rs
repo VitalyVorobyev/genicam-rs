@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::convert::TryInto;
 use genapi_xml::{self, XmlError};
 use genicam::genapi::NodeMap;
 use genicam::{Camera, GigeRegisterIo};
 use serde::Serialize;
+use std::convert::TryInto;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tl_gige::discover_on_interface;
@@ -138,10 +138,8 @@ pub fn print_json<T: Serialize>(value: &T) -> Result<()> {
 }
 
 pub fn format_system_time(ts: SystemTime) -> Result<String> {
-    let dt: OffsetDateTime = ts
-        .try_into()
-        .map_err(|err| anyhow!("convert time: {err}"))?;
-    Ok(dt.format(&Rfc3339).context("format timestamp")?)
+    let dt: OffsetDateTime = <SystemTime as std::convert::Into<OffsetDateTime>>::into(ts);
+    dt.format(&Rfc3339).context("format timestamp")
 }
 
 pub fn encode_pgm(width: u32, height: u32, data: &[u8]) -> Result<Vec<u8>> {
@@ -153,7 +151,10 @@ pub fn encode_pgm(width: u32, height: u32, data: &[u8]) -> Result<Vec<u8>> {
     let expected = w.checked_mul(h).context("image area overflow")?;
 
     if expected != data.len() {
-        bail!("PGM payload length mismatch: expected {expected}, got {}", data.len());
+        bail!(
+            "PGM payload length mismatch: expected {expected}, got {}",
+            data.len()
+        );
     }
 
     let header = format!("P5\n{width} {height}\n255\n");
@@ -167,11 +168,17 @@ pub fn encode_ppm(width: u32, height: u32, data: &[u8]) -> Result<Vec<u8>> {
     let w: usize = width.try_into().context("width doesn't fit in usize")?;
     let h: usize = height.try_into().context("height doesn't fit in usize")?;
 
-    // Guard against overflow in w * h
-    let expected = w.checked_mul(h).context("image area overflow")?;
+    // Guard against overflow in w * h * 3 (RGB)
+    let expected = w
+        .checked_mul(h)
+        .and_then(|px| px.checked_mul(3))
+        .context("image area overflow")?;
 
     if expected != data.len() {
-        bail!("PPM payload length mismatch: expected {expected}, got {}", data.len());
+        bail!(
+            "PPM payload length mismatch: expected {expected}, got {}",
+            data.len()
+        );
     }
     let header = format!("P6\n{width} {height}\n255\n");
     let mut buf = Vec::with_capacity(header.len() + data.len());
