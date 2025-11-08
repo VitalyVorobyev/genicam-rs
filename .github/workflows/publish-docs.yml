@@ -28,6 +28,11 @@ jobs:
         with:
           components: rust-docs
 
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -39,11 +44,18 @@ jobs:
         run: |
           cargo doc --workspace --all-features --no-deps
           echo '<meta http-equiv="refresh" content="0; url=genicam/index.html">' > target/doc/index.html
+          mdbook build book
+
+      - name: Assemble Pages artifact
+        run: |
+          mkdir -p public/api
+          rsync -a target/doc/ public/api/
+          rsync -a book/book/ public/
 
       - name: Upload artifact for Pages
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: public
 
   deploy:
     environment:
