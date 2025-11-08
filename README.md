@@ -26,6 +26,28 @@ crates/
   genicam/       # Public API facade
 crates/genicam/examples/  # Small demos (see below)
 
+## Documentation
+
+The main user & contributor documentation lives in the **mdBook** and the
+generated **Rust API docs**.
+
+- **Book (mdBook)** – sources are under [`book/`](book/).  
+  Recommended starting points:
+  - [`book/src/welcome.md`](book/src/welcome.md) – project overview.
+  - [`book/src/tutorials/README.md`](book/src/tutorials/README.md) – step-by-step tutorials
+    (discovery, registers, XML, streaming).
+
+- **Rust API docs** – generated with:
+
+  ```bash
+  cargo doc --workspace --all-features
+
+and served locally from target/doc, or published via GitHub Pages if you
+enable that in CI.
+
+For day-to-day usage, start with the Tutorials section of the book and only
+dive into rustdoc when you need details of specific types and functions.
+
 ## Prereqs
 
   * Rust 1.75+ (pinned in `rust-toolchain.toml`)
@@ -53,45 +75,48 @@ Examples live under the `genicam` crate. Run them via the facade crate target:
 
 - **Discover devices (GVCP broadcast):**
 
-  ```bash
-  cargo run -p genicam --example list_cameras
-  ```
+```bash
+cargo run -p genicam --example list_cameras
+```
 
 - **Fetch XML & print minimal metadata (control path):**
 
-  ```bash
-  cargo run -p genicam --example get_set_feature
-  ```
+```bash
+cargo run -p genicam --example get_set_feature
+```
 
 - **Grab frames (GVSP):**
 
-  ```bash
-  cargo run -p genicam --example grab_gige
-  ```
+```bash
+cargo run -p genicam --example grab_gige
+```
 
 - **Events:**
 
-  ```bash
-  cargo run -p genicam --example events_gige
-  ```
+```bash
+cargo run -p genicam --example events_gige
+```
 
 - **Action command (broadcast):**
 
-  ```bash
-  cargo run -p genicam --example action_trigger
-  ```
+```bash
+cargo run -p genicam --example action_trigger
+```
 
 - **Timestamp mapping:**
 
-  ```bash
-  cargo run -p genicam --example time_sync
-  ```
+```bash
+cargo run -p genicam --example time_sync
+```
 
 - **Selectors demo:**
 
-  ```bash
+```bash
 cargo run -p genicam --example selectors_demo
 ```
+
+See also: the [Tutorials](book/src/tutorials/README.md) section of the book
+  for more complete, step-by-step guides.
 
 ## gencamctl CLI
 
@@ -122,6 +147,11 @@ cargo run -p gencamctl -- chunks --ip 192.168.0.10 --enable true --selectors Tim
 # Run a sustained streaming benchmark with a JSON report
 cargo run -p gencamctl -- bench --ip 192.168.0.10 --duration-s 60 --json-out bench.json
 ```
+
+For more examples and troubleshooting tips, see the
+[Discovery](book/src/tutorials/discovery.md)
+and [Streaming](book/src/tutorials/streaming.md) tutorials.
+
 
 ## Troubleshooting
 
