@@ -21,5 +21,6 @@
 - [Testing & Dev Environment](testing.md)
 - [Contributing](contributing.md)
 - [FAQ & Troubleshooting](faq.md)
+- [API reference](api.md)
 - [Glossary](glossary.md)
 - [License & Acknowledgements](license.md)
