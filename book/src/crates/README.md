@@ -83,7 +83,7 @@ Typical tasks:
 * Start a GVSP stream, iterate over frames, look at stats
 * Subscribe to events or send action commands
 
-Start with the examples under `crates/genicam/examples/` and the Tutorials.
+Start with the examples under `crates/genicam/examples/` and the [Tutorials](../tutorials/README.md).
 
 ⸻
 
@@ -111,7 +111,7 @@ Example reasons:
 * You’re debugging interoperability with a weird device and need raw GVCP/GVSP
 * You want to build a non-GenApi tool that only tweaks vendor-specific registers
 
-The `tl-gige` chapter goes into more detail on discovery,
+The [`tl-gige` chapter](./tl-gige.md) goes into more detail on discovery,
 streaming, events, actions, and tuning.
 
 ⸻
@@ -126,8 +126,8 @@ Typical contributor activities:
 * Adding tests for tricky XML from specific camera families
 
 The following chapters are relevant:
-* GenApi XML loader: genapi-xml￼
-* GenApi core & NodeMap: genapi-core￼
+* [GenApi XML loader: genapi-xml](./genapi-xml.md)
+* [GenApi core & NodeMap: genapi-core](./genapi-core.md)
 
 If you’re not sure where a GenApi bug lives, the rule of thumb is:
 * “XML can’t be parsed” → genapi-xml
@@ -142,7 +142,7 @@ Use `genicam`.
 
 This crate aims to expose just enough control/streaming surface for most applications without making you think about transports, XML, or NodeMap internals.
 
-The genicam￼ crate chapter￼ shows:
+The [genicam crate chapter](./genicam.md)￼ shows:
 * How to go from “no camera” to “frames in memory” in ~20 lines
 * How to query and set features safely (with proper types)
 * How to plug in your own logging, error handling, and runtime
@@ -152,14 +152,14 @@ The genicam￼ crate chapter￼ shows:
 ## Crate deep dives
 
 The rest of this section of the book contains crate-specific chapters:
-* GenCP: genicp￼– control protocol building blocks.
-* GigE Vision transport: `tl-gige`￼– discovery, streaming, events, actions.
-* GenApi XML loader: `genapi-xml`￼– getting from device to IR.
-* GenApi core & NodeMap: `genapi-core` – evaluating features, including SwissKnife.
-* Facade API: `genicam`￼– the crate most end-users start with.
-* Future / helper crates – notes on planned additions.
+* [GenCP: genicp](./genicp.md)￼– control protocol building blocks.
+* [GigE Vision transport: `tl-gige`](./tl-gige.md)￼– discovery, streaming, events, actions.
+* [GenApi XML loader: `genapi-xml`](./genapi-xml.md)￼– getting from device to IR.
+* [GenApi core & NodeMap: `genapi-core`](./genapi-core.md) – evaluating features, including SwissKnife.
+* [Facade API: `genicam`](./genicam.md)￼– the crate most end-users start with.
+* [Future / helper crates](./placeholders.md) – notes on planned additions.
 
 If you’re reading this for the first time, a good path is:
 1. Skim this page.
-2. Read the genicam￼ chapter.
+2. Read the [genicam](./genicam.md) chapter.
 3. Jump to tl-gige or genapi-core when you hit something you want to tweak.
