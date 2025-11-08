@@ -4,17 +4,17 @@ Pure Rust building blocks for **GenICam** with an **Ethernet-first (GigE Vision)
 Cargo workspace, modular crates (GenCP, GVCP/GVSP, GenApi core), and small examples.
 
 ## Current status (Nov 2025)
-
-- ✅ **Discovery (GVCP)** on selected NICs; enumerate devices.
-- ✅ **Control path (GenCP over GVCP):** read/write device memory; fetch GenICam XML.
-- ✅ **GenApi (Tier-1):** basic NodeMap (Integer/Float/Enum/Bool/Command), ranges, access modes.
-- ✅ **Selector-based address switching** for common features (e.g., `GainSelector`).
-- 🚧 **Streaming (GVSP):** packet reassembly, resend, MTU/packet size & delay, backpressure, stats.
-- 🚧 **Events & actions:** message channel events; action commands (synchronization).
-- 🚧 **Time mapping & chunks:** device↔host timestamp mapping; chunk data parsing.
-- 🔜 USB3 Vision; SwissKnife & advanced GenApi; GenTL producer (.cti).
-
-> See `roadmap.md` for detailed phases and acceptance criteria.
+  * ✅ Discovery (GVCP) on selected NICs; enumerate devices.
+  * ✅ Control path (GenCP over GVCP): read/write device memory; fetch GenICam XML.
+  * ✅ GenApi (Tier-1): basic NodeMap (Integer/Float/Enum/Bool/Command), ranges, access modes.
+  * ✅ SwissKnife expression nodes and selector-aware NodeMap support for common patterns (subset of Tier-2 GenApi).
+  * ✅ Selector-based address switching for common features (e.g., `GainSelector`).
+  * Streaming (GVSP): packet reassembly, resend, MTU/packet size & delay, backpressure, stats.
+  * Events & actions: message channel events; action commands (synchronization).
+  * Time mapping & chunks: device↔host timestamp mapping; chunk data parsing.
+  * USB3 Vision transport (planned).
+  * Advanced GenApi nodes (Converter, more complex expressions, wider SFNC coverage — planned).
+  * GenTL producer (.cti) and PFNC/SFNC helper utilities (planned).
 
 ## Workspace layout
 
@@ -28,11 +28,11 @@ crates/genicam/examples/  # Small demos (see below)
 
 ## Prereqs
 
-- Rust 1.75+ (pinned in `rust-toolchain.toml`)
-- Linux/macOS (Windows planned)
-- Network:
-  - Allow UDP broadcast on your capture NIC for discovery
-  - Optional: enable jumbo frames if you plan to test high throughput
+  * Rust 1.75+ (pinned in `rust-toolchain.toml`)
+  * Windows / Linux / macOS (tested on recent 64-bit versions; see docs for OS-specific notes)
+  * Network:
+    * Allow UDP broadcast on your capture NIC for discovery
+    * Optional: enable jumbo frames if you plan to test high throughput
 
 ## Build & test
 
