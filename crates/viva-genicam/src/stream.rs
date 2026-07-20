@@ -18,6 +18,7 @@
 //! }
 //! ```
 
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -395,6 +396,16 @@ const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// GVSP header size preceding payload data.
 const GVSP_HEADER_SIZE: usize = 8;
+/// IPv4 header size used by GigE Vision streams.
+const IPV4_HEADER_SIZE: usize = 20;
+/// UDP header size used by GigE Vision streams.
+const UDP_HEADER_SIZE: usize = 8;
+/// Bytes in a GVSP data packet that are not image payload.
+const GVSP_PACKET_OVERHEAD: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + GVSP_HEADER_SIZE;
+
+fn gvsp_payload_size(packet_size: u32) -> usize {
+    (packet_size as usize).saturating_sub(GVSP_PACKET_OVERHEAD)
+}
 
 /// State for a frame being assembled from GVSP packets.
 #[derive(Debug)]
@@ -406,6 +417,7 @@ struct FrameAssemblyState {
     timestamp: u64,
     expected_packets: Option<usize>,
     bitmap: Option<PacketBitmap>,
+    received_packet_ids: HashSet<u32>,
     payload: BytesMut,
     packet_payload_size: usize,
     started: Instant,
@@ -428,6 +440,7 @@ impl FrameAssemblyState {
             timestamp,
             expected_packets: None,
             bitmap: None,
+            received_packet_ids: HashSet::new(),
             payload: BytesMut::new(),
             packet_payload_size,
             started: Instant::now(),
@@ -436,11 +449,17 @@ impl FrameAssemblyState {
 
     /// Ingest a payload packet. Returns true if this is a new packet.
     fn ingest(&mut self, packet_id: u32, data: &[u8]) -> bool {
+        // Packet ID 0 is the leader. GVSP payload packet IDs begin at 1.
+        if packet_id == 0 || !self.received_packet_ids.insert(packet_id) {
+            return false;
+        }
+
         let pid = packet_id as usize;
 
-        // Track received packets if we know the total count.
+        // A resent packet can arrive after the trailer established the expected
+        // count, so keep the bitmap in sync in that case.
         if let Some(ref mut bitmap) = self.bitmap
-            && !bitmap.set(pid)
+            && !bitmap.set(pid.saturating_sub(1))
         {
             return false; // Duplicate packet.
         }
@@ -455,16 +474,26 @@ impl FrameAssemblyState {
         true
     }
 
-    /// Set the expected packet count (from trailer packet_id + 1).
-    fn set_expected_packets(&mut self, count: usize) {
+    /// Set expected payload packets from the GVSP trailer packet ID.
+    ///
+    /// Packet ID 0 belongs to the leader and the trailer immediately follows
+    /// the last payload packet, so a complete frame contains every payload ID
+    /// in the range `1..trailer_packet_id`.
+    fn set_trailer_packet_id(&mut self, trailer_packet_id: u32) {
         if self.expected_packets.is_none() {
-            self.expected_packets = Some(count);
-            self.bitmap = Some(PacketBitmap::new(count));
+            let expected_packets = trailer_packet_id.saturating_sub(1) as usize;
+            let mut bitmap = PacketBitmap::new(expected_packets);
+            for packet_id in &self.received_packet_ids {
+                if *packet_id < trailer_packet_id {
+                    bitmap.set(packet_id.saturating_sub(1) as usize);
+                }
+            }
+            self.expected_packets = Some(expected_packets);
+            self.bitmap = Some(bitmap);
         }
     }
 
     /// Check if all packets have been received.
-    #[allow(dead_code)]
     fn is_complete(&self) -> bool {
         self.bitmap.as_ref().is_some_and(|b| b.is_complete())
     }
@@ -629,7 +658,7 @@ impl FrameStream {
                     }
 
                     let pixel_format = PixelFormat::from_code(pixel_format);
-                    let packet_payload = self.params.packet_size as usize - GVSP_HEADER_SIZE;
+                    let packet_payload = gvsp_payload_size(self.params.packet_size);
 
                     self.active = Some(FrameAssemblyState::new(
                         block_id,
@@ -671,13 +700,21 @@ impl FrameStream {
                         continue;
                     }
 
-                    // Set expected packet count from trailer packet_id.
-                    // Trailer packet_id is the last packet index, so total = packet_id + 1.
-                    // But packet_id 0 is leader, so payload packets = packet_id.
-                    active.set_expected_packets(packet_id as usize);
-
                     if status != 0 {
                         warn!(block_id, status, "trailer reported non-zero status");
+                        self.stats.record_drop();
+                        continue;
+                    }
+
+                    active.set_trailer_packet_id(packet_id);
+                    if !active.is_complete() {
+                        warn!(
+                            block_id,
+                            trailer_packet_id = packet_id,
+                            "dropping incomplete frame"
+                        );
+                        self.stats.record_drop();
+                        continue;
                     }
 
                     // Build the frame.
@@ -912,7 +949,6 @@ mod tests {
     #[test]
     fn frame_assembly_state_ingest_tracks_packets() {
         let mut state = FrameAssemblyState::new(1, 640, 480, PixelFormat::Mono8, 0, 1400);
-        state.set_expected_packets(3);
 
         // Ingest packets (packet_id 1 and 2 are payload, 0 is leader).
         assert!(state.ingest(1, &[1, 2, 3]));
@@ -920,6 +956,36 @@ mod tests {
 
         // Duplicate should return false.
         assert!(!state.ingest(1, &[1, 2, 3]));
+
+        state.set_trailer_packet_id(3);
+        assert!(state.is_complete());
+    }
+
+    #[test]
+    fn gvsp_payload_size_excludes_ip_udp_and_gvsp_headers() {
+        assert_eq!(gvsp_payload_size(1458), 1422);
+        assert_eq!(gvsp_payload_size(9000), 8964);
+    }
+
+    #[test]
+    fn frame_assembly_state_rejects_missing_payload_packets() {
+        let mut state = FrameAssemblyState::new(1, 640, 480, PixelFormat::Mono8, 0, 1400);
+        assert!(state.ingest(1, &[1, 2, 3]));
+
+        state.set_trailer_packet_id(3);
+
+        assert!(!state.is_complete());
+    }
+
+    #[test]
+    fn frame_assembly_state_accepts_out_of_order_payload_packets() {
+        let mut state = FrameAssemblyState::new(1, 640, 480, PixelFormat::Mono8, 0, 1400);
+        assert!(state.ingest(2, &[4, 5, 6]));
+        assert!(state.ingest(1, &[1, 2, 3]));
+
+        state.set_trailer_packet_id(3);
+
+        assert!(state.is_complete());
     }
 
     #[test]
