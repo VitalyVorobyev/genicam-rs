@@ -32,3 +32,6 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+# Claude Code: track only project skills
+.claude/*
+!.claude/skills/
