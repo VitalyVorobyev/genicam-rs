@@ -519,9 +519,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.31.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1004a344b30a54e2ee58d66a71b32d2db2feb0a31f9a2d302bf0536f15de2a33"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
 ]
@@ -825,7 +825,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "viva-fake-gige"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "clap",
@@ -833,11 +833,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]
 name = "viva-genapi"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -846,17 +847,18 @@ dependencies = [
 
 [[package]]
 name = "viva-genapi-xml"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "quick-xml",
  "serde",
  "thiserror 1.0.69",
  "tracing",
+ "zip",
 ]
 
 [[package]]
 name = "viva-gencp"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bitflags",
  "bytes",
@@ -865,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "viva-genicam"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "bytes",
@@ -883,7 +885,7 @@ dependencies = [
 
 [[package]]
 name = "viva-gige"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "bytes",
@@ -899,11 +901,11 @@ dependencies = [
 
 [[package]]
 name = "viva-pfnc"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "viva-pygenicam"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "if-addrs",
@@ -924,11 +926,11 @@ dependencies = [
 
 [[package]]
 name = "viva-sfnc"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "viva-u3v"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "rusb",
