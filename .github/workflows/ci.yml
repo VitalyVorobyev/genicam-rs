@@ -24,9 +24,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo install cargo-deny --locked
 
-      - name: Cargo deny (advisories)
+      - name: Cargo deny (advisories, licenses, bans, sources)
         if: runner.os == 'Linux'
-        run: cargo deny check advisories
+        run: cargo deny check
 
       - name: Cargo fmt
         run: cargo fmt --all --check

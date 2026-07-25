@@ -15,8 +15,11 @@ pub fn read_text_start(
     let text = reader
         .read_text(QName(&end_buf))
         .map_err(|err| XmlError::Xml(err.to_string()))?;
+    let decoded = text
+        .decode()
+        .map_err(|err| XmlError::Xml(err.to_string()))?;
     // Unescape XML entities (&amp; → &, &lt; → <, etc.).
-    quick_xml::escape::unescape(&text)
+    quick_xml::escape::unescape(&decoded)
         .map(|cow| cow.into_owned())
         .map_err(|err| XmlError::Xml(format!("unescape error: {err}")))
 }
@@ -27,7 +30,7 @@ pub fn attribute_value(event: &BytesStart<'_>, name: &[u8]) -> Result<Option<Str
         let attr = attr.map_err(|err| XmlError::Xml(err.to_string()))?;
         if attr.key.as_ref() == name {
             let value = attr
-                .unescape_value()
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map_err(|err| XmlError::Xml(err.to_string()))?;
             let trimmed = value.trim().to_string();
             if trimmed.is_empty() {

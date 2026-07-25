@@ -35,7 +35,7 @@ bitflags = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync"] }
-quick-xml = "0.31"
+quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusb = "0.9"

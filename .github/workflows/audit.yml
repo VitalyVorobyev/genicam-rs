@@ -17,8 +17,10 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
 
-      - name: Run cargo audit
-        run: cargo audit
+      # cargo-deny (not cargo-audit) so that the accepted-advisory list in
+      # deny.toml is the single source of truth for both this workflow and CI.
+      - name: Run cargo deny
+        run: cargo deny check
