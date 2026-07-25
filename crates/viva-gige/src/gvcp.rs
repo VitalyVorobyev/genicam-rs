@@ -770,25 +770,31 @@ impl GigeDevice {
         let mut data = Vec::with_capacity(len);
         while remaining > 0 {
             let chunk = remaining.min(consts::GENCP_MAX_BLOCK);
+            // GVCP requires the READMEM byte count to be a multiple of 4.
+            // Strict cameras (e.g. Hikrobot) reject unaligned counts with
+            // InvalidParameter, so request the aligned size and drop the
+            // padding bytes below. Device memory regions are 4-byte aligned,
+            // so reading past the end of e.g. the XML blob is safe.
+            let request = chunk.next_multiple_of(4);
             let mut payload = BytesMut::with_capacity(8);
             payload.put_u32((addr + offset as u64) as u32);
             payload.put_u16(0); // reserved
-            payload.put_u16(chunk as u16);
+            payload.put_u16(request as u16);
             let ack = self.transact_with_retry(OpCode::ReadMem, payload).await?;
             // GVCP READMEM_ACK: 4-byte address prefix + data.
-            let ack_data = if ack.payload.len() >= 4 + chunk {
-                &ack.payload[4..4 + chunk]
-            } else if ack.payload.len() == chunk {
+            let ack_data = if ack.payload.len() >= 4 + request {
+                &ack.payload[4..4 + request]
+            } else if ack.payload.len() == request {
                 // Some devices omit the address echo.
-                &ack.payload[..chunk]
+                &ack.payload[..request]
             } else {
                 return Err(GigeError::Protocol(format!(
                     "expected {} bytes but device returned {}",
-                    chunk,
+                    request,
                     ack.payload.len()
                 )));
             };
-            data.extend_from_slice(ack_data);
+            data.extend_from_slice(&ack_data[..chunk]);
             remaining -= chunk;
             offset += chunk;
         }

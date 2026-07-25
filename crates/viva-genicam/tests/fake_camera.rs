@@ -121,6 +121,30 @@ async fn test_connect_and_fetch_xml() {
 }
 
 #[tokio::test]
+async fn test_connect_with_zipped_xml() {
+    // Many real cameras (Basler, FLIR, Hikrobot, ...) serve their GenApi XML
+    // as a ZIP archive; issue #35 hit exactly this path. The archive length
+    // is also virtually never 4-byte aligned, which exercises the READMEM
+    // alignment handling against the strict fake GVCP server.
+    let _cam = common::TestCamera::start_with(|builder| builder.zip_xml(true)).await;
+
+    let device = discover_fake().await;
+    let (camera, xml) = connect_gige_with_xml(&device)
+        .await
+        .expect("connect with zipped XML failed");
+
+    assert!(
+        xml.contains("RegisterDescription"),
+        "decompressed XML should contain GenICam elements"
+    );
+    let nodemap = camera.nodemap();
+    assert!(
+        nodemap.node("Width").is_some(),
+        "NodeMap should contain Width"
+    );
+}
+
+#[tokio::test]
 async fn test_claim_control_visible_via_register_read() {
     let _cam = common::TestCamera::start().await;
 

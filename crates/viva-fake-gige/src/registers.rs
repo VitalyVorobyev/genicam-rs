@@ -587,12 +587,27 @@ pub struct RegisterMap {
     clock_origin: Instant,
 }
 
+/// Compress the GenApi XML into a single-entry ZIP archive (deflate).
+fn zip_xml_blob(xml: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    writer
+        .start_file("fake.xml", options)
+        .expect("start XML zip entry");
+    writer.write_all(xml).expect("write XML zip entry");
+    writer.finish().expect("finish XML zip").into_inner()
+}
+
 impl RegisterMap {
     /// Create a new register map with the given image dimensions.
     ///
     /// Initializes all bootstrap, feature, and device info registers with
-    /// sensible defaults. The GenApi XML is embedded at [`XML_BLOB_BASE`].
-    pub fn new(width: u32, height: u32, pixel_format: u32) -> Self {
+    /// sensible defaults. The GenApi XML is embedded at [`XML_BLOB_BASE`],
+    /// served as a ZIP archive when `zip_xml` is set (as many real cameras
+    /// do).
+    pub fn new(width: u32, height: u32, pixel_format: u32, zip_xml: bool) -> Self {
         let mut regs = HashMap::new();
 
         // ── Bootstrap registers ─────────────────────────────────────────
@@ -665,8 +680,16 @@ impl RegisterMap {
         regs.insert(REG_CHUNK_ENABLE, 0u32.to_be_bytes().to_vec());
 
         // ── XML URL register ────────────────────────────────────────────
-        let xml_blob = FAKE_XML.as_bytes().to_vec();
-        let url = format!("Local:fake.xml;{:x};{:x}\0", XML_BLOB_BASE, xml_blob.len());
+        let (xml_blob, xml_name) = if zip_xml {
+            (zip_xml_blob(FAKE_XML.as_bytes()), "fake.zip")
+        } else {
+            (FAKE_XML.as_bytes().to_vec(), "fake.xml")
+        };
+        let url = format!(
+            "Local:{xml_name};{:x};{:x}\0",
+            XML_BLOB_BASE,
+            xml_blob.len()
+        );
         let mut url_bytes = vec![0u8; URL_REG_LEN];
         let src = url.as_bytes();
         url_bytes[..src.len()].copy_from_slice(src);

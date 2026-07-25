@@ -8,25 +8,90 @@ use crate::util::parse_u64;
 /// Address of the first URL register in the GigE Vision bootstrap register map.
 /// GigE Vision spec: GevFirstURL at 0x0200 (512 bytes max).
 const FIRST_URL_ADDRESS: u64 = 0x0200;
-/// Maximum length of the first URL string.
-const FIRST_URL_MAX_LEN: usize = 512;
+/// Address of the second URL register (GevSecondURL at 0x0400, 512 bytes max).
+/// Used as a fallback when the first URL is empty or cannot be retrieved.
+const SECOND_URL_ADDRESS: u64 = 0x0400;
+/// Maximum length of a URL register string.
+const URL_MAX_LEN: usize = 512;
+
+/// ZIP local file header magic: `PK\x03\x04`.
+const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
+
+/// If `data` starts with a ZIP signature, extract the first file's contents.
+/// Otherwise return `data` unchanged.
+///
+/// GenICam devices commonly serve their register-description XML as a ZIP
+/// archive (the URL then ends in `.zip`), which the standard requires
+/// consumers to handle transparently.
+pub fn decompress_if_zip(data: Vec<u8>) -> Result<Vec<u8>, XmlError> {
+    use std::io::Read;
+
+    if data.len() < 4 || &data[..4] != ZIP_MAGIC {
+        return Ok(data);
+    }
+    let cursor = std::io::Cursor::new(&data);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| XmlError::Invalid(format!("bad XML ZIP archive: {e}")))?;
+    if archive.is_empty() {
+        return Err(XmlError::Invalid("XML ZIP archive is empty".into()));
+    }
+    let mut file = archive
+        .by_index(0)
+        .map_err(|e| XmlError::Invalid(format!("cannot read XML ZIP entry: {e}")))?;
+    let mut xml = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut xml)
+        .map_err(|e| XmlError::Invalid(format!("XML ZIP decompression failed: {e}")))?;
+    Ok(xml)
+}
 
 /// Fetch the GenICam XML document using the provided memory reader closure.
 ///
 /// The closure must return the requested number of bytes starting at the
 /// provided address. It can internally perform chunked transfers.
+///
+/// Reads `GevFirstURL`, falling back to `GevSecondURL` when the first URL is
+/// empty or its document cannot be retrieved. ZIP-compressed XML documents
+/// are decompressed transparently.
 pub async fn fetch_and_load_xml<F, Fut>(mut read_mem: F) -> Result<String, XmlError>
 where
     F: FnMut(u64, usize) -> Fut,
     Fut: Future<Output = Result<Vec<u8>, XmlError>>,
 {
-    let url_bytes = read_mem(FIRST_URL_ADDRESS, FIRST_URL_MAX_LEN).await?;
+    match fetch_from_url_register(&mut read_mem, FIRST_URL_ADDRESS).await {
+        Ok(xml) => Ok(xml),
+        Err(first_err) => {
+            tracing::debug!(error = %first_err, "first URL failed, trying GevSecondURL");
+            match fetch_from_url_register(&mut read_mem, SECOND_URL_ADDRESS).await {
+                Ok(xml) => Ok(xml),
+                // The first URL's error is the more useful diagnostic: the
+                // second URL is typically absent on devices where the first
+                // one was already the problem.
+                Err(second_err) => {
+                    tracing::debug!(error = %second_err, "second URL failed as well");
+                    Err(first_err)
+                }
+            }
+        }
+    }
+}
+
+/// Fetch and decode the XML document referenced by the URL register at `url_addr`.
+async fn fetch_from_url_register<F, Fut>(
+    read_mem: &mut F,
+    url_addr: u64,
+) -> Result<String, XmlError>
+where
+    F: FnMut(u64, usize) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, XmlError>>,
+{
+    let url_bytes = read_mem(url_addr, URL_MAX_LEN).await?;
     let url = first_cstring(&url_bytes)
-        .ok_or_else(|| XmlError::Invalid("FirstURL register is empty".into()))?;
+        .ok_or_else(|| XmlError::Invalid("URL register is empty".into()))?;
     let location = UrlLocation::parse(&url)?;
     match location {
         UrlLocation::Local { address, length } => {
             let xml_bytes = read_mem(address, length).await?;
+            let xml_bytes = decompress_if_zip(xml_bytes)?;
             String::from_utf8(xml_bytes)
                 .map_err(|err| XmlError::Xml(format!("invalid UTF-8: {err}")))
         }
@@ -151,6 +216,83 @@ fn parse_local_url(rest: &str) -> Result<UrlLocation, XmlError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compress `data` into a single-entry ZIP archive (deflate).
+    fn zip_bytes(name: &str, data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(name, options).expect("start zip entry");
+        writer.write_all(data).expect("write zip entry");
+        writer.finish().expect("finish zip").into_inner()
+    }
+
+    #[tokio::test]
+    async fn fetch_local_zipped_xml() {
+        let url = b"Local:camera.zip;10;9999\0".to_vec();
+        let zipped = zip_bytes("camera.xml", b"<a/>");
+        let mut url_reg = url.clone();
+        url_reg.resize(URL_MAX_LEN, 0);
+        let expected_len = zipped.len();
+        let loaded = fetch_and_load_xml(|addr, len| {
+            let url_reg = url_reg.clone();
+            let zipped = zipped.clone();
+            async move {
+                if addr == FIRST_URL_ADDRESS {
+                    Ok(url_reg)
+                } else if addr == 0x10 && len == 0x9999 {
+                    // Devices serve the advertised length; extra bytes past
+                    // the archive end are padding.
+                    let mut data = zipped;
+                    data.resize(len.max(expected_len), 0);
+                    Ok(data)
+                } else {
+                    Err(XmlError::Transport("unexpected read".into()))
+                }
+            }
+        })
+        .await
+        .expect("load zipped xml");
+        assert_eq!(loaded, "<a/>");
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_second_url() {
+        let url = b"local:address=0x20;length=0x4\0".to_vec();
+        let loaded = fetch_and_load_xml(|addr, len| {
+            let url = url.clone();
+            async move {
+                if addr == FIRST_URL_ADDRESS {
+                    // Empty first URL register.
+                    Ok(vec![0u8; URL_MAX_LEN])
+                } else if addr == SECOND_URL_ADDRESS {
+                    Ok(url)
+                } else if addr == 0x20 && len == 0x4 {
+                    Ok(b"<b/>".to_vec())
+                } else {
+                    Err(XmlError::Transport("unexpected read".into()))
+                }
+            }
+        })
+        .await
+        .expect("load xml via second URL");
+        assert_eq!(loaded, "<b/>");
+    }
+
+    #[tokio::test]
+    async fn first_url_error_is_reported_when_both_fail() {
+        let err = fetch_and_load_xml(|_, _| async { Ok(vec![0u8; URL_MAX_LEN]) })
+            .await
+            .expect_err("both URLs empty");
+        assert!(matches!(err, XmlError::Invalid(_)));
+    }
+
+    #[test]
+    fn decompress_passes_through_plain_xml() {
+        let data = b"<plain/>".to_vec();
+        assert_eq!(decompress_if_zip(data.clone()).unwrap(), data);
+    }
 
     #[tokio::test]
     async fn fetch_local_xml() {
