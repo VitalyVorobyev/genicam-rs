@@ -5,6 +5,13 @@ on:
     branches: [ main ]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     strategy:
@@ -15,14 +22,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-deny
         if: runner.os == 'Linux'
-        run: cargo install cargo-deny --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
 
       - name: Cargo deny (advisories, licenses, bans, sources)
         if: runner.os == 'Linux'
