@@ -1,5 +1,5 @@
 # cargo-deny configuration
-# Run: cargo deny check advisories
+# Run: cargo deny check
 
 [advisories]
 # Advisories we accept because they come from zenoh 1.9.0 transitive
@@ -14,3 +14,46 @@ ignore = [
     # rustls-pemfile 2.2.0 -- unmaintained; zenoh-link-commons depends on it
     "RUSTSEC-2025-0134",
 ]
+
+[licenses]
+# Everything the workspace links must resolve to one of these permissive
+# licenses. Copyleft (GPL/LGPL/AGPL/SSPL/...) is deliberately absent: this is
+# an MIT workspace and a new copyleft dependency must be a conscious decision.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # zenoh and friends are "EPL-2.0 OR Apache-2.0"; we take the Apache-2.0
+    # branch, but cargo-deny needs EPL-2.0 allowed for the expression to pass.
+    "EPL-2.0",
+]
+exceptions = [
+    # File-level weak copyleft, pulled in via zenoh-util -> shellexpand ->
+    # dirs -> dirs-sys. Obligations attach to option-ext's own files only.
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+]
+
+# NOTE on libusb1-sys (via rusb, `usb` feature): its Cargo.toml declares MIT,
+# which covers only the Rust FFI shim. The crate also vendors the libusb C
+# library (LGPL-2.1-or-later), which is compiled in ONLY when the `vendored`
+# feature is enabled. This workspace does not enable it (system libusb is
+# linked dynamically -- LGPL's shared-library route). The Python wheel build
+# in crates/viva-pygenicam DOES enable it and must ship LGPL notices with the
+# wheel. cargo-deny cannot see any of this because it only reads the declared
+# license field.
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
