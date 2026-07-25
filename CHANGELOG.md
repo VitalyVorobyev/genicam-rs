@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cap decompressed GenICam XML at 64 MiB to prevent memory exhaustion from malicious or corrupt ZIP metadata served by a device.
 - **GigE connect fails on Hikrobot cameras with `InvalidParameter`** (#35) -- two independent fixes:
   - `read_mem` now rounds every READMEM byte count up to a multiple of 4 as GVCP requires and drops the padding; strict cameras (Hikrobot) reject unaligned counts, which broke the final partial block of the XML download.
   - `fetch_and_load_xml` transparently decompresses ZIP-packed GenApi XML (`PK\x03\x04` magic), which Hikrobot/Basler/FLIR cameras commonly serve, and falls back to `GevSecondURL` (0x0400) when the first URL register is empty or unreadable.
