@@ -149,8 +149,8 @@ viva-genapi:
 - Resolves which nodes and registers are active.
 - Applies any SwissKnife expressions as needed.
 
-The [selectors_demo￼example](../crates/genicam.md) in the viva-genicam crate
-shows this pattern in Rust.  ￼
+The `selectors_demo` example in the viva-genicam crate
+shows this pattern in Rust.
 
 ⸻
 

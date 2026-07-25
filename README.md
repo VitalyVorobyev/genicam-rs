@@ -118,11 +118,13 @@ See [`book/src/python.md`](book/src/python.md) for the full Python API.
 
 ## Documentation
 
-- **[GenICam standards introduction](doc/genicam.md)** -- what GenApi, GenCP, GVCP, SFNC, and PFNC are and how they map to crates
+- **[GenICam standards introduction](docs/standards.md)** -- what GenApi, GenCP, GVCP, SFNC, and PFNC are and how they map to crates
 - **[Book (mdBook)](https://vitalyvorobyev.github.io/viva-genicam/)** -- tutorials, architecture, networking cookbook
 - **[API reference (docs.rs)](https://docs.rs/viva-genicam)** -- generated Rust API docs
 - **[Examples](crates/viva-genicam/examples/)** -- 17 runnable examples covering discovery, streaming, events, chunks, and more
-- **[Roadmap](doc/roadmap.md)** -- what's done, what's planned
+- **[System design](docs/design.md)** -- architecture, key abstractions, data flows, design tenets
+- **[Decision records](docs/adrs/)** -- why the big choices were made
+- **[Roadmap](docs/roadmap.md)** -- what's planned
 
 ## Prerequisites
 

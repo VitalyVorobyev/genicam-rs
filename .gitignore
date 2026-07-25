@@ -23,6 +23,9 @@ target
 book/book
 REVIEW.md
 
+# codegraph MCP index (regenerable)
+.codegraph/
+
 # Python
 __pycache__/
 *.py[cod]
