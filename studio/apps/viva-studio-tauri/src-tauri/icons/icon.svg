@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="genicam-studio favicon">
+  <defs>
+    <mask id="hole">
+      <rect width="512" height="512" fill="white"/>
+      <circle cx="256" cy="256" r="86" fill="black"/>
+    </mask>
+  </defs>
+
+  <path d="M446.52 146 L256 36 L65.48 146 L65.48 366 L256 476 L446.52 366 Z"
+        fill="none" stroke="#12B5B0" stroke-width="28" stroke-linejoin="round"/>
+
+  <circle cx="256" cy="256" r="155" fill="#12B5B0" mask="url(#hole)" opacity="0.95"/>
+
+  <!-- tiny "live" dot -->
+  <circle cx="434" cy="176" r="14" fill="#F7B500"/>
+</svg>

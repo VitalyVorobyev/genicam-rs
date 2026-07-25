@@ -1,0 +1,6 @@
+[[permission]]
+identifier = "sfnc-groups"
+description = "Allows reading SFNC group configuration."
+commands.allow = [
+  "get_sfnc_groups"
+]

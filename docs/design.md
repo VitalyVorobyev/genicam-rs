@@ -50,9 +50,9 @@ viva-gencp              - Protocol primitives: GenCP encode/decode
 - `viva-fake-gige` / `viva-fake-u3v` — in-process fake cameras, the primary
   test vehicle (see Testing strategy below).
 
-A `studio/` GUI workspace (Tauri desktop app) will be merged into this
-repository shortly; it consumes `viva-zenoh-api` and talks to the services via
-Zenoh.
+The `studio/` GUI workspace (Viva Studio, a Tauri desktop app) lives in this
+repository as a second Cargo workspace (ADR-0017); it consumes
+`viva-zenoh-api` and talks to the services via Zenoh.
 
 Layering rules: a crate depends only on layers below it. `viva-genapi-xml` and
 `viva-genapi` have no transport dependency and compile for

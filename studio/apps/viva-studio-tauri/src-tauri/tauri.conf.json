@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Viva Studio",
+  "version": "0.1.0",
+  "identifier": "com.vitalyvorobyev.viva-studio",
+  "build": {
+    "beforeDevCommand": "bun run --cwd ../../ui/viva-studio-ui dev:tauri",
+    "beforeBuildCommand": "bun run --cwd ../../ui/viva-studio-ui build:tauri",
+    "devUrl": "http://localhost:5183",
+    "frontendDist": "../../../ui/viva-studio-ui/dist"
+  },
+  "bundle": {
+    "resources": ["resources/sfnc-groups.json"]
+  },
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    }
+  },
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Viva Studio",
+        "width": 1024,
+        "height": 768
+      }
+    ]
+  }
+}

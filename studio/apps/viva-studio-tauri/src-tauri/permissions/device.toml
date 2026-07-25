@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "device"
+description = "Allows device discovery and connection commands."
+commands.allow = [
+  "list_discovered_devices",
+  "get_connection_state",
+  "connect_device",
+  "disconnect_device"
+]

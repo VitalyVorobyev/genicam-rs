@@ -27,7 +27,7 @@
 - **IP configuration** -- FORCEIP for temporary assignment; persistent IP registers for permanent configuration
 - **Events & actions** -- subscribe to camera events; trigger synchronized acquisition via action commands
 - **Time & chunks** -- map device timestamps to host time; parse chunk data (timestamp, exposure, gain)
-- **Service bridge** -- expose cameras over [Zenoh](https://zenoh.io/) for [genicam-studio](https://github.com/VitalyVorobyev/genicam-studio)
+- **Service bridge** -- expose cameras over [Zenoh](https://zenoh.io/) for Viva Studio (the desktop GUI in `studio/`)
 - **No hardware required** -- built-in fake cameras (`viva-fake-gige`, `viva-fake-u3v`) for testing and demos
 
 ## Current status
@@ -59,12 +59,21 @@ crates/
   viva-pfnc/           Pixel Format Naming Convention tables
   viva-sfnc/           Standard Feature Naming Convention constants
   viva-zenoh-api/      Shared Zenoh wire types (no Zenoh dependency)
-  viva-service/        Zenoh bridge: GigE cameras -> genicam-studio
-  viva-service-u3v/    Zenoh bridge: U3V cameras -> genicam-studio
+  viva-service/        Zenoh bridge: GigE cameras -> Viva Studio
+  viva-service-u3v/    Zenoh bridge: U3V cameras -> Viva Studio
   viva-camctl/         CLI binary
   viva-fake-gige/      Fake GigE camera for testing
   viva-fake-u3v/       Fake U3V camera for testing
 ```
+
+## Viva Studio (GUI)
+
+The desktop app for GenICam cameras lives in `studio/` as a separate Cargo
+workspace in this repository. It is a React 19 + Tauri v2 application that
+talks to `viva-service` / `viva-service-u3v` over Zenoh, so the published
+library crates stay decoupled from GUI and Node toolchain concerns. See
+`studio/CLAUDE.md` for build commands and invariants, and `docs/studio/`
+for the Zenoh API contract and testing cookbook.
 
 ## Quick start
 
@@ -199,8 +208,8 @@ cargo run -p viva-service-u3v -- --fake
 ```
 
 The service discovers cameras, publishes device announcements, serves GenICam XML,
-handles node read/write, and streams frames over Zenoh for
-[genicam-studio](https://github.com/VitalyVorobyev/genicam-studio).
+handles node read/write, and streams frames over Zenoh for Viva Studio
+(the desktop GUI in `studio/`).
 
 ## Integration testing
 

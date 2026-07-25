@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "nodes"
+description = "Allows node read/write/execute commands."
+commands.allow = [
+  "get_node_value",
+  "write_node",
+  "execute_command",
+  "read_nodes_bulk"
+]

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+  <Category Name="Root">
+    <DisplayName>Root</DisplayName>
+    <pFeature>ExposureTime</pFeature>
+    <pFeature>PixelFormat</pFeature>
+    <pFeature>AcquisitionEnable</pFeature>
+    <pFeature>TriggerSoftware</pFeature>
+    <pFeature>MagicCalc</pFeature>
+  </Category>
+  <Integer Name="ExposureTime">
+    <DisplayName>Exposure Time</DisplayName>
+    <Address>0x0100</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <Min>10</Min>
+    <Max>1000</Max>
+    <Inc>5</Inc>
+    <Unit>us</Unit>
+  </Integer>
+  <Enumeration Name="PixelFormat">
+    <DisplayName>Pixel Format</DisplayName>
+    <Address>0x0200</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <EnumEntry Name="Mono8" Value="0">
+      <DisplayName>Mono 8</DisplayName>
+    </EnumEntry>
+    <EnumEntry Name="Mono12" Value="1">
+      <DisplayName>Mono 12</DisplayName>
+    </EnumEntry>
+    <EnumEntry Name="RGB8" Value="2">
+      <DisplayName>RGB 8</DisplayName>
+    </EnumEntry>
+  </Enumeration>
+  <Boolean Name="AcquisitionEnable">
+    <DisplayName>Acquisition Enable</DisplayName>
+    <Address>0x0300</Address>
+    <Length>1</Length>
+    <AccessMode>RW</AccessMode>
+  </Boolean>
+  <Command Name="TriggerSoftware">
+    <DisplayName>Trigger Software</DisplayName>
+    <Address>0x0400</Address>
+    <Length>4</Length>
+  </Command>
+  <SwissKnife Name="MagicCalc">
+    <DisplayName>Magic Calc</DisplayName>
+    <Expression>ExposureTime * 2</Expression>
+    <pVariable Name="ExposureTime">ExposureTime</pVariable>
+    <Output>Float</Output>
+  </SwissKnife>
+</RegisterDescription>

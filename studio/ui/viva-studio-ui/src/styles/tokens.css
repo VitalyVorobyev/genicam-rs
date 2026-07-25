@@ -1,0 +1,160 @@
+/* ============================================================
+   Viva Studio — Design Tokens
+   Single source of truth for all CSS custom properties.
+   ============================================================ */
+
+:root {
+  /* Surface hierarchy */
+  --bg-base:      #0d1117;
+  --bg-surface:   #161b22;
+  --bg-elevated:  #1c2128;
+  --bg-input:     #0d1117;
+  --bg-overlay:   #21262d;
+
+  /* Canvas / special surfaces */
+  --bg-canvas: #080c10;
+
+  /* Borders */
+  --border:        #30363d;
+  --border-subtle: #21262d;
+
+  /* Text */
+  --text-primary:   #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted:     #484f58;
+  --text-on-accent: #ffffff;
+
+  /* Accent (interactive) */
+  --accent:         #2f81f7;
+  --accent-hover:   #388bfd;
+  --accent-muted:   rgba(47, 129, 247, 0.12);
+  --accent-border:  rgba(47, 129, 247, 0.4);
+
+  /* Semantic — success */
+  --success:        #3fb950;
+  --success-muted:  rgba(63, 185, 80, 0.12);
+  --success-border: rgba(63, 185, 80, 0.4);
+  --success-tint:   rgba(63, 185, 80, 0.05);
+
+  /* Semantic — warning */
+  --warning:        #d29922;
+  --warning-muted:  rgba(210, 153, 34, 0.12);
+  --warning-border: rgba(210, 153, 34, 0.35);
+
+  /* Semantic — danger */
+  --danger:         #f85149;
+  --danger-muted:   rgba(248, 81, 73, 0.12);
+  --danger-hover:   #da3633;
+  --danger-border:  rgba(248, 81, 73, 0.35);
+
+  /* Kind-badge palette — integer / float (blue) */
+  --kind-integer:        #79c0ff;
+  --kind-integer-muted:  rgba(121, 192, 255, 0.08);
+  --kind-integer-border: rgba(121, 192, 255, 0.3);
+
+  /* Kind-badge palette — boolean (coral) */
+  --kind-boolean:        #ff7b72;
+  --kind-boolean-muted:  rgba(255, 123, 114, 0.08);
+  --kind-boolean-border: rgba(255, 123, 114, 0.3);
+
+  /* Kind-badge palette — string (light blue) */
+  --kind-string:        #a5d6ff;
+  --kind-string-muted:  rgba(165, 214, 255, 0.08);
+  --kind-string-border: rgba(165, 214, 255, 0.3);
+
+  /* Kind-badge palette — enum (orange) */
+  --kind-enum:        #ffa657;
+  --kind-enum-muted:  rgba(255, 166, 87, 0.08);
+  --kind-enum-border: rgba(255, 166, 87, 0.3);
+
+  /* Kind-badge palette — command (purple) */
+  --kind-command:        #d2a8ff;
+  --kind-command-muted:  rgba(210, 168, 255, 0.08);
+  --kind-command-border: rgba(210, 168, 255, 0.3);
+
+  /* Toggle thumb */
+  --toggle-thumb-on: #ffffff;
+
+  /* Typography — font stacks */
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+               "Liberation Mono", "Courier New", monospace;
+
+  /* Typography — size scale */
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-md:   14px;
+  --text-lg:   15px;
+
+  /* Typography — font weights */
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* Typography — line heights */
+  --lh-tight: 1.2;
+  --lh-base:  1.5;
+  --lh-loose: 1.75;
+
+  /* Spacing scale */
+  --sp-1:  2px;
+  --sp-2:  4px;
+  --sp-3:  6px;
+  --sp-4:  8px;
+  --sp-5:  10px;
+  --sp-6:  12px;
+  --sp-7:  14px;
+  --sp-8:  16px;
+  --sp-9:  20px;
+  --sp-10: 24px;
+
+  /* Shape */
+  --radius-sm:   3px;
+  --radius:      5px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-pill: 999px;
+
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+  --transition-base: 0.15s ease;
+  --transition-slow: 0.25s ease;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+
+  /* Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.6);
+
+  /* Focus rings */
+  --focus-ring:       0 0 0 2px var(--accent);
+  --focus-ring-muted: 0 0 0 1px var(--border);
+
+  /* Z-index scale */
+  --z-base:     1;
+  --z-dropdown: 100;
+  --z-modal:    200;
+  --z-toast:    300;
+
+  /* Component sizing */
+  --sidebar-width: 220px;
+  --tree-row-h:    28px;
+  --tab-h:         36px;
+  --toolbar-h:     40px;
+  --header-h:      48px;
+
+  /* Image Viewer v2 layout */
+  --iv-sidebar-width:      280px;
+  --iv-sidebar-rail-width:  40px;
+  --iv-toolbar-h:           36px;
+  --iv-statusbar-h:         28px;
+  --iv-statusbar-bg:        #0f1318;
+
+  /* Typography alias for viewer status bar */
+  --fs-xs: var(--text-xs);
+  --space-3: var(--sp-3);
+}
