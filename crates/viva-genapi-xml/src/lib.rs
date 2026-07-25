@@ -563,7 +563,7 @@ pub struct MinimalXmlInfo {
 /// Parse a GenICam XML snippet and collect minimal metadata.
 pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut depth = 0usize;
     let mut schema_version: Option<String> = None;
@@ -578,14 +578,10 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
             Ok(Event::Empty(e)) => {
                 depth += 1;
                 handle_start(&e, depth, &mut schema_version, &mut top_level_features)?;
-                if depth > 0 {
-                    depth = depth.saturating_sub(1);
-                }
+                depth = depth.saturating_sub(1);
             }
             Ok(Event::End(_)) => {
-                if depth > 0 {
-                    depth = depth.saturating_sub(1);
-                }
+                depth = depth.saturating_sub(1);
             }
             Ok(Event::Eof) => break,
             Err(err) => return Err(XmlError::Xml(err.to_string())),
@@ -607,7 +603,7 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
 /// documents.
 pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut version = String::from("0.0.0");
     let mut nodes = Vec::new();
