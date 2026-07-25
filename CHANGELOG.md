@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **quick-xml 0.31 → 0.41** -- clears RUSTSEC-2026-0194 (quadratic duplicate-attribute check) and RUSTSEC-2026-0195 (unbounded `NsReader` namespace allocation). API migration: `Reader::trim_text` → `config_mut().trim_text(true)`, `Attribute::unescape_value` → `normalized_value(XmlVersion::Implicit1_0)`, `read_text` now returns `BytesText` (decode + unescape explicitly).
-- **Dependency advisory sweep** -- `cargo update` for anyhow (RUSTSEC-2026-0190 unsound `downcast_mut`), crossbeam-epoch (RUSTSEC-2026-0204), quinn-proto (RUSTSEC-2026-0185), rustls-webpki (RUSTSEC-2026-0104), plus yanked spin/stabby releases. `cargo deny check` is fully green again.
+- **Dependency refresh** -- full `cargo update` to the latest semver-compatible versions after three dormant months (139 lock entries), which also clears the advisories against anyhow (RUSTSEC-2026-0190 unsound `downcast_mut`), crossbeam-epoch (RUSTSEC-2026-0204), quinn-proto (RUSTSEC-2026-0185), and rustls-webpki (RUSTSEC-2026-0104), and replaces yanked spin/stabby releases. `cargo deny check` is fully green again.
 - **License checking enforced** -- `deny.toml` gains `[licenses]` (permissive allow-list, MPL-2.0 exception for `option-ext`, documented libusb1-sys vendored-LGPL caveat), `[bans]`, and `[sources]` sections; CI and the weekly audit now run the full `cargo deny check`. The weekly audit workflow switches from cargo-audit to cargo-deny so `deny.toml` is the single source of truth for accepted advisories.
 
 ## [0.2.5] - 2026-04-15
