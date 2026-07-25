@@ -143,7 +143,7 @@ pub trait ControlTransport {
 }
 ```
 
-`viva-gige` implements this over GVCP sockets; a future `tl-u3v` would use USB3 endpoints. Higher layers (`viva-genapi`) depend only on this trait to perform feature `get/set`.
+`viva-gige` implements this over GVCP sockets; `viva-u3v` uses USB3 bulk endpoints. Higher layers (`viva-genapi`) depend only on this trait to perform feature `get/set`.
 
 ---
 

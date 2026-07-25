@@ -5,7 +5,7 @@ language = "en"
 src = "src"
 
 [build]
-create-missing = true
+create-missing = false
 
 [output.html]
 # Single-site: host the book at the site root (e.g. /viva-genicam/ on GitHub Pages)

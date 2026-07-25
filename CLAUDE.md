@@ -76,31 +76,15 @@ viva-gige / viva-u3v    - Transport: GVCP/GVSP for GigE, USB3 Vision
 viva-gencp              - Protocol primitives: GenCP encode/decode
 ```
 
-**Supporting crates:**
-- `viva-pfnc` - Pixel Format Naming Convention tables
-- `viva-sfnc` - Standard Feature Naming Convention
-- `viva-zenoh-api` - Shared Zenoh wire types (no Zenoh dependency)
-- `viva-camctl` - CLI binary (published to crates.io and as prebuilt release binaries)
-- `viva-service` - GigE Zenoh camera service for genicam-studio
-- `viva-service-u3v` - U3V Zenoh camera service for genicam-studio (supports `--fake` mode and real USB)
-- `viva-fake-gige` - In-process fake GigE Vision camera for testing (not published)
-- `viva-fake-u3v` - In-process fake USB3 Vision camera for testing (not published)
+Supporting crates: `viva-pfnc`, `viva-sfnc`, `viva-zenoh-api`, `viva-camctl`, `viva-pygenicam`; test crates: `viva-fake-gige`, `viva-fake-u3v`. Full crate map, layering rules, and data flows: [docs/design.md](docs/design.md).
 
 ## Key Abstractions
 
-**`RegisterIo` trait** (`viva-genapi`): Core abstraction for register read/write. Implemented by `GigeRegisterIo` (async-to-sync adapter using `block_in_place` + `block_on`, safe from both async and sync contexts), `MockIo` for tests, and `NullIo` for offline browsing.
+The core seams are the sync `RegisterIo` trait (`GigeRegisterIo`/`MockIo`/`NullIo`), `NodeMap` with pValue delegation and cache invalidation, `GigeDevice` (GVCP/GVSP), `FrameStream`/`U3vFrameStream`, and the services' `DeviceHandle`/`U3vDeviceHandle<T>`. Details: [docs/design.md](docs/design.md#key-abstractions).
 
-**`NodeMap`** (`viva-genapi`): Parsed from XML, stores nodes by name, tracks dependency graph for cache invalidation. Supports `pValue` delegation (Integer/Float/Enum/Boolean/Command nodes can delegate to IntReg or other backing nodes).
+## Design Principles
 
-**`Node` enum**: Integer, Float, Enum, Boolean, Command, Category, SwissKnife, Converter, IntConverter, String.
-
-**`GigeDevice`** (`viva-gige`): Async UDP wrapper for GVCP discovery/control and GVSP streaming. Uses proper GVCP wire format (0x42 key byte, 4-byte addresses).
-
-**`U3vFrameStream`** (`viva-genicam`): Async frame iterator wrapping blocking USB bulk reads via `spawn_blocking` + mpsc channel. Created via `U3vStreamBuilder` or `U3vFrameStream::start()`.
-
-**`U3vDeviceHandle<T>`** (`viva-service-u3v`): Generic over `T: UsbTransfer`, works with both `FakeU3vTransport` and `RusbTransfer`.
-
-**`DeviceHandle`** (`viva-service`): Wraps `Camera<GigeRegisterIo>` with `spawn_blocking` for async-safe access from Zenoh queryable handlers. Includes reconnection with exponential backoff.
+The design tenets live in [docs/design.md](docs/design.md#design-tenets). In one line: clear API boundaries, SOLID applied pragmatically, DRY, YAGNI, spec-conformance testing, error source chains. When a change conflicts with a tenet, write or update an ADR in `docs/adrs/` rather than silently deviating.
 
 ## Testing
 
@@ -159,9 +143,22 @@ cargo run -p viva-camctl -- list --iface 127.0.0.1
 
 ## Documentation
 
-- **mdBook**: `book/` directory - tutorials, architecture, networking cookbook
+- **mdBook**: `book/` directory - tutorials, architecture, networking cookbook (published user docs)
 - **API docs**: Generated via `cargo doc`, published to GitHub Pages
 - **Examples**: 17 examples in `crates/viva-genicam/examples/` (including `demo_fake_camera` for zero-hardware demo)
+- **Standards intro**: `docs/standards.md` - what GenApi/GenCP/GVCP/SFNC/PFNC are and how they map to crates
+- **Development docs**: `docs/` - see the next section
+
+## Development Docs
+
+- [docs/design.md](docs/design.md) — architecture, key abstractions, data flows, design tenets
+- [docs/roadmap.md](docs/roadmap.md) — mid-term direction by phase
+- [docs/backlog.md](docs/backlog.md) — immediate actionable tasks; pick up work from here
+- [docs/adrs/](docs/adrs/) — decision records; add one via the template in `docs/adrs/README.md` when making an architectural decision (retrospective ADRs welcome)
+
+## Code Intelligence (codegraph)
+
+A codegraph MCP index of the workspace lives in `.codegraph/` (gitignored, regenerable). Consult `codegraph_context` / `codegraph_trace` / `codegraph_search` BEFORE exploring by grep — it's sub-millisecond and already built. The file watcher keeps the index fresh (~1 s lag); if results look stale, check `codegraph_status`.
 
 ## Shared Crate API (SX handoff)
 

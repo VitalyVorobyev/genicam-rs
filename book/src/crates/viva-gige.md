@@ -258,6 +258,6 @@ if let Some(frame) = stream.next().await { println!("got {} bytes", frame.bytes.
 
 ## See also
 
-* [`viva-gencp`](genicp.md): message layouts & helpers for control path
-* [`viva-genapi-xml`](genapi-xml.md) and [`viva-genapi`](genapi-core.md): NodeMap, selectors, **SwissKnife** evaluation
+* [`viva-gencp`](viva-gencp.md): message layouts & helpers for control path
+* `viva-genapi-xml` and [`viva-genapi`](viva-genapi.md): NodeMap, selectors, **SwissKnife** evaluation
 * Tutorials: [Registers](../tutorials/registers.md), [Streaming](../tutorials/streaming.md)

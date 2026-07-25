@@ -125,8 +125,7 @@ Typical contributor activities:
 * Improving SwissKnife coverage or selector handling
 * Adding tests for tricky XML from specific camera families
 
-The following chapters are relevant:
-* [GenApi XML loader: genapi-xml](./genapi-xml.md)
+The following chapter is relevant:
 * [GenApi core & NodeMap: viva-genapi](./viva-genapi.md)
 
 If you’re not sure where a GenApi bug lives, the rule of thumb is:
@@ -142,7 +141,7 @@ Use `viva-genicam`.
 
 This crate aims to expose just enough control/streaming surface for most applications without making you think about transports, XML, or NodeMap internals.
 
-The [genicam crate chapter](./genicam.md)￼ shows:
+The [tutorials](../tutorials/README.md) show:
 * How to go from “no camera” to “frames in memory” in ~20 lines
 * How to query and set features safely (with proper types)
 * How to plug in your own logging, error handling, and runtime
@@ -154,12 +153,9 @@ The [genicam crate chapter](./genicam.md)￼ shows:
 The rest of this section of the book contains crate-specific chapters:
 * [GenCP: viva-gencp](./viva-gencp.md)￼– control protocol building blocks.
 * [GigE Vision transport: `viva-gige`](./viva-gige.md)￼– discovery, streaming, events, actions.
-* [GenApi XML loader: `viva-genapi-xml`](./genapi-xml.md)￼– getting from device to IR.
 * [GenApi core & NodeMap: `viva-genapi`](./viva-genapi.md) – evaluating features, including SwissKnife.
-* [Facade API: `viva-genicam`](./genicam.md)￼– the crate most end-users start with.
-* [Future / helper crates](./placeholders.md) – notes on planned additions.
 
 If you’re reading this for the first time, a good path is:
 1. Skim this page.
-2. Read the [genicam](./genicam.md) chapter.
+2. Work through the [tutorials](../tutorials/README.md).
 3. Jump to viva-gige or viva-genapi when you hit something you want to tweak.

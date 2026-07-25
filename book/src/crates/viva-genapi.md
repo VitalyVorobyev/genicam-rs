@@ -18,7 +18,7 @@ When a feature has selectors (e.g., `GainSelector`), evaluation temporarily swit
 Below is a minimal flow using the `viva-genicam` façade.
 
 ```rust
-use genicam::Client; // façade crate
+use viva_genicam::Client; // façade crate
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
