@@ -14,6 +14,15 @@ use crate::registers::RegisterMap;
 
 /// GVSP header size in bytes.
 const GVSP_HEADER_SIZE: usize = 8;
+/// IPv4 header size counted by `GevSCPSPacketSize` per the GigE Vision spec.
+const IPV4_HEADER_SIZE: usize = 20;
+/// UDP header size counted by `GevSCPSPacketSize` per the GigE Vision spec.
+const UDP_HEADER_SIZE: usize = 8;
+/// Bytes of a GVSP data packet that are not image payload. `GevSCPSPacketSize`
+/// includes the IP, UDP, and GVSP headers, so a conforming camera must chunk
+/// image data into `SCPS - 36`-byte pieces (mirrors the receiver in
+/// `viva-genicam::stream`).
+const GVSP_PACKET_OVERHEAD: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + GVSP_HEADER_SIZE;
 
 /// Payload type for image data.
 const PAYLOAD_IMAGE: u16 = 0x0001;
@@ -83,7 +92,7 @@ pub async fn run(
             }
 
             let dest = SocketAddr::new(std::net::IpAddr::V4(dest_ip), dest_port);
-            let payload_per_packet = (packet_size as usize).saturating_sub(GVSP_HEADER_SIZE);
+            let payload_per_packet = (packet_size as usize).saturating_sub(GVSP_PACKET_OVERHEAD);
             if payload_per_packet == 0 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
