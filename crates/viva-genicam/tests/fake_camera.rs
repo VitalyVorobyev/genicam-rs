@@ -376,9 +376,22 @@ async fn test_stream_receives_frames() {
 
     assert!(frame.width > 0, "frame width should be positive");
     assert!(frame.height > 0, "frame height should be positive");
+
+    // Mono8: the payload must be exactly width*height bytes. A mismatch means
+    // the reassembly stride disagrees with the sender's packet chunking
+    // (e.g. GevSCPSPacketSize header-overhead accounting).
+    let expected_len = (frame.width * frame.height) as usize;
+    assert_eq!(
+        frame.payload.len(),
+        expected_len,
+        "frame payload length must match width*height for Mono8"
+    );
+    // The test pattern is non-constant; an all-identical payload means the
+    // image data never actually landed in the buffer.
+    let first = frame.payload[0];
     assert!(
-        !frame.payload.is_empty(),
-        "frame payload should not be empty"
+        frame.payload.iter().any(|&b| b != first),
+        "frame payload should contain a non-constant test pattern"
     );
 
     let cam = camera.clone();
@@ -425,6 +438,11 @@ async fn test_frame_dimensions_match() {
 
     assert_eq!(frame.width, expected_w, "frame width mismatch");
     assert_eq!(frame.height, expected_h, "frame height mismatch");
+    assert_eq!(
+        frame.payload.len(),
+        (expected_w * expected_h) as usize,
+        "Mono8 payload length must match Width*Height"
+    );
 
     let cam = camera.clone();
     tokio::task::spawn_blocking(move || {
@@ -459,6 +477,11 @@ async fn test_full_lifecycle() {
             .unwrap_or_else(|| panic!("stream ended on frame {i}"));
         assert!(frame.width > 0);
         assert!(frame.height > 0);
+        assert_eq!(
+            frame.payload.len(),
+            (frame.width * frame.height) as usize,
+            "Mono8 payload length must match width*height on frame {i}"
+        );
     }
 
     let cam = camera.clone();
