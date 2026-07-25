@@ -31,3 +31,12 @@ uv venv .venv
 uv pip install --python .venv/bin/python maturin numpy pytest
 uv run --python .venv/bin/python maturin develop -m crates/viva-pygenicam/Cargo.toml
 ```
+
+## Licensing
+
+The `viva-genicam` code is MIT-licensed. The binary wheel additionally
+statically links [libusb](https://libusb.info) (LGPL-2.1-or-later) for
+USB3 Vision support, so the package license is
+`MIT AND LGPL-2.1-or-later`. See `THIRD-PARTY-NOTICES.md` (shipped in the
+wheel and sdist) for details, including how to rebuild the native module
+against a modified or system libusb per LGPL §6.
