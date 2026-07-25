@@ -50,6 +50,7 @@ pub struct FakeCameraBuilder {
     bind_ip: Ipv4Addr,
     port: u16,
     pixel_format: u32,
+    zip_xml: bool,
 }
 
 /// PFNC pixel format codes.
@@ -65,6 +66,7 @@ impl Default for FakeCameraBuilder {
             bind_ip: Ipv4Addr::LOCALHOST,
             port: 3956,
             pixel_format: MONO8,
+            zip_xml: false,
         }
     }
 }
@@ -108,12 +110,22 @@ impl FakeCameraBuilder {
         self
     }
 
+    /// Serve the GenApi XML as a ZIP archive (default: plain XML).
+    ///
+    /// Many real cameras (Basler, FLIR, Hikrobot, ...) publish their
+    /// register-description XML zipped; enable this to exercise that path.
+    pub fn zip_xml(mut self, enable: bool) -> Self {
+        self.zip_xml = enable;
+        self
+    }
+
     /// Start the fake camera and return a handle.
     pub async fn build(self) -> Result<FakeCamera, std::io::Error> {
         let regs = Arc::new(Mutex::new(registers::RegisterMap::new(
             self.width,
             self.height,
             self.pixel_format,
+            self.zip_xml,
         )));
 
         let acq_start = Arc::new(Notify::new());

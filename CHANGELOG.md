@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GigE connect fails on Hikrobot cameras with `InvalidParameter`** (#35) -- two independent fixes:
+  - `read_mem` now rounds every READMEM byte count up to a multiple of 4 as GVCP requires and drops the padding; strict cameras (Hikrobot) reject unaligned counts, which broke the final partial block of the XML download.
+  - `fetch_and_load_xml` transparently decompresses ZIP-packed GenApi XML (`PK\x03\x04` magic), which Hikrobot/Basler/FLIR cameras commonly serve, and falls back to `GevSecondURL` (0x0400) when the first URL register is empty or unreadable.
+
+### Added
+
+- **Fake GigE camera realism** -- the fake GVCP server now rejects unaligned READMEM requests with `GEV_STATUS_INVALID_PARAMETER` exactly like strict real cameras (regression guard for #35), and `FakeCameraBuilder::zip_xml(true)` serves the GenApi XML as a ZIP archive. New integration test `test_connect_with_zipped_xml` covers the zipped + unaligned-length connect path end-to-end.
+
 ### Changed
 
 - **quick-xml 0.31 → 0.41** -- clears RUSTSEC-2026-0194 (quadratic duplicate-attribute check) and RUSTSEC-2026-0195 (unbounded `NsReader` namespace allocation). API migration: `Reader::trim_text` → `config_mut().trim_text(true)`, `Attribute::unescape_value` → `normalized_value(XmlVersion::Implicit1_0)`, `read_text` now returns `BytesText` (decode + unescape explicitly).

@@ -32,6 +32,8 @@ const WRITEMEM_ACK: u16 = 0x0087;
 
 /// Status code for success.
 const STATUS_SUCCESS: u16 = 0x0000;
+/// GigE Vision `GEV_STATUS_INVALID_PARAMETER`.
+const STATUS_INVALID_PARAMETER: u16 = 0x8002;
 
 /// Run the GVCP control server loop.
 ///
@@ -189,6 +191,16 @@ fn build_ack(ack_cmd: u16, request_id: u16, payload: &[u8]) -> Vec<u8> {
     buf.to_vec()
 }
 
+/// Build a payload-less error ACK (8-byte header only), as real cameras send.
+fn build_error_ack(ack_cmd: u16, request_id: u16, status: u16) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(8);
+    buf.put_u16(status);
+    buf.put_u16(ack_cmd);
+    buf.put_u16(0);
+    buf.put_u16(request_id);
+    buf.to_vec()
+}
+
 async fn handle_readreg(
     socket: &UdpSocket,
     peer: SocketAddr,
@@ -252,6 +264,18 @@ async fn handle_readmem(
     }
     let addr = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as u64;
     let count = u16::from_be_bytes([payload[6], payload[7]]) as usize;
+
+    // GVCP requires the address and byte count to be multiples of 4. Real
+    // cameras (e.g. Hikrobot) reject violations with INVALID_PARAMETER and a
+    // bare 8-byte ack header; be equally strict so that client bugs are
+    // caught by the in-tree fake (regression guard for issue #35).
+    if !addr.is_multiple_of(4) || count == 0 || !count.is_multiple_of(4) {
+        let resp = build_error_ack(READMEM_ACK, request_id, STATUS_INVALID_PARAMETER);
+        let _ = socket.send_to(&resp, peer).await;
+        debug!(%peer, addr = format!("0x{addr:x}"), count, "READMEM rejected: unaligned");
+        return;
+    }
+
     let store = regs.lock().await;
     let data = store.read(addr, count);
 

@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use viva_fake_gige::FakeCamera;
+use viva_fake_gige::{FakeCamera, FakeCameraBuilder};
 
 /// Global mutex ensuring only one fake camera uses port 3956 at a time.
 static CAMERA_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
@@ -24,17 +24,24 @@ impl TestCamera {
     ///
     /// Acquires a global lock to ensure only one camera runs at a time.
     pub async fn start() -> Self {
+        Self::start_with(|builder| builder).await
+    }
+
+    /// Start a fake camera with extra builder customization applied on top
+    /// of the standard loopback test configuration.
+    pub async fn start_with<F>(customize: F) -> Self
+    where
+        F: Fn(FakeCameraBuilder) -> FakeCameraBuilder,
+    {
         let guard = camera_lock().lock_owned().await;
         let camera = loop {
-            match FakeCamera::builder()
+            let builder = FakeCamera::builder()
                 .bind_ip([127, 0, 0, 1].into())
                 .port(3956)
                 .width(640)
                 .height(480)
-                .fps(30)
-                .build()
-                .await
-            {
+                .fps(30);
+            match customize(builder).build().await {
                 Ok(cam) => break cam,
                 Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
