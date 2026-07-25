@@ -1,0 +1,15 @@
+[package]
+name = "viva-mock-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+viva-zenoh-api = { path = "../../../crates/viva-zenoh-api" }
+viva_xml_model = { path = "../../crates/viva_xml_model" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zenoh = "1.8"

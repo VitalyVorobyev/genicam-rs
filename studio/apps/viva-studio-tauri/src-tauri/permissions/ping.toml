@@ -1,0 +1,9 @@
+# Application permission for the custom `ping` command.
+#
+# Tauri v2 uses an ACL system (permissions + capabilities). Custom commands must be
+# explicitly enabled, otherwise the frontend cannot call `invoke('ping')`.
+
+[[permission]]
+identifier = "ping"
+description = "Allows invoking the app ping() command."
+commands.allow = ["ping"]

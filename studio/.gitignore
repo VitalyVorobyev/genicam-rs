@@ -1,0 +1,25 @@
+# Rust
+/target
+**/target
+
+# Node
+node_modules
+**/node_modules
+npm-debug.log*
+
+# Vite
+**/dist
+**/.vite
+
+# Tauri
+**/src-tauri/target
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.*
+# WASM build output
+/ui/genicam-studio-ui/src/wasm/genicam_xml_model_wasm
+

@@ -1,0 +1,142 @@
+# Manual E2E Test: Service + Fake Camera + Studio
+
+No external tools required. Uses the built-in `viva-fake-gige` camera simulator.
+
+## Setup (3 terminals)
+
+All commands run from the repository root.
+
+**Terminal 1 -- fake camera (stays alive until Ctrl+C):**
+```bash
+cargo run -p viva-fake-gige
+```
+
+Output:
+```
+Fake camera running on 127.0.0.1:3956 (640x480 Mono8 @ 30 fps)
+Press Ctrl+C to stop.
+```
+
+Custom dimensions:
+```bash
+cargo run -p viva-fake-gige -- --width 512 --height 512 --fps 15
+```
+
+**Terminal 2 -- camera service:**
+```bash
+RUST_LOG=viva_service=debug,viva_genicam=info,warn \
+  cargo run -p viva-service -- \
+    --iface lo0 \
+    --zenoh-config studio/config/zenoh-local.json5 \
+    -v
+```
+
+> On Linux, use `--iface lo` instead of `--iface lo0`.
+>
+> The `--zenoh-config` flag is **required** for local testing. It makes the
+> service listen on `tcp/127.0.0.1:7447` so the studio can connect. Without
+> it, the service uses Zenoh multicast scouting which often fails on macOS.
+> The studio automatically loads `studio/config/zenoh-studio.json5` in dev mode.
+
+**Terminal 3 -- studio:**
+```bash
+cd studio/apps/viva-studio-tauri
+RUST_LOG=viva_studio_tauri=info,viva_streamer=debug,warn cargo tauri dev
+```
+
+## Quick verification with CLI (optional, no studio needed)
+
+With Terminal 1 running, open a new terminal:
+```bash
+cargo run -p viva-camctl -- list --iface 127.0.0.1
+cargo run -p viva-camctl -- get --ip 127.0.0.1 --name Width
+cargo run -p viva-camctl -- set --ip 127.0.0.1 --name Width --value 320
+cargo run -p viva-camctl -- get --ip 127.0.0.1 --name Width   # should show 320
+```
+
+## Test checklist
+
+### 1. Discovery
+- [ ] Device appears in sidebar within ~5s
+- [ ] Shows name "VivaCam Fake", vendor "vitavision.dev"
+- [ ] Device ID shows `cam-deadbeefcafe` (fake MAC DE:AD:BE:EF:CA:FE)
+
+### 2. Connect
+- [ ] Click device -> feature tree loads
+- [ ] Width=640, Height=480 visible in tree (or 512x512 if custom)
+- [ ] DeviceModelName = "VivaCam Fake"
+- [ ] PixelFormat = "Mono8"
+- [ ] ExposureTime, Gain visible
+
+### 3. Node writes
+- [ ] Change Width to 320 -> readback shows 320
+- [ ] Change Height to 240 -> readback shows 240
+- [ ] Change PixelFormat (Mono8 -> RGB8)
+- [ ] Change ExposureTime to 10000
+- [ ] Restore original values
+
+### 4. Acquisition
+- [ ] Click Start -> image appears in viewer (gradient pattern)
+- [ ] FPS counter shows non-zero value
+- [ ] Status bar shows resolution and pixel format
+- [ ] Image updates with each frame
+
+### 5. Stream tools
+- [ ] Zoom/pan with scroll wheel and drag
+- [ ] Histogram toggle works (if available)
+- [ ] Pixel inspector shows coordinates on hover
+
+### 6. Recording (if implemented)
+- [ ] Click record button -> icon pulses
+- [ ] Tooltip shows frame count incrementing
+- [ ] Click stop -> recording stops
+- [ ] File created in `~/.viva-studio/recordings/`
+
+### 7. Stop & disconnect
+- [ ] Click Stop -> frames stop, FPS goes to 0
+- [ ] Disconnect device -> feature tree clears
+- [ ] Reconnect -> features reload
+
+### 8. Service crash recovery
+- [ ] While connected, kill Terminal 2 (Ctrl+C)
+- [ ] Studio shows reconnecting banner (or error state)
+- [ ] Restart service in Terminal 2
+- [ ] Studio reconnects automatically
+
+## Fake camera features
+
+| Feature | Supported |
+|---------|-----------|
+| Discovery (GVCP broadcast) | Yes |
+| CCP (Control Channel Privilege) | Yes |
+| GenApi XML (20+ nodes) | Yes |
+| Width/Height/PixelFormat/ExposureTime/Gain | Yes (RW) |
+| DeviceModelName/VendorName/SerialNumber | Yes (RO) |
+| OffsetX/OffsetY | Yes (RW) |
+| AcquisitionStart/Stop | Yes |
+| GVSP streaming (Mono8, RGB8) | Yes |
+| Device timestamps (1 GHz) | Yes |
+| Chunk data (Timestamp, ExposureTime) | Yes (when ChunkModeActive=1) |
+| Multicast | No |
+| Events / Action commands | No |
+
+## CLI flags (`viva-fake-gige`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--width` | 640 | Image width in pixels |
+| `--height` | 480 | Image height in pixels |
+| `--fps` | 30 | Target frame rate |
+| `--bind` | 127.0.0.1 | Bind address |
+| `--port` | 3956 | GVCP port |
+
+## Debug checkpoints
+
+If the image view stays blank, check the logs:
+
+- **Terminal 1**: confirm `Fake camera running on ...` is shown
+- **Terminal 2 (viva-service)**: look for `connected` and `first GVSP frame received`
+- **Terminal 3 (viva_streamer)**: look for `First image/meta received`,
+  `First raw image frame received`, `First BMP frame published`
+- **Browser/Tauri console**: look for `WebSocket opened` and
+  `First binary frame received`

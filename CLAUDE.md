@@ -10,7 +10,7 @@ We do not maintain backward compatibility at this early development stage. The p
 
 ## Related Projects
 
-- **genicam-studio** (`../genicam-studio`) — Tauri desktop app that consumes viva-service via Zenoh. Contains the `viva_zenoh_api` crate (shared wire types) and a mock camera service.
+- **Viva Studio** (`studio/`) — Tauri desktop app, second Cargo workspace in this repo (see `studio/CLAUDE.md`).
 - **aravis** (`../aravis`) — C library for GenICam cameras. Optional; used only for conformance testing against a third-party implementation. Not required for development or CI.
 
 ## Build Commands
@@ -62,8 +62,8 @@ my machine".
 **Layered design (bottom to top):**
 
 ```
-viva-service            - Zenoh bridge: GigE cameras → genicam-studio
-viva-service-u3v        - Zenoh bridge: U3V cameras → genicam-studio
+viva-service            - Zenoh bridge: GigE cameras → Viva Studio
+viva-service-u3v        - Zenoh bridge: U3V cameras → Viva Studio
     ↓
 viva-genicam (facade)   - End-user API: Camera<T>, discovery, streaming
     ↓
@@ -109,7 +109,7 @@ RUST_LOG=debug cargo test --workspace -- --nocapture
 
 ### Fake camera binary
 
-For interactive testing or E2E testing with genicam-studio:
+For interactive testing or E2E testing with Viva Studio:
 
 ```bash
 # Start fake camera (stays alive until Ctrl+C)
@@ -121,12 +121,12 @@ cargo run -p viva-camctl -- list --iface 127.0.0.1
 
 # E2E with studio — GigE (3 terminals)
 # T1: cargo run -p viva-fake-gige
-# T2: cargo run -p viva-service -- --iface lo0 --zenoh-config ../genicam-studio/config/zenoh-local.json5
-# T3: cd ../genicam-studio/apps/genicam-studio-tauri && cargo tauri dev
+# T2: cargo run -p viva-service -- --iface lo0 --zenoh-config studio/config/zenoh-local.json5
+# T3: cd studio/apps/viva-studio-tauri && cargo tauri dev
 
 # E2E with studio — USB3 Vision fake camera (2 terminals)
-# T1: cargo run -p viva-service-u3v -- --fake --zenoh-config ../genicam-studio/config/zenoh-local.json5
-# T2: cd ../genicam-studio/apps/genicam-studio-tauri && cargo tauri dev
+# T1: cargo run -p viva-service-u3v -- --fake --zenoh-config studio/config/zenoh-local.json5
+# T2: cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
 
 ```bash
@@ -139,7 +139,7 @@ cargo run -p viva-camctl -- list --iface 127.0.0.1
 # T2: cargo run -p viva-camctl -- set-ip --mac DE:AD:BE:EF:CA:FE --ip 192.168.1.100 --iface 127.0.0.1
 ```
 
-**Important**: The `--zenoh-config` flag pointing to `zenoh-local.json5` is required on the **service** side (both GigE and U3V) when connecting to genicam-studio. The studio loads its own Zenoh config automatically in dev mode (`cargo tauri dev`).
+**Important**: The `--zenoh-config` flag pointing to `zenoh-local.json5` is required on the **service** side (both GigE and U3V) when connecting to Viva Studio. The studio loads its own Zenoh config automatically in dev mode (`cargo tauri dev`).
 
 ## Documentation
 
@@ -162,7 +162,7 @@ A codegraph MCP index of the workspace lives in `.codegraph/` (gitignored, regen
 
 ## Shared Crate API (SX handoff)
 
-`viva-genapi-xml` and `viva-genapi` are designed for external consumption by genicam-studio:
+`viva-genapi-xml` and `viva-genapi` are designed for external consumption by Viva Studio (`studio/`):
 - All `viva-genapi-xml` public types derive `Serialize`/`Deserialize` (serde)
 - `viva-genapi` provides introspection: `NodeMap::node_names()`, `dependents()`, `categories()`, `Node::kind_name()`, `access_mode()`, `name()`
 - `NullIo` enables offline XML browsing without a camera

@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "acquisition"
+description = "Allows acquisition start/stop/status commands."
+commands.allow = [
+  "get_acquisition_status",
+  "start_acquisition",
+  "stop_acquisition"
+]

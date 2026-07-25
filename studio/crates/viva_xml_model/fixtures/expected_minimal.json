@@ -1,0 +1,133 @@
+{
+  "categories": {
+    "Root": {
+      "display_name": "Root",
+      "features": [
+        "ExposureTime",
+        "PixelFormat",
+        "AcquisitionEnable",
+        "TriggerSoftware",
+        "MagicCalc"
+      ],
+      "name": "Root"
+    }
+  },
+  "nodes_by_name": {
+    "AcquisitionEnable": {
+      "access_mode": "RW",
+      "display_name": "Acquisition Enable",
+      "kind": "Boolean",
+      "name": "AcquisitionEnable",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "Boolean"
+      },
+      "visibility": "Beginner"
+    },
+    "ExposureTime": {
+      "access_mode": "RW",
+      "constraints": {
+        "inc": 5.0,
+        "max": 1000.0,
+        "min": 10.0
+      },
+      "dependents": [
+        "MagicCalc"
+      ],
+      "display_name": "Exposure Time",
+      "int_inc": 5,
+      "int_max": 1000,
+      "int_min": 10,
+      "kind": "Integer",
+      "name": "ExposureTime",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "Integer"
+      },
+      "unit": "us",
+      "visibility": "Beginner"
+    },
+    "MagicCalc": {
+      "access_mode": "RO",
+      "dependencies": [
+        "ExposureTime"
+      ],
+      "display_name": "Magic Calc",
+      "expression": "ExposureTime * 2",
+      "kind": {
+        "Unknown": {
+          "tag": "SwissKnife"
+        }
+      },
+      "name": "MagicCalc",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "SwissKnife"
+      },
+      "visibility": "Beginner"
+    },
+    "PixelFormat": {
+      "access_mode": "RW",
+      "display_name": "Pixel Format",
+      "enum_entries": [
+        {
+          "display_name": "Mono 8",
+          "name": "Mono8",
+          "value": "0"
+        },
+        {
+          "display_name": "Mono 12",
+          "name": "Mono12",
+          "value": "1"
+        },
+        {
+          "display_name": "RGB 8",
+          "name": "RGB8",
+          "value": "2"
+        }
+      ],
+      "kind": "Enumeration",
+      "name": "PixelFormat",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "Enumeration"
+      },
+      "visibility": "Beginner"
+    },
+    "Root": {
+      "dependencies": [
+        "ExposureTime",
+        "PixelFormat",
+        "AcquisitionEnable",
+        "TriggerSoftware",
+        "MagicCalc"
+      ],
+      "display_name": "Root",
+      "kind": "Category",
+      "name": "Root",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "Category"
+      },
+      "visibility": "Beginner"
+    },
+    "TriggerSoftware": {
+      "access_mode": "WO",
+      "display_name": "Trigger Software",
+      "kind": "Command",
+      "name": "TriggerSoftware",
+      "raw": {
+        "attributes": {},
+        "children_text": {},
+        "tag": "Command"
+      },
+      "visibility": "Beginner"
+    }
+  },
+  "root_category": "Root"
+}

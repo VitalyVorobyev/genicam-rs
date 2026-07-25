@@ -1,0 +1,102 @@
+import type { UiNode } from "../../../xml_model/uigraph";
+import type { NodeValue, ValueError } from "../../../xml_model/values";
+import type { FeatureState, NumericRange } from "../../../device/types";
+import { ValidationErrors } from "./ValidationErrors";
+
+interface IntegerEditorProps {
+  node: UiNode;
+  value: NodeValue | undefined;
+  errors: ValueError[];
+  onChange: (value: NodeValue) => void;
+  /**
+   * Live device state. When its `numeric` range is present, we prefer it over
+   * the XML-parsed `node.constraints` — the XML bound may default to
+   * `i64::MIN/MAX` when the device declares no explicit range. When neither
+   * range is known, we render "range unknown" rather than passing fake
+   * `i64::MAX` as an HTML `<input max>` attribute.
+   */
+  liveState?: FeatureState;
+}
+
+/**
+ * Resolve the range to use for constraints. Live (device-reported) takes
+ * precedence. Returns `null` when no meaningful range is available, which the
+ * UI renders as "range unknown" instead of invented defaults.
+ */
+function resolveRange(node: UiNode, liveState?: FeatureState): NumericRange | null {
+  if (liveState?.numeric) return liveState.numeric;
+  const { min, max, inc } = node.constraints ?? {};
+  if (min === undefined && max === undefined && inc === undefined) return null;
+  return {
+    min: min ?? Number.NEGATIVE_INFINITY,
+    max: max ?? Number.POSITIVE_INFINITY,
+    inc,
+  };
+}
+
+// Integer editor writes into the shared draft store (offline mode).
+export function IntegerEditor({ node, value, errors, onChange, liveState }: IntegerEditorProps) {
+  let numericValue: number | "" = "";
+  if (typeof value === "number") {
+    numericValue = value;
+  } else if (value === undefined && typeof liveState?.value === "number") {
+    numericValue = liveState.value;
+  }
+  const range = resolveRange(node, liveState);
+  // Only pass min/max to the HTML input when they are finite — avoid feeding
+  // `i64::MIN/MAX` or unresolved sentinels into DOM attributes.
+  const inputMin =
+    range && Number.isFinite(range.min) ? range.min : undefined;
+  const inputMax =
+    range && Number.isFinite(range.max) ? range.max : undefined;
+  const step = range?.inc ?? 1;
+  const unit = liveState?.unit ?? node.unit;
+
+  return (
+    <div className="editor">
+      <label className="editor__label">Value</label>
+      <div className="editor__input-row">
+        <input
+          className="editor__input"
+          type="number"
+          step={step}
+          min={inputMin}
+          max={inputMax}
+          value={numericValue}
+          placeholder="unset (offline)"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              onChange(null);
+              return;
+            }
+            const parsed = Number(raw);
+            onChange(Number.isFinite(parsed) ? parsed : null);
+          }}
+        />
+        {unit && <span className="editor__unit">{unit}</span>}
+      </div>
+      <ValidationErrors errors={errors} />
+      <ConstraintDetails range={range} />
+    </div>
+  );
+}
+
+function ConstraintDetails({ range }: { range: NumericRange | null }) {
+  if (!range) {
+    return <div className="editor__constraints editor__constraints--unknown">range unknown</div>;
+  }
+  const showMin = Number.isFinite(range.min);
+  const showMax = Number.isFinite(range.max);
+  if (!showMin && !showMax && range.inc === undefined) {
+    return <div className="editor__constraints editor__constraints--unknown">range unknown</div>;
+  }
+
+  return (
+    <div className="editor__constraints">
+      {showMin && <span>min: {range.min}</span>}
+      {showMax && <span>max: {range.max}</span>}
+      {range.inc !== undefined && <span>inc: {range.inc}</span>}
+    </div>
+  );
+}

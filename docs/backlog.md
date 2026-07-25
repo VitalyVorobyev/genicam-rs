@@ -49,8 +49,16 @@ Immediate, actionable tasks. Mid-term direction lives in
 | ST-01 | Modernize studio crates to edition 2024 + workspace-dep inheritance | P2 | M | planned | |
 | ST-02 | Retire apps/viva-mock-service in favor of viva-service + viva-fake-gige | P2 | M | planned | |
 | ST-03 | Revive studio e2e against in-repo service/fake (drop aravis-from-source) | P1 | L | planned | |
-| ST-04 | Refresh stale studio docs (zenoh-api.md says API_VERSION 1; actual is 2) | P1 | S | planned | |
-| ST-05 | Delete stale package-lock.json; bun.lock is authoritative | P2 | S | planned | May already be handled at import |
+| ST-04 | Refresh stale studio docs (zenoh-api.md says API_VERSION 1; actual is 2) | P1 | S | done | Done by the monorepo import: docs moved to docs/studio/ with names and API_VERSION corrected |
+| ST-05 | Delete stale package-lock.json; bun.lock is authoritative | P2 | S | done | Done by the monorepo import (file not carried over) |
+| ST-06 | Release packaging pipeline: DMG (macOS), AppImage (Linux), MSI (Windows) on tag push | P1 | L | planned | From studio backlog RP-01 (M11 Release Preparation) |
+| ST-07 | Bundle viva-service binary as Tauri sidecar (auto-start if no external service) | P1 | M | planned | From studio backlog RP-02 (M11); was "genicam-service" pre-rebrand |
+| ST-08 | Frame annotation rendering engine (frame ID/timestamp/FPS burned into BMP stream) | P2 | M | planned | From studio backlog FA-01 (M11) |
+| ST-09 | Annotation toggle in viewer toolbar (config via watch channel to embedded streamer) | P2 | S | planned | From studio backlog FA-02 (M11) |
+| ST-10 | Recording playback engine: load .gsr, play/pause, frame step, speed, seek | P2 | L | planned | From studio backlog REC-03 (M12 Recording & Polish) |
+| ST-11 | Recording export to TIFF stack / uncompressed AVI | P2 | M | planned | From studio backlog REC-04 (M12); interop with ImageJ, MATLAB |
+| ST-12 | Auto-update via Tauri v2 updater plugin (GitHub Releases as update server) | P2 | M | planned | From studio backlog RP-03 (M12) |
+| ST-13 | Studio performance benchmarks in CI (BMP encode, UiGraph parse, Zenoh round-trip) | P2 | M | planned | From studio backlog RP-04 (M12); fail on >10% regression |
 
 ## API — 0.3.0 consolidation (roadmap Phase 3, breaking)
 

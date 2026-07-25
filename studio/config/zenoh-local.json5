@@ -1,0 +1,11 @@
+{
+  // Camera service config: listens on a fixed port.
+  // Studio config is zenoh-studio.json5 (connects to this port).
+  mode: "peer",
+  listen: {
+    endpoints: ["tcp/127.0.0.1:7447"]
+  },
+  scouting: {
+    multicast: { enabled: false }
+  }
+}

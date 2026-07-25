@@ -1,0 +1,10 @@
+# Permissions for XML model commands exposed by the native parser/state.
+[[permission]]
+identifier = "xml-model"
+description = "Allows invoking XML parsing and fixture commands."
+commands.allow = [
+  "parse_xml",
+  "get_current_model",
+  "list_fixtures",
+  "load_fixture"
+]

@@ -1,0 +1,102 @@
+name: Studio CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-ci.yml"
+  pull_request:
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: studio
+
+      - name: Cargo fmt
+        working-directory: studio
+        run: cargo fmt --all --check
+
+      - name: Cargo clippy
+        working-directory: studio
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo test
+        working-directory: studio
+        run: cargo test --workspace
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: studio/ui/viva-studio-ui
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        working-directory: studio/ui/viva-studio-ui
+        run: bun run test -- --run
+
+      - name: Build
+        working-directory: studio/ui/viva-studio-ui
+        run: bun run build
+
+  # Expensive full desktop-app build; run on demand only.
+  tauri-build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: studio/apps/viva-studio-tauri/src-tauri
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install UI dependencies
+        working-directory: studio/ui/viva-studio-ui
+        run: bun install --frozen-lockfile
+
+      - name: Build UI
+        working-directory: studio/ui/viva-studio-ui
+        run: bun run build
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Tauri build
+        working-directory: studio/apps/viva-studio-tauri
+        run: cargo tauri build
