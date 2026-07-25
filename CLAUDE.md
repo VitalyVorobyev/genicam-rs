@@ -156,6 +156,15 @@ cargo run -p viva-camctl -- list --iface 127.0.0.1
 - [docs/backlog.md](docs/backlog.md) — immediate actionable tasks; pick up work from here
 - [docs/adrs/](docs/adrs/) — decision records; add one via the template in `docs/adrs/README.md` when making an architectural decision (retrospective ADRs welcome)
 
+## Skills
+
+Project skills in `.claude/skills/` (invoke with `/quality-gate` etc.):
+
+- **quality-gate** — run all CI gates locally before pushing (library workspace + studio when touched)
+- **implement-task** — implement a backlog task from `docs/backlog.md` end-to-end (plan → subagent implement → review → PR)
+- **adr-new** — scaffold the next ADR in `docs/adrs/` and index it
+- **release** — cut a release: version bump touchpoints, changelog, PR, tags, publish verification
+
 ## Code Intelligence (codegraph)
 
 A codegraph MCP index of the workspace lives in `.codegraph/` (gitignored, regenerable). Consult `codegraph_context` / `codegraph_trace` / `codegraph_search` BEFORE exploring by grep — it's sub-millisecond and already built. The file watcher keeps the index fresh (~1 s lag); if results look stale, check `codegraph_status`.
