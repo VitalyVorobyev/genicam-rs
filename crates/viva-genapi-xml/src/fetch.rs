@@ -17,6 +17,11 @@ const URL_MAX_LEN: usize = 512;
 /// ZIP local file header magic: `PK\x03\x04`.
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 
+/// Upper bound on the decompressed XML size: real GenICam XML documents are
+/// well under 10 MiB, and the cap bounds allocation driven by
+/// device-controlled ZIP metadata.
+const MAX_XML_SIZE: u64 = 64 * 1024 * 1024;
+
 /// If `data` starts with a ZIP signature, extract the first file's contents.
 /// Otherwise return `data` unchanged.
 ///
@@ -35,12 +40,26 @@ pub fn decompress_if_zip(data: Vec<u8>) -> Result<Vec<u8>, XmlError> {
     if archive.is_empty() {
         return Err(XmlError::Invalid("XML ZIP archive is empty".into()));
     }
-    let mut file = archive
+    let file = archive
         .by_index(0)
         .map_err(|e| XmlError::Invalid(format!("cannot read XML ZIP entry: {e}")))?;
-    let mut xml = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut xml)
+    if file.size() > MAX_XML_SIZE {
+        return Err(XmlError::Invalid(format!(
+            "XML ZIP entry declares {} bytes, exceeding the {MAX_XML_SIZE}-byte cap",
+            file.size()
+        )));
+    }
+    let mut xml = Vec::with_capacity(file.size().min(MAX_XML_SIZE) as usize);
+    // The declared size can lie and DEFLATE can expand past it, so bound the
+    // read itself as well.
+    file.take(MAX_XML_SIZE + 1)
+        .read_to_end(&mut xml)
         .map_err(|e| XmlError::Invalid(format!("XML ZIP decompression failed: {e}")))?;
+    if xml.len() as u64 > MAX_XML_SIZE {
+        return Err(XmlError::Invalid(format!(
+            "XML ZIP entry decompressed past the {MAX_XML_SIZE}-byte cap"
+        )));
+    }
     Ok(xml)
 }
 
@@ -286,6 +305,24 @@ mod tests {
             .await
             .expect_err("both URLs empty");
         assert!(matches!(err, XmlError::Invalid(_)));
+    }
+
+    #[test]
+    fn decompress_rejects_oversized_declared_xml() {
+        let mut zipped = zip_bytes("camera.xml", b"<a/>");
+        // Patch the uncompressed-size field in both the local file header
+        // (offset 22 from `PK\x03\x04`) and the central directory header
+        // (offset 24 from `PK\x01\x02`) to claim ~4 GiB.
+        let huge = 0xFFFF_FFF0u32.to_le_bytes();
+        for (magic, offset) in [(b"PK\x03\x04", 22usize), (b"PK\x01\x02", 24usize)] {
+            let pos = zipped
+                .windows(4)
+                .position(|w| w == magic)
+                .expect("zip header signature");
+            zipped[pos + offset..pos + offset + 4].copy_from_slice(&huge);
+        }
+        let err = decompress_if_zip(zipped).expect_err("oversized declared XML");
+        assert!(matches!(err, XmlError::Invalid(_)), "got: {err:?}");
     }
 
     #[test]
