@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **GigE connect fails on FLIR cameras with `unescape error: Cannot find ';' after '&'`** (#45) -- a regression introduced by the quick-xml 0.31 → 0.41 migration in 0.2.6. `read_text_start` unescaped the *raw* span returned by `Reader::read_text`, which still contains markup; a literal `&` is legal inside the CDATA sections and comments vendors put in `<ToolTip>` / `<Description>`, so unescaping it aborted the whole XML load and made the camera unopenable. Text extraction is now an explicit event walk that decodes character data, takes CDATA literally, resolves character and predefined entity references, and drops comments and processing instructions. An entity with no definition (GenICam declares no DTD) is kept as written instead of failing the document.
+- **Non-conformant vendor XML no longer blocks camera connect** -- `parse` and `parse_into_minimal_nodes` set quick-xml's `allow_dangling_amp`, so a lone `&` in a tooltip is carried through verbatim rather than rejecting the document.
+- **XML parse failures are reported as parse errors** -- `connect_gige` / `connect_u3v` mapped a malformed GenApi XML to `GenicamError::Transport`, surfacing in Python as `TransportError` and pointing debugging at the network. They now return `GenicamError::Parse` (Python `ParseError`) with the stage named in the message.
+
+### Added
+
+- **Fake GigE camera CDATA coverage** -- the `Gain` tooltip in the fake camera's GenApi XML is now a CDATA section containing `&` and `<`, as several vendors ship, with `test_connect_with_cdata_tooltip` asserting it survives an end-to-end connect (regression guard for #45).
+
 ## [0.2.6] - 2026-07-25
 
 ### Fixed
@@ -165,6 +177,7 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.6...HEAD
 [0.2.6]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.6
 [0.2.5]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.5
 [0.2.4]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.4

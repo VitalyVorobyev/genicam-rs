@@ -564,6 +564,9 @@ pub struct MinimalXmlInfo {
 pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
+    // Vendor XML is not ours to fix: a lone `&` in a tooltip must not stop us
+    // from reading the document.
+    reader.config_mut().allow_dangling_amp = true;
     let mut buf = Vec::new();
     let mut depth = 0usize;
     let mut schema_version: Option<String> = None;
@@ -604,6 +607,9 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
 pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
+    // Vendor XML is not ours to fix: a lone `&` in a tooltip must not stop us
+    // from opening the camera.
+    reader.config_mut().allow_dangling_amp = true;
     let mut buf = Vec::new();
     let mut version = String::from("0.0.0");
     let mut nodes = Vec::new();
@@ -1270,6 +1276,131 @@ mod tests {
                 assert_eq!(meta.visibility, Visibility::Beginner);
                 assert_eq!(meta.tooltip.as_deref(), Some("Pixel format selector"));
             }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    /// Wrap a node fragment in a minimal document and parse it.
+    fn parse_fragment(node: &str) -> XmlModel {
+        let xml = format!(
+            r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">{node}</RegisterDescription>"#
+        );
+        parse(&xml).expect("parse fragment")
+    }
+
+    /// Extract the metadata of the single node in a parsed fragment.
+    fn only_meta(model: &XmlModel) -> &NodeMeta {
+        match model.nodes.first().expect("one node") {
+            NodeDecl::Integer { meta, .. } => meta,
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    /// Regression for issue #45: a FLIR BFS-PGE camera failed to open because a
+    /// CDATA section in a text element was run through XML unescaping, where the
+    /// literal `&` it legally contains has no `;` to terminate it.
+    #[test]
+    fn cdata_text_is_taken_literally() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <ToolTip><![CDATA[Gain in dB & raw units, 0 < x < 10]]></ToolTip>
+               </Integer>"#,
+        );
+        assert_eq!(
+            only_meta(&model).tooltip.as_deref(),
+            Some("Gain in dB & raw units, 0 < x < 10")
+        );
+    }
+
+    /// Non-conformant vendor XML with a lone `&` must not stop the document from
+    /// loading — a cosmetic tooltip is never worth failing a camera connect over.
+    #[test]
+    fn dangling_ampersand_is_kept_verbatim() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <ToolTip>Exposure & gain</ToolTip>
+               </Integer>"#,
+        );
+        assert_eq!(
+            only_meta(&model).tooltip.as_deref(),
+            Some("Exposure & gain")
+        );
+    }
+
+    /// Comments are markup, not text: they are dropped, and a `&` inside one is
+    /// not an entity reference.
+    #[test]
+    fn comments_inside_text_elements_are_dropped() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <Description>Analog <!-- R&D note --> gain</Description>
+               </Integer>"#,
+        );
+        assert_eq!(
+            only_meta(&model).description.as_deref(),
+            Some("Analog  gain")
+        );
+    }
+
+    /// Entity references still resolve, and the whitespace around them survives
+    /// even though the reader splits character data at each reference.
+    #[test]
+    fn entity_references_resolve_and_preserve_spacing() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <ToolTip>A &amp; B &lt; C &gt; D &quot;E&quot; &apos;F&apos;</ToolTip>
+               </Integer>"#,
+        );
+        assert_eq!(
+            only_meta(&model).tooltip.as_deref(),
+            Some(r#"A & B < C > D "E" 'F'"#)
+        );
+    }
+
+    /// Numeric character references, both hexadecimal and decimal.
+    #[test]
+    fn character_references_resolve() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <ToolTip>&#x2014; dash &#8212;</ToolTip>
+               </Integer>"#,
+        );
+        assert_eq!(only_meta(&model).tooltip.as_deref(), Some("— dash —"));
+    }
+
+    /// GenICam declares no DTD, so an entity we cannot resolve is kept as written
+    /// rather than failing the document.
+    #[test]
+    fn unknown_entity_is_kept_as_written() {
+        let model = parse_fragment(
+            r#"<Integer Name="Gain">
+                 <Address>0x100</Address>
+                 <ToolTip>copyright &copy; vendor</ToolTip>
+               </Integer>"#,
+        );
+        assert_eq!(
+            only_meta(&model).tooltip.as_deref(),
+            Some("copyright &copy; vendor")
+        );
+    }
+
+    /// SwissKnife formulas escape their bitwise/comparison operators; the parsed
+    /// expression must contain the operators, not the entities.
+    #[test]
+    fn swissknife_formula_entities_resolve_to_operators() {
+        let model = parse_fragment(
+            r#"<IntSwissKnife Name="GainMask">
+                 <pVariable Name="RAW">Gain</pVariable>
+                 <Formula>(RAW &amp; 0xFF) &lt; 16</Formula>
+               </IntSwissKnife>"#,
+        );
+        match model.nodes.first().expect("one node") {
+            NodeDecl::SwissKnife(node) => assert_eq!(node.expr, "(RAW & 0xFF) < 16"),
             other => panic!("unexpected node: {other:?}"),
         }
     }

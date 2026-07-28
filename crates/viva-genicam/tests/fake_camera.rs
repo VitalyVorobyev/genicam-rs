@@ -145,6 +145,29 @@ async fn test_connect_with_zipped_xml() {
 }
 
 #[tokio::test]
+async fn test_connect_with_cdata_tooltip() {
+    // Issue #45: a FLIR BFS-PGE camera could not be opened because a CDATA
+    // section in a text element was run through XML unescaping, which chokes on
+    // the literal `&` that is legal there. Connecting must succeed and the
+    // tooltip must survive intact.
+    let _cam = common::TestCamera::start().await;
+
+    let device = discover_fake().await;
+    let camera = connect_gige(&device).await.expect("connect failed");
+
+    let tooltip = camera
+        .nodemap()
+        .node("Gain")
+        .expect("NodeMap should contain Gain")
+        .tooltip()
+        .expect("Gain should have a tooltip");
+    assert!(
+        tooltip.contains("0 < gain & gain < 48"),
+        "CDATA tooltip should be preserved verbatim, got: {tooltip}"
+    );
+}
+
+#[tokio::test]
 async fn test_claim_control_visible_via_register_read() {
     let _cam = common::TestCamera::start().await;
 
