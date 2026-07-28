@@ -1,0 +1,39 @@
+name: Vendor XML Corpus
+
+# Parses real-camera GenICam XML descriptions to catch the class of bug that
+# only shows up on hardware we do not own: issues #45 and #35 were both a single
+# vendor construct making a camera unopenable, and both reached users first.
+#
+# Not part of PR CI: the corpus is fetched from third-party repositories, so a
+# network hiccup or an upstream rename must not block a merge. Weekly plus
+# on-demand is enough to notice a regression while it is still cheap to fix.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch XML corpus
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-xml-corpus.sh
+
+      - name: Parse every document
+        run: cargo test -p viva-genapi-xml --test vendor_corpus -- --nocapture
