@@ -470,7 +470,9 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
        ════════════════════════════════════════════════════════════════════ -->
 
   <Float Name="Gain" NameSpace="Standard">
-    <ToolTip>Gain applied to the image in dB — locked to RO when GainAuto is not Off</ToolTip>
+    <!-- CDATA-wrapped tooltip, as shipped by several vendors: the literal `&`
+         and `<` inside are legal here and must survive parsing (issue #45). -->
+    <ToolTip><![CDATA[Gain applied to the image in dB — locked to RO when GainAuto is not Off (0 < gain & gain < 48)]]></ToolTip>
     <Address>0x20040</Address>
     <Length>8</Length>
     <AccessMode>RW</AccessMode>

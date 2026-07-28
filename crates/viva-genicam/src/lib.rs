@@ -834,7 +834,8 @@ pub async fn connect_gige_with_xml(
     .await
     .map_err(|e| GenicamError::transport(e.to_string()))?;
 
-    let model = viva_genapi_xml::parse(&xml).map_err(|e| GenicamError::transport(e.to_string()))?;
+    let model = viva_genapi_xml::parse(&xml)
+        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
     let nodemap = genapi::NodeMap::from(model);
 
     // Extract the device and create the blocking adapter.
@@ -951,7 +952,8 @@ pub fn connect_u3v_with_xml(
         .fetch_xml()
         .map_err(|e| GenicamError::transport(e.to_string()))?;
 
-    let model = viva_genapi_xml::parse(&xml).map_err(|e| GenicamError::transport(e.to_string()))?;
+    let model = viva_genapi_xml::parse(&xml)
+        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
     let nodemap = genapi::NodeMap::from(model);
     let transport = U3vRegisterIo::new(device);
 
@@ -973,7 +975,8 @@ pub fn open_u3v_device<T: u3v::usb::UsbTransfer + 'static>(
     let xml = device
         .fetch_xml()
         .map_err(|e| GenicamError::transport(e.to_string()))?;
-    let model = viva_genapi_xml::parse(&xml).map_err(|e| GenicamError::transport(e.to_string()))?;
+    let model = viva_genapi_xml::parse(&xml)
+        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
     let nodemap = genapi::NodeMap::from(model);
     let transport = U3vRegisterIo::new(device);
     Ok((Camera::new(transport, nodemap), xml))
