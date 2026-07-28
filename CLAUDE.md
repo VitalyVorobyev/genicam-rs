@@ -107,6 +107,35 @@ cargo test -p viva-service --test fake_camera_e2e
 RUST_LOG=debug cargo test --workspace -- --nocapture
 ```
 
+### Vendor XML corpus
+
+Fake cameras only exercise constructs we already thought of. Real vendor
+GenApi XML is where the surprises live -- issues #45 and #35 were both a
+single vendor construct making a camera unopenable, and both reached
+users before us. The corpus test parses ~30 real device descriptions
+(AVT, Basler, Baumer, FLIR, JAI, PCO, Point Grey, Photonic Science,
+Prosilica, SVS, Sony, TIS) plus the GenICam conformance document.
+
+```bash
+scripts/fetch-xml-corpus.sh        # into fixtures/vendor-xml/ (gitignored)
+cargo test -p viva-genapi-xml --test vendor_corpus -- --nocapture
+```
+
+The documents are vendor copyright, published for interoperability by
+third-party projects, so we fetch rather than redistribute them. The test
+is a no-op when the directory is absent, so a fresh clone and PR CI stay
+green; the `Vendor XML Corpus` workflow runs it weekly and on demand.
+
+Point `VIVA_GENICAM_XML_CORPUS` at another directory to check XML dumped
+from your own hardware. **When a user reports a camera we cannot open,
+ask for their XML and add it to the corpus** -- that is how this class of
+bug stops recurring.
+
+A node we cannot parse no longer fails the document: it is dropped,
+recorded in `XmlModel::skipped`, and logged. The corpus test fails on any
+skipped node not listed in its `EXPECTED_SKIPS` allowlist, so new gaps
+surface instead of hiding.
+
 ### Fake camera binary
 
 For interactive testing or E2E testing with Viva Studio:

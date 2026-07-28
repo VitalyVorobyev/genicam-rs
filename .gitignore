@@ -35,3 +35,6 @@ dist/
 # Claude Code: track only project skills
 .claude/*
 !.claude/skills/
+
+# Fetched on demand by scripts/fetch-xml-corpus.sh; vendor copyright, not redistributed.
+fixtures/vendor-xml/
