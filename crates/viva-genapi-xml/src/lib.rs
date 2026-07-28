@@ -15,6 +15,7 @@ pub use fetch::fetch_and_load_xml;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::QName;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -202,12 +203,27 @@ pub enum AccessMode {
 }
 
 impl AccessMode {
+    /// Parse an `<AccessMode>` value.
+    ///
+    /// Beyond the three spellings the standard defines, the single-letter forms
+    /// `R` / `W` are accepted: they appear in third-party GenICam documents
+    /// (including the standard's own conformance fixtures). An unrecognized
+    /// value falls back to `RW` — the same default as an absent `<AccessMode>` —
+    /// so one odd register cannot make a whole camera unusable. The runtime
+    /// still surfaces the device's own error if the access is genuinely denied.
     pub(crate) fn parse(value: &str) -> Result<Self, XmlError> {
-        match value.trim().to_ascii_uppercase().as_str() {
-            "RO" => Ok(AccessMode::RO),
-            "WO" => Ok(AccessMode::WO),
-            "RW" => Ok(AccessMode::RW),
-            other => Err(XmlError::Invalid(format!("unknown access mode: {other}"))),
+        let trimmed = value.trim();
+        match trimmed.to_ascii_uppercase().as_str() {
+            "RO" | "R" => Ok(AccessMode::RO),
+            "WO" | "W" => Ok(AccessMode::WO),
+            "RW" | "WR" => Ok(AccessMode::RW),
+            other => {
+                tracing::warn!(
+                    access_mode = other,
+                    "unknown <AccessMode> value, assuming RW"
+                );
+                Ok(AccessMode::RW)
+            }
         }
     }
 }
@@ -544,6 +560,22 @@ pub enum NodeDecl {
     String(StringDecl),
 }
 
+/// A node element that could not be parsed and was left out of the model.
+///
+/// Parsing isolates each node, so a declaration we cannot make sense of costs
+/// that one feature instead of the whole document. These records exist so the
+/// loss is visible rather than silent — surface them in a UI, log them, or
+/// assert on them in tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedNode {
+    /// XML tag of the node element, e.g. `Integer`.
+    pub tag: String,
+    /// `Name` attribute, when the element had one.
+    pub name: Option<String>,
+    /// Rendered parse error explaining why the node was dropped.
+    pub error: String,
+}
+
 /// Full XML model describing the GenICam schema version and all declared nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XmlModel {
@@ -551,6 +583,10 @@ pub struct XmlModel {
     pub version: String,
     /// Flat list of node declarations present in the document.
     pub nodes: Vec<NodeDecl>,
+    /// Node elements that failed to parse and were skipped. Empty for a clean
+    /// document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedNode>,
 }
 
 /// Minimal metadata extracted from a quick XML scan.
@@ -599,11 +635,94 @@ pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
     })
 }
 
+/// `true` for tags this parser turns into one or more [`NodeDecl`]s.
+fn is_node_tag(tag: &[u8]) -> bool {
+    matches!(
+        tag,
+        b"Integer"
+            | b"IntReg"
+            | b"MaskedIntReg"
+            | b"IntSwissKnife"
+            | b"SwissKnife"
+            | b"Float"
+            | b"FloatReg"
+            | b"Enumeration"
+            | b"Boolean"
+            | b"Command"
+            | b"Category"
+            | b"Converter"
+            | b"IntConverter"
+            | b"StringReg"
+            | b"String"
+            | b"StructReg"
+    )
+}
+
+/// Dispatch a node element to its parser. `start` must be the element's start
+/// event and `reader` must be positioned just after it.
+fn parse_node(
+    reader: &mut Reader<&[u8]>,
+    start: BytesStart<'_>,
+) -> Result<Vec<NodeDecl>, XmlError> {
+    let tag = start.name().as_ref().to_vec();
+    let node = match tag.as_slice() {
+        b"Integer" | b"IntReg" | b"MaskedIntReg" => parse_integer(reader, start)?,
+        b"IntSwissKnife" | b"SwissKnife" => parse_swissknife(reader, start)?,
+        b"Float" | b"FloatReg" => parse_float(reader, start)?,
+        b"Enumeration" => parse_enum(reader, start)?,
+        b"Boolean" => parse_boolean(reader, start)?,
+        b"Command" => parse_command(reader, start)?,
+        b"Category" => parse_category(reader, start)?,
+        b"Converter" => parse_converter(reader, start)?,
+        b"IntConverter" => parse_int_converter(reader, start)?,
+        b"StringReg" | b"String" => parse_string(reader, start)?,
+        b"StructReg" => return parse_struct_reg(reader, start),
+        other => {
+            return Err(XmlError::Invalid(format!(
+                "not a node element: {}",
+                String::from_utf8_lossy(other)
+            )));
+        }
+    };
+    Ok(vec![node])
+}
+
+/// Parse one node element in isolation, from a slice spanning the whole element.
+///
+/// A fresh reader over just this element means a parse failure cannot leave the
+/// document-level reader at an unknown position — the caller has already
+/// consumed exactly this element and is correctly positioned either way.
+fn parse_isolated_node(element: &str) -> Result<Vec<NodeDecl>, XmlError> {
+    let mut reader = Reader::from_str(element);
+    reader.config_mut().trim_text(true);
+    reader.config_mut().allow_dangling_amp = true;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let start = e.into_owned();
+                return parse_node(&mut reader, start);
+            }
+            Ok(Event::Eof) => {
+                return Err(XmlError::Invalid("node element is empty".into()));
+            }
+            Err(err) => return Err(XmlError::Xml(err.to_string())),
+            // Leading whitespace or a comment before the start tag.
+            _ => {}
+        }
+    }
+}
+
 /// Parse a GenICam XML document into an [`XmlModel`].
 ///
 /// The parser only understands a practical subset of the schema. Unknown tags
 /// are skipped which keeps the implementation forward compatible with richer
 /// documents.
+///
+/// Each node element is parsed in isolation: one declaration we cannot make
+/// sense of costs that single feature and is recorded in [`XmlModel::skipped`],
+/// rather than failing the load and leaving the camera unopenable. Only errors
+/// that make the document as a whole unreadable are returned.
 pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -613,60 +732,16 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
     let mut buf = Vec::new();
     let mut version = String::from("0.0.0");
     let mut nodes = Vec::new();
+    let mut skipped = Vec::new();
 
     loop {
+        // Captured before the read so a node element's slice can be recovered
+        // verbatim, start tag included.
+        let element_start = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"RegisterDescription" => {
                     version = schema_version_from(e)?;
-                }
-                b"Integer" | b"IntReg" | b"MaskedIntReg" => {
-                    let node = parse_integer(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"IntSwissKnife" => {
-                    let node = parse_swissknife(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Float" | b"FloatReg" => {
-                    let node = parse_float(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Enumeration" => {
-                    let node = parse_enum(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Boolean" => {
-                    let node = parse_boolean(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Command" => {
-                    let node = parse_command(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Category" => {
-                    let node = parse_category(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"SwissKnife" => {
-                    let node = parse_swissknife(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"Converter" => {
-                    let node = parse_converter(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"IntConverter" => {
-                    let node = parse_int_converter(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"StringReg" | b"String" => {
-                    let node = parse_string(&mut reader, e.clone())?;
-                    nodes.push(node);
-                }
-                b"StructReg" => {
-                    let entries = parse_struct_reg(&mut reader, e.clone())?;
-                    nodes.extend(entries);
                 }
                 b"Group" => {
                     // Group is a transparent container wrapping feature nodes;
@@ -675,6 +750,33 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                 b"Port" => {
                     // Port nodes are transport-level abstractions; skip them.
                     skip_element(&mut reader, e.name().as_ref())?;
+                }
+                tag if is_node_tag(tag) => {
+                    let tag = tag.to_vec();
+                    let name = attribute_value(e, b"Name")?;
+                    // Consume the element up front: whatever the node parser
+                    // makes of it, the document reader stays in step.
+                    reader
+                        .read_to_end(QName(&tag))
+                        .map_err(|err| XmlError::Xml(err.to_string()))?;
+                    let element = &xml[element_start..reader.buffer_position() as usize];
+                    match parse_isolated_node(element) {
+                        Ok(parsed) => nodes.extend(parsed),
+                        Err(err) => {
+                            let tag = String::from_utf8_lossy(&tag).into_owned();
+                            tracing::warn!(
+                                tag = %tag,
+                                node = name.as_deref().unwrap_or("<unnamed>"),
+                                error = %err,
+                                "skipping unparsable node"
+                            );
+                            skipped.push(SkippedNode {
+                                tag,
+                                name,
+                                error: err.to_string(),
+                            });
+                        }
+                    }
                 }
                 _ => {
                     skip_element(&mut reader, e.name().as_ref())?;
@@ -701,7 +803,19 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
         buf.clear();
     }
 
-    Ok(XmlModel { version, nodes })
+    if !skipped.is_empty() {
+        tracing::warn!(
+            count = skipped.len(),
+            total = nodes.len() + skipped.len(),
+            "some GenApi nodes could not be parsed and were skipped"
+        );
+    }
+
+    Ok(XmlModel {
+        version,
+        nodes,
+        skipped,
+    })
 }
 
 fn schema_version_from(event: &BytesStart<'_>) -> Result<String, XmlError> {
@@ -1403,5 +1517,101 @@ mod tests {
             NodeDecl::SwissKnife(node) => assert_eq!(node.expr, "(RAW & 0xFF) < 16"),
             other => panic!("unexpected node: {other:?}"),
         }
+    }
+
+    /// A SwissKnife whose formula is constant needs no `<pVariable>`. Rejecting
+    /// these blocked a Hikrobot MV-CS050-10GC on `PixelDynamicRangeMin_Value`
+    /// (reported in #35) and appears in the standard's own conformance document.
+    #[test]
+    fn swissknife_without_variables_is_accepted() {
+        let model = parse_fragment(
+            r#"<IntSwissKnife Name="PixelDynamicRangeMin_Value">
+                 <Formula>0x1234</Formula>
+               </IntSwissKnife>"#,
+        );
+        match model.nodes.first().expect("one node") {
+            NodeDecl::SwissKnife(node) => {
+                assert_eq!(node.expr, "0x1234");
+                assert!(node.variables.is_empty());
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    /// `<AccessMode>` values beyond the standard's three spellings appear in
+    /// third-party documents; an odd one must not cost the whole camera.
+    #[test]
+    fn access_mode_accepts_aliases_and_defaults_unknown_to_rw() {
+        assert_eq!(AccessMode::parse("R").unwrap(), AccessMode::RO);
+        assert_eq!(AccessMode::parse("W").unwrap(), AccessMode::WO);
+        assert_eq!(AccessMode::parse("WR").unwrap(), AccessMode::RW);
+        assert_eq!(AccessMode::parse(" ro ").unwrap(), AccessMode::RO);
+        assert_eq!(AccessMode::parse("Bogus").unwrap(), AccessMode::RW);
+    }
+
+    /// A node we cannot parse costs that one feature, not the whole document —
+    /// and the reader stays in step, so nodes after it still load.
+    #[test]
+    fn unparsable_node_is_skipped_not_fatal() {
+        let model = parse_fragment(
+            r#"<Integer Name="Before">
+                 <Address>0x100</Address>
+                 <Length>4</Length>
+               </Integer>
+               <Integer Name="Broken">
+                 <Address>0xZZZZ</Address>
+                 <Length>4</Length>
+               </Integer>
+               <Integer Name="After">
+                 <Address>0x200</Address>
+                 <Length>4</Length>
+               </Integer>"#,
+        );
+
+        let names: Vec<&str> = model
+            .nodes
+            .iter()
+            .map(|node| match node {
+                NodeDecl::Integer { name, .. } => name.as_str(),
+                other => panic!("unexpected node: {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["Before", "After"]);
+
+        assert_eq!(model.skipped.len(), 1);
+        let skipped = &model.skipped[0];
+        assert_eq!(skipped.tag, "Integer");
+        assert_eq!(skipped.name.as_deref(), Some("Broken"));
+        assert!(
+            skipped.error.contains("invalid hex"),
+            "unexpected error: {}",
+            skipped.error
+        );
+    }
+
+    /// Isolation must survive a node whose failure happens before the parser has
+    /// consumed any children — the outer reader is positioned by the caller, not
+    /// by how far the node parser got.
+    #[test]
+    fn node_missing_required_name_is_skipped() {
+        let model = parse_fragment(
+            r#"<Integer>
+                 <Address>0x100</Address>
+               </Integer>
+               <Integer Name="Good">
+                 <Address>0x200</Address>
+                 <Length>4</Length>
+               </Integer>"#,
+        );
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(model.skipped.len(), 1);
+        assert_eq!(model.skipped[0].name, None);
+    }
+
+    /// A clean document reports nothing skipped.
+    #[test]
+    fn clean_document_skips_nothing() {
+        let model = parse(FIXTURE).expect("parse fixture");
+        assert!(model.skipped.is_empty());
     }
 }

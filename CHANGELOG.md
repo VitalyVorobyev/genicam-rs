@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Constant-formula SwissKnife nodes no longer abort the XML load** — a
+  `<IntSwissKnife>` / `<SwissKnife>` whose `<Formula>` needs no inputs is legal
+  GenICam and appears in the standard's own conformance documents, but we
+  required at least one `<pVariable>` and failed the whole document without it.
+  This blocked a Hikrobot MV-CS050-10GC on `PixelDynamicRangeMin_Value`
+  (reported in #35 after the original fix landed).
+- **Unrecognized `<AccessMode>` values no longer abort the XML load** — `R` and
+  `W` (seen in third-party GenICam documents, including the standard's
+  conformance fixtures) now map to `RO` / `WO`, `WR` maps to `RW`, and anything
+  else falls back to `RW` with a warning instead of rejecting the document. `RW`
+  is what an absent `<AccessMode>` already meant, and the device still enforces
+  its own access rules.
+
+### Changed
+
+- **A node we cannot parse now costs that one feature, not the whole camera.**
+  Every node element is parsed in isolation: the document reader consumes the
+  element up front, so a parse failure can neither desync it nor abort the load.
+  Failures are recorded in the new `XmlModel::skipped` (tag, `Name`, error) and
+  logged at `warn`, so the loss is visible rather than silent. This is the
+  structural fix behind #45, #35 and the two bugs above — all of them were a
+  single odd node making an entire camera unopenable.
+
 ## [0.2.7] - 2026-07-28
 
 Hotfix for a 0.2.6 regression that made cameras with certain vendor XML
