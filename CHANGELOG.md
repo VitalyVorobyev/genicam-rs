@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-28
+
+Second hotfix in the same family as 0.2.7: a single unusual node in a camera's
+GenApi XML could make the whole camera unopenable. **Hikrobot users blocked on
+#35 should upgrade** — and after this release, this class of problem degrades to
+a missing feature rather than a failed connect.
+
 ### Fixed
 
 - **Constant-formula SwissKnife nodes no longer abort the XML load** — a
@@ -237,7 +244,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.8
 [0.2.7]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.7
 [0.2.6]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.6
 [0.2.5]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.5
