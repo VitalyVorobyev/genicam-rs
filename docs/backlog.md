@@ -22,6 +22,18 @@ Immediate, actionable tasks. Mid-term direction lives in
 | SR-05 | Library-owned heartbeat keepalive | P1 | M | planned | Consumers lose CCP after ~3 s idle |
 | SR-06 | Fix unsound `unsafe impl Sync` on `MockUsbTransfer` (`RefCell` → `Mutex`) | P0 | S | planned | Soundness bug |
 
+## XML — Vendor GenApi XML compatibility
+
+Found by inspection or by the vendor XML corpus
+(`scripts/fetch-xml-corpus.sh`), not by a user report. Tracked here rather
+than as GitHub issues so the tracker stays user-facing.
+
+| ID | Task | Priority | Size | Status | Notes |
+|----|------|----------|------|--------|-------|
+| XML-01 | Support negative `<Address>` (chunk-relative offsets) | P2 | M | planned | Confirmed: `Baumer_HXG20` `ChunkImageLength`; sole `EXPECTED_SKIPS` entry in the corpus test. Needs signed/relative addressing in the data model |
+| XML-02 | Fall back to lossy decoding for non-UTF-8 GenApi XML | P2 | S | planned | Unconfirmed. `fetch.rs` `String::from_utf8` is strict, so an `ISO-8859-1` document fails the connect outright |
+| XML-03 | Accept uppercase `0X` hex prefix in `parse_u64`/`parse_i64` | P2 | S | planned | Unconfirmed. Hex digits are already case-insensitive, only the prefix is not. No corpus document uses it |
+
 ## CI
 
 | ID | Task | Priority | Size | Status | Notes |
