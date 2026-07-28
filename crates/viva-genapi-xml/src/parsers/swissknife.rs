@@ -106,14 +106,10 @@ pub fn parse_swissknife(
         buf.clear();
     }
 
-    let expr = expr.ok_or_else(|| {
-        XmlError::Invalid(format!("SwissKnife node {name} is missing <Expression>"))
-    })?;
-    if variables.is_empty() {
-        return Err(XmlError::Invalid(format!(
-            "SwissKnife node {name} must declare at least one <pVariable>"
-        )));
-    }
+    let expr = expr
+        .ok_or_else(|| XmlError::Invalid(format!("SwissKnife node {name} is missing <Formula>")))?;
+    // `<pVariable>` is optional: a constant formula such as `<Formula>0x1234</Formula>`
+    // is legal GenICam and appears in the standard's own conformance documents.
 
     Ok(NodeDecl::SwissKnife(SwissKnifeDecl {
         name,
