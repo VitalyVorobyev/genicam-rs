@@ -7,15 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-28
+
+Hotfix for a 0.2.6 regression that made cameras with certain vendor XML
+impossible to open. **Anyone on 0.2.6 should upgrade.**
+
 ### Fixed
 
-- **GigE connect fails on FLIR cameras with `unescape error: Cannot find ';' after '&'`** (#45) -- a regression introduced by the quick-xml 0.31 → 0.41 migration in 0.2.6. `read_text_start` unescaped the *raw* span returned by `Reader::read_text`, which still contains markup; a literal `&` is legal inside the CDATA sections and comments vendors put in `<ToolTip>` / `<Description>`, so unescaping it aborted the whole XML load and made the camera unopenable. Text extraction is now an explicit event walk that decodes character data, takes CDATA literally, resolves character and predefined entity references, and drops comments and processing instructions. An entity with no definition (GenICam declares no DTD) is kept as written instead of failing the document.
-- **Non-conformant vendor XML no longer blocks camera connect** -- `parse` and `parse_into_minimal_nodes` set quick-xml's `allow_dangling_amp`, so a lone `&` in a tooltip is carried through verbatim rather than rejecting the document.
-- **XML parse failures are reported as parse errors** -- `connect_gige` / `connect_u3v` mapped a malformed GenApi XML to `GenicamError::Transport`, surfacing in Python as `TransportError` and pointing debugging at the network. They now return `GenicamError::Parse` (Python `ParseError`) with the stage named in the message.
+- **Cannot connect to FLIR (and other vendors') cameras: `unescape error: Cannot find ';' after '&'`** (#45).
+  Connecting failed outright — `connect_gige` / `connect_u3v` returned an error and no
+  camera handle — whenever the device's GenApi XML put a literal `&` somewhere it is
+  perfectly legal, most commonly a `<![CDATA[...]]>` tooltip or a comment inside
+  `<ToolTip>` / `<Description>`. Reported against a FLIR BFS-PGE-31S4C-C, but nothing
+  about it is FLIR-specific.
+
+  A regression from the quick-xml 0.31 → 0.41 migration in 0.2.6: the migration added
+  entity unescaping (0.31 never unescaped at all, so `&amp;` used to leak through
+  literally) but applied it to `Reader::read_text`'s **raw** span, which still contains
+  markup. quick-xml documents that method as explicitly not unescaping, precisely because
+  the span can contain CDATA.
+
+  Text extraction is now an explicit event walk: character data is decoded, CDATA is taken
+  literally, character and predefined entity references are resolved, and comments and
+  processing instructions are dropped. An entity with no definition (GenICam declares no
+  DTD, so e.g. `&copy;` has nothing to resolve against) is kept as written instead of
+  failing the document.
+- **A lone `&` in vendor XML no longer blocks connecting.** `parse` and
+  `parse_into_minimal_nodes` enable quick-xml's `allow_dangling_amp`, so technically
+  non-conformant XML — which we cannot fix and the camera will not stop shipping — loads
+  with the `&` carried through verbatim. A cosmetic tooltip is never worth failing a
+  camera connect over.
+- **Malformed GenApi XML is now reported as a parse error, not a transport error.**
+  `connect_gige` / `connect_u3v` mapped XML parse failures to `GenicamError::Transport`
+  (Python: `TransportError`), which sent debugging off toward the network. They now return
+  `GenicamError::Parse` (Python: `ParseError`) with the stage named in the message.
+  **Note for Python users:** if you catch `viva_genicam.TransportError` around a connect
+  call to handle bad XML, switch to `ParseError` (or the shared `GenicamError` base).
 
 ### Added
 
-- **Fake GigE camera CDATA coverage** -- the `Gain` tooltip in the fake camera's GenApi XML is now a CDATA section containing `&` and `<`, as several vendors ship, with `test_connect_with_cdata_tooltip` asserting it survives an end-to-end connect (regression guard for #45).
+- **Regression coverage for vendor-XML text quirks** — parser tests for CDATA, a dangling
+  `&`, comments inside text elements, entity references and the whitespace around them,
+  numeric character references, and undefined entities. The fake GigE camera's `Gain`
+  tooltip is now a CDATA section containing `&` and `<`, as several vendors ship, so
+  `test_connect_with_cdata_tooltip` exercises the fix through a full end-to-end connect.
 
 ## [0.2.6] - 2026-07-25
 
@@ -177,7 +212,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.7
 [0.2.6]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.6
 [0.2.5]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.5
 [0.2.4]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.4
