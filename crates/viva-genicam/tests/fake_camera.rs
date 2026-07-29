@@ -795,8 +795,12 @@ async fn test_event_stream_receives_start_of_transfer() {
     let local: std::net::Ipv4Addr = [127, 0, 0, 1].into();
     let port = 10_020u16;
 
+    // Enable two events, and expect the first one to still be enabled.
+    // `EventNotification` is selected by `EventSelector`, so this writes the
+    // same register twice; a device backing it with one word would answer
+    // only for `EndOfTransfer` and this test would time out.
     camera
-        .configure_events(local, port, &["StartOfTransfer"])
+        .configure_events(local, port, &["StartOfTransfer", "EndOfTransfer"])
         .await
         .expect("configure events");
     let events = camera

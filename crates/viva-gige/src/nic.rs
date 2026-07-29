@@ -127,6 +127,41 @@ impl Iface {
         ))
     }
 
+    /// Every interface the operating system reports, one entry per name.
+    ///
+    /// This is the library's own view of the machine, which is the point: #57
+    /// was an interface that existed but that we could not see, and no amount
+    /// of `ipconfig` output would have shown that. Ordered by name so two
+    /// runs can be diffed.
+    pub fn list() -> io::Result<Vec<Self>> {
+        let mut names: Vec<String> = if_addrs::get_if_addrs()?
+            .into_iter()
+            .map(|iface| iface.name)
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names
+            .into_iter()
+            .filter_map(|name| Self::from_system(&name).ok())
+            .collect())
+    }
+
+    /// Every IPv4 address assigned to this interface.
+    ///
+    /// [`Iface::ipv4`] reports the one the socket will bind to; a multi-homed
+    /// NIC has more, and which ones they are is exactly the question #57
+    /// turned on.
+    pub fn all_ipv4(&self) -> io::Result<Vec<Ipv4Addr>> {
+        Ok(if_addrs::get_if_addrs()?
+            .into_iter()
+            .filter(|iface| iface.name == self.name)
+            .filter_map(|iface| match iface.addr {
+                IfAddr::V4(v4) => Some(v4.ip),
+                IfAddr::V6(_) => None,
+            })
+            .collect())
+    }
+
     fn resolve(name: &str, preferred: Option<Ipv4Addr>) -> io::Result<Self> {
         if name.is_empty() || name.len() > IFACE_NAME_MAX {
             return Err(io::Error::new(

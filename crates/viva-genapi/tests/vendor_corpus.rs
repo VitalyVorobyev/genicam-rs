@@ -43,6 +43,17 @@ const EXPECTED_SKIPS: &[(&str, &str)] = &[
     ("Baumer_HXG20.xml", "ChunkImageLength"),
 ];
 
+/// Node *types* we have not implemented, expected to be skipped everywhere.
+///
+/// Distinct from [`EXPECTED_SKIPS`], which allows one named declaration. An
+/// entry here says the tag itself is unimplemented; a tag *not* listed still
+/// fails the test.
+const EXPECTED_SKIP_TAGS: &[&str] = &[
+    // GA-09: `<Register>`, the raw-byte base register type — 56 declarations
+    // across 14 corpus documents.
+    "Register",
+];
+
 fn corpus_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VIVA_GENICAM_XML_CORPUS") {
         return PathBuf::from(dir);
@@ -53,10 +64,11 @@ fn corpus_dir() -> PathBuf {
         .join(DEFAULT_CORPUS)
 }
 
-fn is_expected_skip(document: &str, node: Option<&str>) -> bool {
-    EXPECTED_SKIPS
-        .iter()
-        .any(|(doc, name)| *doc == document && Some(*name) == node)
+fn is_expected_skip(document: &str, tag: &str, node: Option<&str>) -> bool {
+    EXPECTED_SKIP_TAGS.contains(&tag)
+        || EXPECTED_SKIPS
+            .iter()
+            .any(|(doc, name)| *doc == document && Some(*name) == node)
 }
 
 /// Whether an evaluation error means the formula engine is wrong, as opposed
@@ -139,7 +151,7 @@ fn vendor_xml_corpus_builds_nodemaps() {
 
         // 1. Nothing should have been dropped on the way to the nodemap.
         for skipped in nodemap.skipped() {
-            if is_expected_skip(&document, skipped.name.as_deref()) {
+            if is_expected_skip(&document, &skipped.tag, skipped.name.as_deref()) {
                 continue;
             }
             println!(

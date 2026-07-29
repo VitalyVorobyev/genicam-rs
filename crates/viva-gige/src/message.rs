@@ -272,6 +272,16 @@ impl EventSocket {
             }
 
             let mut buffer = self.buffer.lock().await;
+            // Recheck under the receive lock. Waiting for it is exactly the
+            // window in which another task can decode a multi-event datagram
+            // and queue its remainder: those events are older than anything
+            // the socket will hand us next, and if we went to `recv_from`
+            // instead we would block on a device that may never speak again
+            // while its events sat in the queue.
+            if let Some(packet) = self.pending.lock().await.pop_front() {
+                return Ok(packet);
+            }
+
             let (len, src) = self.sock.recv_from(&mut buffer[..]).await?;
             trace!(bytes = len, %src, "received GVCP message");
             let parsed = EventPacket::parse_datagram(src, &buffer[..len]);
@@ -323,6 +333,8 @@ impl EventSocket {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn src() -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3956)
@@ -455,6 +467,62 @@ mod tests {
     fn ack_matches_spec_bytes() {
         let ack = encode_ack(gvcp::EVENT_ACK, 0xCAFE);
         assert_eq!(ack, [0x00, 0x00, 0x00, 0xC1, 0x00, 0x00, 0xCA, 0xFE]);
+    }
+
+    /// Two concurrent receivers must share a multi-event datagram.
+    ///
+    /// Both tasks start while the queue is empty, so both get past the fast
+    /// path and one blocks on the receive lock. When the datagram lands, the
+    /// winner queues the second event and returns the first — and the loser
+    /// wakes holding a lock it must not carry into `recv_from`, because the
+    /// device has already said everything it is going to say. Without the
+    /// recheck this test hangs with an event sitting in the queue.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_queued_event_is_not_stranded_behind_the_receive_lock() {
+        let sock = Arc::new(
+            EventSocket::bind(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
+                .await
+                .expect("bind"),
+        );
+        let dest = sock.local_addr().expect("local addr");
+
+        let first = tokio::spawn({
+            let sock = Arc::clone(&sock);
+            async move { sock.recv().await.expect("first event") }
+        });
+        let second = tokio::spawn({
+            let sock = Arc::clone(&sock);
+            async move { sock.recv().await.expect("second event") }
+        });
+
+        // Let both tasks reach the receive lock before any data exists.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(consts::GVCP_CMD_KEY);
+        buf.put_u8(0);
+        buf.put_u16(gvcp::EVENT_COMMAND);
+        buf.put_u16((gvcp::EVENT_ENTRY * 2) as u16);
+        buf.put_u16(0x0001);
+        for i in 0..2u16 {
+            buf.put_u16(0); // reserved
+            buf.put_u16(0x2000 + i); // event id
+            buf.put_u16(0); // stream channel
+            buf.put_u16(i); // block id
+            buf.put_u64(u64::from(i));
+        }
+        let sender = UdpSocket::bind("127.0.0.1:0").await.expect("sender");
+        sender.send_to(&buf, dest).await.expect("send");
+
+        let both = tokio::time::timeout(Duration::from_secs(5), async {
+            (first.await.expect("join"), second.await.expect("join"))
+        })
+        .await
+        .expect("both receivers finished");
+
+        let mut ids = [both.0.event_id, both.1.event_id];
+        ids.sort_unstable();
+        assert_eq!(ids, [0x2000, 0x2001]);
     }
 
     #[test]

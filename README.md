@@ -52,7 +52,7 @@ We intend to get it there. What follows is where it actually stands.
 - USB3 Vision — discovery, control, streaming, service bridge, CLI
 - GenApi — Tier-1 and Tier-2 nodes, `pValue` delegation, the GenICam formula language, the register address model
 
-**What that is backed by:** 278 automated tests, in-process fake cameras for
+**What that is backed by:** 292 automated tests, in-process fake cameras for
 both transports, and a conformance corpus of 35 real vendor GenApi XML
 descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
 Photonic Science, Prosilica, Sony, SVS, TIS).
@@ -79,9 +79,16 @@ want the report.** Cameras deviate from the standard, contradict their own
 documentation, and behave inconsistently across firmware revisions — working
 with the hardware that exists, rather than the hardware the specification
 describes, is the goal rather than a compromise. The most useful thing you
-can attach is your camera's GenApi XML: it becomes a permanent regression
-fixture, which is how this class of bug stops recurring for everyone with
-that model. See the
+can attach is the output of one command:
+
+```bash
+viva-camctl report --ip <CAMERA-IP> --out viva-report.txt
+```
+
+It works even when the camera cannot be opened — that case is what it is for —
+and it includes your camera's GenApi XML, which becomes a permanent regression
+fixture, which is how this class of bug stops recurring for everyone with that
+model. See the
 [issue templates](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose).
 
 **Known gaps**, tracked in [docs/backlog.md](docs/backlog.md) and
@@ -216,6 +223,12 @@ cargo run -p viva-genicam --example demo_fake_camera
 ```bash
 # Discover GigE Vision cameras
 cargo run -p viva-camctl -- list
+
+# Collect a diagnostic bundle to attach to a bug report
+cargo run -p viva-camctl -- report --ip 192.168.0.10 --out viva-report.txt
+
+# Dump the camera's GenApi XML (parses nothing, so it works on a camera we cannot open)
+cargo run -p viva-camctl -- xml --ip 192.168.0.10 --out camera.xml
 
 # Read a feature
 cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime

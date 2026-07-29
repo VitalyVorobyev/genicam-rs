@@ -4,6 +4,17 @@
 //!
 //! | Address     | Length | Feature                         | Type     |
 //! |-------------|--------|---------------------------------|----------|
+//! | `0x0000`    | 4      | Version (RO)                    | u32 BE   |
+//! | `0x0004`    | 4      | DeviceMode (RO)                 | u32 BE   |
+//! | `0x0008`    | 4      | DeviceMACAddressHigh (RO)       | u32 BE   |
+//! | `0x000c`    | 4      | DeviceMACAddressLow (RO)        | u32 BE   |
+//! | `0x0010`    | 4      | SupportedIPConfiguration (RO)   | u32 BE   |
+//! | `0x0014`    | 4      | CurrentIPConfiguration          | u32 BE   |
+//! | `0x0024`    | 4      | CurrentIPAddress (RO)           | IPv4     |
+//! | `0x0034`    | 4      | CurrentSubnetMask (RO)          | IPv4     |
+//! | `0x0044`    | 4      | CurrentDefaultGateway (RO)      | IPv4     |
+//! | `0x0900`    | 4      | GevNumberOfMessageChannels (RO) | u32 BE   |
+//! | `0x0904`    | 4      | GevNumberOfStreamChannels (RO)  | u32 BE   |
 //! | `0x0a00`    | 4      | CCP (Control Channel Privilege) | u32 BE   |
 //! | `0x0938`    | 4      | Heartbeat Timeout               | u32 BE   |
 //! | `0x0b00`    | 4      | GevMCP (message channel port)   | u32 BE   |
@@ -34,7 +45,7 @@
 //! | `0x20084`   | 4      | ChunkSelector                   | u32 BE   |
 //! | `0x20088`   | 4      | ChunkEnable                     | u32 BE   |
 //! | `0x200a0`   | 4      | EventSelector                   | u32 BE   |
-//! | `0x200a4`   | 4      | EventNotification               | u32 BE   |
+//! | `0x200a4`   | 4      | EventNotification (per selector)| u32 BE   |
 //! | `0x20100`   | 4      | WidthMin (RO)                   | u32 BE   |
 //! | `0x20104`   | 4      | WidthMax (RO)                   | u32 BE   |
 //! | `0x20108`   | 4      | HeightMin (RO)                  | u32 BE   |
@@ -45,12 +56,32 @@
 //! | `0x20260`   | 32     | DeviceFirmwareVersion (RO)      | string   |
 //! | `0x20280`   | 32     | DeviceID (RO)                   | string   |
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
+use crate::gvcp_server::FAKE_MAC;
+
 /// Bootstrap register addresses (GigE Vision specification).
+pub const VERSION: u64 = 0x0000;
+pub const DEVICE_MODE: u64 = 0x0004;
+/// Top two MAC bytes, right-aligned in the 32-bit register.
+pub const DEVICE_MAC_HIGH: u64 = 0x0008;
+/// Bottom four MAC bytes.
+pub const DEVICE_MAC_LOW: u64 = 0x000C;
+pub const SUPPORTED_IP_CONFIG: u64 = 0x0010;
 pub const CURRENT_IP_CONFIG: u64 = 0x0014;
+pub const CURRENT_IP_ADDRESS: u64 = 0x0024;
+pub const CURRENT_SUBNET_MASK: u64 = 0x0034;
+pub const CURRENT_DEFAULT_GATEWAY: u64 = 0x0044;
+/// `GevNumberOfMessageChannels` — the fake implements one.
+pub const NUMBER_OF_MESSAGE_CHANNELS: u64 = 0x0900;
+/// `GevNumberOfStreamChannels` — the fake implements one.
+pub const NUMBER_OF_STREAM_CHANNELS: u64 = 0x0904;
+
+/// `DeviceMode`: big-endian (bit 31), character set 1 (UTF-8), class
+/// Transmitter (0).
+pub const DEVICE_MODE_VALUE: u32 = 0x8000_0001;
 pub const PERSISTENT_IP_ADDRESS: u64 = 0x064C;
 pub const PERSISTENT_SUBNET_MASK: u64 = 0x065C;
 pub const PERSISTENT_DEFAULT_GATEWAY: u64 = 0x066C;
@@ -134,6 +165,11 @@ pub const REG_CHUNK_ENABLE: u64 = 0x20088;
 /// `EventSelector` backing register: a GigE Vision event identifier.
 pub const REG_EVENT_SELECTOR: u64 = 0x200a0;
 /// `EventNotification` backing register for the selected event (0 = Off, 1 = On).
+///
+/// A *selected* feature: reads and writes apply to whichever event
+/// [`REG_EVENT_SELECTOR`] currently names, so the register is backed by a set
+/// of enabled event ids rather than by one stored word. Query it with
+/// [`RegisterMap::event_notification_on`].
 pub const REG_EVENT_NOTIFICATION: u64 = 0x200a4;
 
 /// Limit registers.
@@ -687,6 +723,13 @@ pub struct RegisterMap {
     regs: HashMap<u64, Vec<u8>>,
     xml_blob: Vec<u8>,
     clock_origin: Instant,
+    /// Event identifiers whose `EventNotification` is `On`.
+    ///
+    /// One word cannot hold this. `EventSelector`/`EventNotification` is a
+    /// selector pair, so a controller enabling two events writes the same
+    /// address twice with a different selector in between — and a single
+    /// stored word would let the second write turn the first event back off.
+    enabled_events: HashSet<u16>,
 }
 
 /// Compress the GenApi XML into a single-entry ZIP archive (deflate).
@@ -713,6 +756,31 @@ impl RegisterMap {
         let mut regs = HashMap::new();
 
         // ── Bootstrap registers ─────────────────────────────────────────
+        // The mandatory block every GigE Vision device answers. The fake used
+        // to leave it at zero, which reads as "this camera reports version
+        // 0.0 and has no stream channels" — a diagnostic dump of a real
+        // camera would look nothing like one taken from the fake.
+        regs.insert(VERSION, 0x0002_0000u32.to_be_bytes().to_vec()); // GEV 2.0
+        regs.insert(DEVICE_MODE, DEVICE_MODE_VALUE.to_be_bytes().to_vec());
+        regs.insert(
+            DEVICE_MAC_HIGH,
+            u32::from(u16::from_be_bytes([FAKE_MAC[0], FAKE_MAC[1]]))
+                .to_be_bytes()
+                .to_vec(),
+        );
+        regs.insert(
+            DEVICE_MAC_LOW,
+            u32::from_be_bytes([FAKE_MAC[2], FAKE_MAC[3], FAKE_MAC[4], FAKE_MAC[5]])
+                .to_be_bytes()
+                .to_vec(),
+        );
+        // Persistent IP + DHCP + link-local, matching CURRENT_IP_CONFIG below.
+        regs.insert(SUPPORTED_IP_CONFIG, 0x8000_0007u32.to_be_bytes().to_vec());
+        regs.insert(CURRENT_IP_ADDRESS, Ipv4Addr::LOCALHOST.octets().to_vec());
+        regs.insert(CURRENT_SUBNET_MASK, [255, 0, 0, 0].to_vec());
+        regs.insert(CURRENT_DEFAULT_GATEWAY, vec![0, 0, 0, 0]);
+        regs.insert(NUMBER_OF_MESSAGE_CHANNELS, 1u32.to_be_bytes().to_vec());
+        regs.insert(NUMBER_OF_STREAM_CHANNELS, 1u32.to_be_bytes().to_vec());
         regs.insert(CCP, vec![0, 0, 0, 0]);
         regs.insert(HEARTBEAT_TIMEOUT, 3000u32.to_be_bytes().to_vec());
         regs.insert(MESSAGE_CHANNEL_PORT, 0u32.to_be_bytes().to_vec());
@@ -793,7 +861,6 @@ impl RegisterMap {
         regs.insert(REG_CHUNK_SELECTOR, 1u32.to_be_bytes().to_vec()); // Timestamp
         regs.insert(REG_CHUNK_ENABLE, 0u32.to_be_bytes().to_vec());
         regs.insert(REG_EVENT_SELECTOR, 5u32.to_be_bytes().to_vec());
-        regs.insert(REG_EVENT_NOTIFICATION, 0u32.to_be_bytes().to_vec());
 
         // ── XML URL register ────────────────────────────────────────────
         let (xml_blob, xml_name) = if zip_xml {
@@ -815,6 +882,7 @@ impl RegisterMap {
             regs,
             xml_blob,
             clock_origin: Instant::now(),
+            enabled_events: HashSet::new(),
         }
     }
 
@@ -829,6 +897,15 @@ impl RegisterMap {
                 result.resize(len, 0);
                 return result;
             }
+        }
+
+        // `EventNotification` reports the selected event, not a stored word.
+        if addr == REG_EVENT_NOTIFICATION {
+            let on = u32::from(self.event_notification_on(self.event_selector()));
+            let mut result = on.to_be_bytes().to_vec();
+            result.resize(len, 0);
+            result.truncate(len);
+            return result;
         }
 
         // Exact register match
@@ -855,6 +932,19 @@ impl RegisterMap {
 
     /// Write `data` starting at `addr`.
     pub fn write(&mut self, addr: u64, data: &[u8]) {
+        // `EventNotification` applies to the selected event. Enabling a second
+        // event must not disable the first, so the value lands in the set
+        // keyed by the current selector rather than in a shared register.
+        if addr == REG_EVENT_NOTIFICATION && data.len() >= 4 {
+            let event = self.event_selector();
+            if u32::from_be_bytes([data[0], data[1], data[2], data[3]]) != 0 {
+                self.enabled_events.insert(event);
+            } else {
+                self.enabled_events.remove(&event);
+            }
+            return;
+        }
+
         if let Some(existing) = self.regs.get_mut(&addr) {
             let len = existing.len().min(data.len());
             existing[..len].copy_from_slice(&data[..len]);
@@ -923,10 +1013,13 @@ impl RegisterMap {
         u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as u16
     }
 
-    /// Whether `EventNotification` is `On` for the selected event.
-    pub fn event_notification_on(&self) -> bool {
-        let data = self.read(REG_EVENT_NOTIFICATION, 4);
-        u32::from_be_bytes([data[0], data[1], data[2], data[3]]) != 0
+    /// Whether `EventNotification` is `On` for `event_id`.
+    ///
+    /// Takes the event explicitly: the emitter cares whether *its* event is
+    /// enabled, which is independent of whichever entry the controller
+    /// happened to select last.
+    pub fn event_notification_on(&self, event_id: u16) -> bool {
+        self.enabled_events.contains(&event_id)
     }
 
     /// Stream packet size.
@@ -975,4 +1068,80 @@ fn pad_string(s: &str, len: usize) -> Vec<u8> {
     let copy_len = src.len().min(len);
     buf[..copy_len].copy_from_slice(&src[..copy_len]);
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map() -> RegisterMap {
+        RegisterMap::new(64, 48, 0x0108_0001, false)
+    }
+
+    fn select_and_enable(regs: &mut RegisterMap, event: u32, on: bool) {
+        regs.write(REG_EVENT_SELECTOR, &event.to_be_bytes());
+        regs.write(REG_EVENT_NOTIFICATION, &u32::from(on).to_be_bytes());
+    }
+
+    /// `EventNotification` is a selected feature, so a controller enabling two
+    /// events writes the same address twice. Backing it with a single stored
+    /// word made the second write turn the first event off, and the fake then
+    /// silently emitted nothing — the failure a fake exists to prevent.
+    #[test]
+    fn enabling_a_second_event_leaves_the_first_enabled() {
+        let mut regs = map();
+        select_and_enable(&mut regs, 5, true);
+        select_and_enable(&mut regs, 6, true);
+        assert!(regs.event_notification_on(5));
+        assert!(regs.event_notification_on(6));
+    }
+
+    #[test]
+    fn disabling_one_event_leaves_the_others_alone() {
+        let mut regs = map();
+        select_and_enable(&mut regs, 5, true);
+        select_and_enable(&mut regs, 6, true);
+        select_and_enable(&mut regs, 5, false);
+        assert!(!regs.event_notification_on(5));
+        assert!(regs.event_notification_on(6));
+    }
+
+    /// The MAC in the bootstrap registers must be the MAC in the Discovery
+    /// ACK. Two independent copies of one fact is how #57 happened: the ACK
+    /// layout drifted and nothing compared it against anything.
+    #[test]
+    fn the_bootstrap_mac_matches_the_discovery_mac() {
+        let regs = map();
+        let high = regs.read(DEVICE_MAC_HIGH, 4);
+        let low = regs.read(DEVICE_MAC_LOW, 4);
+        assert_eq!(&high[..2], &[0, 0], "top two bytes are reserved");
+        let mac = [high[2], high[3], low[0], low[1], low[2], low[3]];
+        assert_eq!(mac, FAKE_MAC);
+    }
+
+    #[test]
+    fn the_device_reports_one_channel_of_each_kind() {
+        let regs = map();
+        assert_eq!(regs.read(NUMBER_OF_MESSAGE_CHANNELS, 4), vec![0, 0, 0, 1]);
+        assert_eq!(regs.read(NUMBER_OF_STREAM_CHANNELS, 4), vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn no_event_is_enabled_by_default() {
+        let regs = map();
+        assert!(!regs.event_notification_on(5));
+        assert!(!regs.event_notification_on(6));
+    }
+
+    /// Reading the register back must report the *selected* event, which is
+    /// what a GenApi `EventNotification` read does.
+    #[test]
+    fn reading_notification_follows_the_selector() {
+        let mut regs = map();
+        select_and_enable(&mut regs, 5, true);
+        regs.write(REG_EVENT_SELECTOR, &6u32.to_be_bytes());
+        assert_eq!(regs.read(REG_EVENT_NOTIFICATION, 4), vec![0, 0, 0, 0]);
+        regs.write(REG_EVENT_SELECTOR, &5u32.to_be_bytes());
+        assert_eq!(regs.read(REG_EVENT_NOTIFICATION, 4), vec![0, 0, 0, 1]);
+    }
 }

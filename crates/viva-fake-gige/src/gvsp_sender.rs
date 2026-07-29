@@ -85,11 +85,11 @@ pub async fn run(
                 event_dest,
             ) = {
                 let store = regs.lock().await;
-                // A real camera emits the event only when EventNotification is
-                // On for the selected id and the message channel has a
-                // destination; both are ordinary registers here.
-                let event_dest = if store.event_notification_on()
-                    && store.event_selector() == GEV_EVENT_START_OF_TRANSFER
+                // A real camera emits the event when EventNotification is On
+                // for *this* event and the message channel has a destination.
+                // What the controller selected most recently is irrelevant —
+                // enabling a second event must not silence this one.
+                let event_dest = if store.event_notification_on(GEV_EVENT_START_OF_TRANSFER)
                     && store.message_dest_port() != 0
                     && store.message_dest_ip() != Ipv4Addr::UNSPECIFIED
                 {
