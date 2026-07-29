@@ -40,6 +40,11 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v unzip >/dev/null 2>&1; then
+  echo "error: this script needs unzip on PATH (vendors ship zipped XML)" >&2
+  exit 1
+fi
+
 mkdir -p "$TARGET"
 echo "Fetching GenICam XML corpus into $TARGET"
 
@@ -78,6 +83,33 @@ while IFS=$'\t' read -r name url issue; do
     echo "    warning: could not fetch $name (#$issue)" >&2
   fi
 done <<<"$USER_CONTRIBUTED"
+
+# Same, but the vendor tool exports the description as a ZIP. The member name is
+# a firmware build number and carries no model information, so we rename on
+# extraction.
+#   name<TAB>url<TAB>member<TAB>issue
+USER_CONTRIBUTED_ZIP=$(
+  cat <<'EOF'
+FLIR_BFLY_PGE_13E4C.xml	https://github.com/user-attachments/files/30514270/Blackfly.BFLY-PGE-13E4C_19104035_GenICam.zip	GRS_GEV_v003_380122.xml	45
+FLIR_BFLY_PGE_31S4C.xml	https://github.com/user-attachments/files/30514276/Blackfly.BFLY-PGE-31S4C_20274171_GenICam.zip	GRS_GEV_v003_292525.xml	45
+FLIR_BFS_PGE_63S4C.xml	https://github.com/user-attachments/files/30514275/BFS-PGE-63S4C_0188B042_GENICAM.zip	public_camxml.xml	45
+FLIR_BFS_PGE_70S7C.xml	https://github.com/user-attachments/files/30514267/BFS-PGE-70S7C_0188D99D_GENICAM.zip	public_camxml.xml	45
+EOF
+)
+
+echo "  user-contributed (zipped issue attachments)"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+while IFS=$'\t' read -r name url member issue; do
+  [ -z "$name" ] && continue
+  if curl -fsSL -o "$tmp/archive.zip" "$url" &&
+    unzip -o -q -j "$tmp/archive.zip" "$member" -d "$tmp" &&
+    mv "$tmp/$member" "$TARGET/$name"; then
+    echo "    $name (#$issue)"
+  else
+    echo "    warning: could not fetch $name (#$issue)" >&2
+  fi
+done <<<"$USER_CONTRIBUTED_ZIP"
 
 count=$(find "$TARGET" -name '*.xml' | wc -l | tr -d ' ')
 echo "Done: $count XML documents in $TARGET"

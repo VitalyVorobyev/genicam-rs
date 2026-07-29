@@ -63,7 +63,7 @@ offers no supported way to produce one.
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| DX-01 | `viva-camctl xml` — dump raw GenApi XML without building a nodemap | P0 | S | planned | #45's reporter was told camctl could already do this. It cannot. `fetch_xml` exists at `crates/viva-camctl/src/common.rs:84` but is only reachable via the nodemap path at `:107-109` — which is what fails on the cameras we most need the XML from |
+| DX-01 | `viva-camctl xml` — dump raw GenApi XML without building a nodemap | P0 | S | planned | #45's reporter was told camctl could already do this. It cannot. `fetch_xml` exists at `crates/viva-camctl/src/common.rs:84` but is only reachable via the nodemap path at `:107-109` — which is what fails on the cameras we most need the XML from. Demonstrated on #45: the reporter could not dump their own BFS-PGE-31S4C-C and had to supply four *other* models' XML instead, so the one document we most wanted is still missing |
 | DX-02 | `viva-camctl report` — one-command diagnostic bundle | P1 | M | planned | Discovery ACK raw bytes, bootstrap registers, XML, skipped nodes, versions, OS/NIC inventory. What we ask for by hand in every issue thread |
 | DX-03 | Surface `NodeMap::skipped()` beyond a log line | P1 | M | planned | Consumed today only by `viva-genicam/src/lib.rs:986-1021` and the corpus test; not reachable from camctl, Python or Studio |
 | DX-04 | Report discovery fields we currently discard | P1 | S | done | Serial number and user-defined name (REL-01 #7). Users identify cameras by the label on the case, not by MAC |
@@ -84,26 +84,26 @@ offers no supported way to produce one.
 
 ## GA — GenApi conformance, round 2 (roadmap Phase 4)
 
-Supersedes the previous `XML` section. Corpus counts are from the 31 documents
+Supersedes the previous `XML` section. Corpus counts are from the 35 documents
 fetched by `scripts/fetch-xml-corpus.sh`, reproducible with a tag frequency
 count over `fixtures/vendor-xml/*.xml`.
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| GA-01 | Parse and honour `pInvalidator` | P0 | L | planned | **12 796 occurrences in 28 of 31 documents** — the largest unparsed element in the corpus by an order of magnitude. Invalidation currently fires only on writes made through the NodeMap |
-| GA-02 | Record unknown node tags instead of dropping them | P0 | S | planned | `is_node_tag` (`crates/viva-genapi-xml/src/lib.rs:839-859`) gates the isolation path, so an unlisted tag falls to `_ => skip_element` at `:981` and never reaches `XmlModel::skipped`. `<Register>` (46 uses, 10 docs) vanishes this way. A hole in the guarantee CLAUDE.md states, and one `EXPECTED_SKIPS` can never catch |
-| GA-03 | `<pSelected>` is parsed with the direction inverted | P1 | M | planned | 1 152 occurrences in 27 docs. The standard puts it on the *selector* naming the *selected* feature (`fixtures/vendor-xml/Basler_acA1600_20gm.xml:213`); `crates/viva-genapi-xml/src/parsers/mod.rs:116-131` treats the text as this node's selector, registering invalidation edges backwards |
-| GA-04 | Activate `pMin`/`pMax` | P1 | M | planned | 987 / 670 occurrences, 31 / 30 docs. Parsed (Integer only), stored on `IntegerNode`, registered as dependencies (`nodemap.rs:1489-1494`) — and never read. Range checks use the static limits at `nodemap.rs:271-273`, so a dynamic limit is silently ignored |
-| GA-05 | Honour `Cachable` and `PollingTime` | P1 | L | planned | 2 257 / 28 docs and 236 / 24 docs, both unparsed. Every readable node is cached until a dependency is written |
-| GA-06 | Enforce `pIsLocked` in the setters | P1 | S | planned | 1 133 occurrences, 27 docs. Parsed and consulted by `effective_access_mode` (`nodemap.rs:580-603`) but not by `set_integer`/`set_float`/`set_enum`/`set_bool`, which only check the static access mode |
-| GA-07 | Honour `<Slope>` on Converter min/max propagation | P1 | S | planned | Was "Unconfirmed, P2" (old XML-05). Confirmed: **489 occurrences in 25 of 31 documents**. A decreasing converter inverts min and max; we propagate neither |
-| GA-08 | Parse `ImposedAccessMode` | P1 | S | planned | 1 754 occurrences, 24 docs, unparsed |
-| GA-09 | Support the `<Register>` node type | P2 | M | planned | 46 occurrences, 10 docs. Depends on GA-02 to become visible in the first place |
-| GA-10 | Parse `pInc` | P2 | S | planned | 235 occurrences, 21 docs. Static `Inc` is honoured; the dynamic form is not |
-| GA-11 | Corpus test evaluates against zeros | P1 | M | planned | The `viva-genapi` stage uses `NullIo`, which returns zeros (`crates/viva-genapi/src/io.rs:18-28`). "31 documents, 25 017 nodes evaluated" proves nothing panics, not that any value is right |
-| GA-12 | GenApi chunk adapter | P2 | L | planned | Replaces the hardcoded 4-entry table at `crates/viva-genicam/src/chunks.rs:114-142`. `ChunkID` appears 104 times in 10 docs and is ignored; `RegisterIo` has no port abstraction to address a chunk port with |
+| GA-01 | Parse and honour `pInvalidator` | P0 | L | planned | **18 502 occurrences in 32 of 35 documents** — the largest unparsed element in the corpus by an order of magnitude. Invalidation currently fires only on writes made through the NodeMap |
+| GA-02 | Record unknown node tags instead of dropping them | P0 | S | planned | `is_node_tag` (`crates/viva-genapi-xml/src/lib.rs:839-859`) gates the isolation path, so an unlisted tag falls to `_ => skip_element` at `:981` and never reaches `XmlModel::skipped`. `<Register>` (56 uses, 14 docs) vanishes this way. A hole in the guarantee CLAUDE.md states, and one `EXPECTED_SKIPS` can never catch |
+| GA-03 | `<pSelected>` is parsed with the direction inverted | P1 | M | planned | 1 534 occurrences in 31 docs. The standard puts it on the *selector* naming the *selected* feature (`fixtures/vendor-xml/Basler_acA1600_20gm.xml:213`); `crates/viva-genapi-xml/src/parsers/mod.rs:116-131` treats the text as this node's selector, registering invalidation edges backwards |
+| GA-04 | Activate `pMin`/`pMax` | P1 | M | planned | 1 288 / 911 occurrences, 35 / 34 docs. Parsed (Integer only), stored on `IntegerNode`, registered as dependencies (`nodemap.rs:1489-1494`) — and never read. Range checks use the static limits at `nodemap.rs:271-273`, so a dynamic limit is silently ignored |
+| GA-05 | Honour `Cachable` and `PollingTime` | P1 | L | planned | 2 735 / 32 docs and 327 / 28 docs, both unparsed. Every readable node is cached until a dependency is written |
+| GA-06 | Enforce `pIsLocked` in the setters | P1 | S | planned | 1 601 occurrences, 31 docs. Parsed and consulted by `effective_access_mode` (`nodemap.rs:580-603`) but not by `set_integer`/`set_float`/`set_enum`/`set_bool`, which only check the static access mode |
+| GA-07 | Honour `<Slope>` on Converter min/max propagation | P1 | S | planned | Was "Unconfirmed, P2" (old XML-05). Confirmed: **632 occurrences in 29 of 35 documents**. A decreasing converter inverts min and max; we propagate neither |
+| GA-08 | Parse `ImposedAccessMode` | P1 | S | planned | 2 709 occurrences, 28 docs, unparsed |
+| GA-09 | Support the `<Register>` node type | P2 | M | planned | 56 occurrences, 14 docs. Depends on GA-02 to become visible in the first place |
+| GA-10 | Parse `pInc` | P2 | S | planned | 333 occurrences, 25 docs. Static `Inc` is honoured; the dynamic form is not |
+| GA-11 | Corpus test evaluates against zeros | P1 | M | planned | The `viva-genapi` stage uses `NullIo`, which returns zeros (`crates/viva-genapi/src/io.rs:18-28`). "35 documents, 31 737 nodes evaluated" proves nothing panics, not that any value is right |
+| GA-12 | GenApi chunk adapter | P2 | L | planned | Replaces the hardcoded 4-entry table at `crates/viva-genicam/src/chunks.rs:114-142`. `ChunkID` appears 164 times in 14 docs and is ignored; `RegisterIo` has no port abstraction to address a chunk port with |
 | GA-13 | Support negative `<Address>` (chunk-relative offsets) | P2 | M | planned | Confirmed: `Baumer_HXG20` `ChunkImageLength`; the sole `EXPECTED_SKIPS` entry in both corpus tests. Needs a signed `AddressTerm::Fixed` plus a chunk base |
-| GA-14 | `Streamable` — no persistence/save-load feature exists | P2 | L | planned | 1 666 occurrences, 14 docs. Feature-set save/restore is a standard GenApi capability we do not offer |
+| GA-14 | `Streamable` — no persistence/save-load feature exists | P2 | L | planned | 1 700 occurrences, 18 docs. Feature-set save/restore is a standard GenApi capability we do not offer |
 | GA-15 | Fall back to lossy decoding for non-UTF-8 GenApi XML | P2 | S | planned | Unconfirmed. `fetch.rs` `String::from_utf8` is strict, so an ISO-8859-1 document fails the connect outright |
 | GA-16 | Accept uppercase `0X` hex prefix in `parse_u64`/`parse_i64` | P2 | S | planned | Unconfirmed. Hex digits are already case-insensitive, only the prefix is not. No corpus document uses it |
 | GA-17 | Inline `<IntSwissKnife>` as a register address term | P2 | M | planned | Unconfirmed: no corpus document nests one inside a register, but the schema allows it. Today `skip_element` drops the term silently |
