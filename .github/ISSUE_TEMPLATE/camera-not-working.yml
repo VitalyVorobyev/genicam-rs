@@ -1,0 +1,139 @@
+name: "Camera not working"
+description: "A real camera won't be discovered, won't open, or misbehaves"
+title: "[camera] "
+labels: ["camera-compat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We do not have your camera. Every camera bug fixed so far — a Hikrobot
+        (#35), a FLIR (#45), a JAI on Windows (#57) — was diagnosed entirely
+        from artifacts the reporter attached, because there is no hardware here
+        to reproduce against.
+
+        So the attachments below are not bureaucracy: they are the only way we
+        can help. **The GenApi XML dump is the single most useful one.** It
+        also becomes a permanent regression fixture, so the bug you hit cannot
+        come back.
+
+  - type: input
+    id: camera
+    attributes:
+      label: Camera
+      description: Vendor and exact model, as printed on the case.
+      placeholder: "Hikrobot MV-CS050-10GC"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - GigE Vision
+        - USB3 Vision
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: viva-genicam version
+      description: >-
+        `cargo tree -p viva-genicam` for Rust, or
+        `python -c "import viva_genicam; print(viva_genicam.__version__)"`.
+        If you built from git, the commit hash.
+      placeholder: "0.3.0 (from PyPI)"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: "Windows 11 Pro 25H2 x86_64 / Arch Linux 6.9 / macOS 15.1 arm64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        What you ran, what you expected, and what you got. Paste the full error
+        or traceback — byte offsets and node names in an error message are
+        often enough to identify the exact construct that broke.
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: Debug log
+      description: >-
+        Re-run with `RUST_LOG=debug` (or `trace` if debug is not enough) and
+        attach the output as a file. Warnings about skipped nodes and register
+        addressing are exactly what we need.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: xml
+    attributes:
+      label: GenApi XML
+      description: |
+        **The most useful artifact.** Attach it as a `.xml` file rather than
+        pasting — these run to several megabytes.
+
+        Python:
+
+        ```python
+        import viva_genicam as vg
+        cam = vg.connect_gige(vg.discover()[0])
+        with open("camera.xml", "w") as f:
+            f.write(cam.xml)      # raw XML, as fetched from the camera
+        ```
+
+        Rust:
+
+        ```rust
+        let (camera, xml) = viva_genicam::connect_gige_with_xml(&device).await?;
+        std::fs::write("camera.xml", &xml)?;
+        ```
+
+        Both need the connect to succeed. **If the connect itself is what
+        fails, skip this** — say so and the traceback alone is enough, and we
+        will point you at a way to fetch the XML without building a nodemap.
+
+        The file is your camera vendor's copyright, so only attach it if you
+        are comfortable doing so. It helps enormously, but the report is
+        welcome without it.
+    validations:
+      required: false
+
+  - type: textarea
+    id: network
+    attributes:
+      label: Network setup (GigE only)
+      description: >-
+        Camera IP and host NIC IP, how they are connected (direct, switch, PoE
+        switch), and whether either uses DHCP, a static address or link-local
+        (169.254.x.x). `ip a` on Linux, `ipconfig /all` on Windows,
+        `ifconfig` on macOS.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: other-software
+    attributes:
+      label: Does the camera work with other software?
+      description: >-
+        Not required, but it tells us instantly whether the problem is ours or
+        the setup's.
+      options:
+        - label: "Works with the vendor's own SDK / viewer"
+        - label: "Works with aravis (`arv-tool-0.8`, `arv-viewer`)"
+        - label: "Haven't tried"

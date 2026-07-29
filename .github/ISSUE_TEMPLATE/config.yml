@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://vitalyvorobyev.github.io/viva-genicam/
+    about: Tutorials, the networking guide, and the Python bindings reference.
+  - name: FAQ & troubleshooting
+    url: https://vitalyvorobyev.github.io/viva-genicam/faq.html
+    about: Check here first — discovery, MTU, socket buffers and permissions.
+  - name: Roadmap and backlog
+    url: https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/roadmap.md
+    about: What is planned, and why it is ordered the way it is.

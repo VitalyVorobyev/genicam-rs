@@ -1,0 +1,72 @@
+name: "Bug report"
+description: "Something is wrong that isn't specific to a camera model"
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a real camera that won't be discovered, won't open, or misbehaves,
+        please use the **Camera not working** template instead — it asks for
+        the artifacts we need to diagnose without the hardware.
+
+  - type: input
+    id: version
+    attributes:
+      label: viva-genicam version
+      placeholder: "0.3.0, or a git commit hash"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: "Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which part?
+      multiple: true
+      options:
+        - Rust API (viva-genicam)
+        - Python bindings (viva_genicam)
+        - viva-camctl CLI
+        - viva-service / viva-service-u3v (Zenoh bridge)
+        - Viva Studio (desktop app)
+        - GenApi XML parsing (viva-genapi, viva-genapi-xml)
+        - Documentation
+        - Build / packaging
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Ideally something we can run. The in-process fake camera
+        (`cargo run -p viva-fake-gige`, or `viva_genicam.testing.FakeGigeCamera`
+        in Python) needs no hardware, so a repro built on it is the fastest
+        possible path to a fix.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Output with `RUST_LOG=debug`, and the full error or traceback."
+      render: shell
+    validations:
+      required: false

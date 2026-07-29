@@ -9,7 +9,7 @@ Follow CLAUDE.md "Version Bumps" — one version shared by all workspace
 crates plus the Python package. `studio/` crates are unpublished and not
 versioned by this process.
 
-## 1. Bump — all five touchpoints together
+## 1. Bump — all six touchpoints together
 
 1. `Cargo.toml` — `[workspace.package] version`
 2. `crates/viva-pygenicam/Cargo.toml` — `[package] version` (does not
@@ -18,6 +18,11 @@ versioned by this process.
 4. `crates/viva-pygenicam/python/viva_genicam/__init__.py` — `__version__`
 5. `CHANGELOG.md` — rename `[Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`,
    add a fresh empty `[Unreleased]` section, add the footer link line
+6. **Intra-workspace dependency ranges** in every `crates/*/Cargo.toml`
+   and `studio/**/Cargo.toml` — `viva-foo = { version = "0.2", path = ... }`.
+   These are caret ranges, so a minor bump makes them unsatisfiable once
+   published; they only keep building locally because `path` wins. Bump
+   them whenever the minor version changes.
 
 A missed file breaks the wheel build or publishes wrong metadata.
 
