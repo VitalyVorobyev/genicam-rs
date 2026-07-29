@@ -112,12 +112,13 @@ RUST_LOG=debug cargo test --workspace -- --nocapture
 Fake cameras only exercise constructs we already thought of. Real vendor
 GenApi XML is where the surprises live -- issues #45 and #35 were both a
 single vendor construct making a camera unopenable, and both reached
-users before us. The corpus test parses 31 real device descriptions
+users before us. The corpus test parses 35 real device descriptions
 (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey, Photonic
 Science, Prosilica, SVS, Sony, TIS) plus the GenICam conformance
 document. Most are fetched from third-party projects; the Hikrobot
-MV-CS050-10GC was contributed by the reporter of #35 and is fetched
-from the issue attachment.
+MV-CS050-10GC (#35) and four FLIR Blackfly / Blackfly S descriptions
+(#45) were contributed by the reporters of those issues and are fetched
+from the issue attachments.
 
 ```bash
 scripts/fetch-xml-corpus.sh        # into fixtures/vendor-xml/ (gitignored)

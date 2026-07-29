@@ -97,20 +97,20 @@ The features that make the library trustworthy on a factory floor.
 ## Phase 4 — GenApi conformance, round 2
 
 What ADR-0018 did not reach, ordered by corpus frequency rather than by how
-interesting it looks. The counts are from the 31-document vendor corpus:
+interesting it looks. The counts are from the 35-document vendor corpus:
 
-- `pInvalidator` — **12 796 occurrences across 28 of 31 documents**, entirely
+- `pInvalidator` — **18 502 occurrences across 32 of 35 documents**, entirely
   unparsed. Cache invalidation currently fires only on writes made through the
   NodeMap.
-- `Cachable` (2 257 / 28) and `PollingTime` (236 / 24) — unparsed, so every
+- `Cachable` (2 735 / 32) and `PollingTime` (327 / 28) — unparsed, so every
   readable node is cached until a dependency is written.
-- `pSelected` (1 152 / 27) — parsed with the direction inverted relative to the
+- `pSelected` (1 534 / 31) — parsed with the direction inverted relative to the
   standard, which registers invalidation edges backwards.
-- `pMin` / `pMax` (670 / 987) — parsed, stored, registered as dependencies, and
+- `pMin` / `pMax` (911 / 1 288) — parsed, stored, registered as dependencies, and
   never read; range checks use the static limits.
-- `ImposedAccessMode` (1 754 / 24), `Streamable` (1 666 / 14), `Slope`
-  (489 / 25), `pInc` (235 / 21) — unparsed.
-- `<Register>` (46 / 10) — dropped *silently*, because the node-tag gate sits in
+- `ImposedAccessMode` (2 709 / 28), `Streamable` (1 700 / 18), `Slope`
+  (632 / 29), `pInc` (333 / 25) — unparsed.
+- `<Register>` (56 / 14) — dropped *silently*, because the node-tag gate sits in
   front of the error-isolation path. Unknown node types never reach
   `XmlModel::skipped`, so the corpus test's allowlist can never catch a wholly
   missing node type.
