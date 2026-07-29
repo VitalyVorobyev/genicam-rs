@@ -1,0 +1,52 @@
+name: "Feature request"
+description: "Suggest a capability or an API change"
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth a look first: [docs/roadmap.md](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/roadmap.md)
+        for direction and [docs/backlog.md](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/backlog.md)
+        for what is already queued. If your request is already there, a comment
+        saying you need it is genuinely useful — it moves priority.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >-
+        The underlying goal, not just the proposed API. Knowing the use case
+        often changes the shape of the answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What are you doing instead today?
+      description: "Workarounds, other libraries, or vendor SDKs."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: standard
+    attributes:
+      label: Is this specified by a standard?
+      description: >-
+        GenApi, GVCP, GVSP, GenCP, SFNC or PFNC. If so, say which — we
+        implement the specification where it is explicit
+        (see ADR-0018 and ADR-0019).
+      options:
+        - "Yes — it's in a standard"
+        - "No — it's a convenience on top"
+        - "Not sure"
+    validations:
+      required: false

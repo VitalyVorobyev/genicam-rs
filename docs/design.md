@@ -13,7 +13,7 @@ User-facing documentation lives in the mdBook (`book/`); decision history in
   control, sustained streaming, and defensive handling of untrusted network
   input.
 - **Pre-1.0**: no backward-compatibility guarantees. Clear design and structure
-  take priority over API stability; breaking releases are expected (0.3.0 is
+  take priority over API stability; breaking releases are expected (0.4.0 is
   planned as a consolidation release, see [roadmap](roadmap.md)).
 
 ## Layered architecture
@@ -118,7 +118,7 @@ publication.
 Each crate defines its own typed error enum; errors crossing crate boundaries
 carry their source (`#[source]` chains) rather than flattening into strings.
 Existing `Transport(String)`-style variants are acknowledged debt slated for
-the 0.3.0 consolidation ([roadmap](roadmap.md) Phase 3). Panics must never
+the 0.4.0 consolidation ([roadmap](roadmap.md) Phase 5). Panics must never
 cross a public API in response to remote input — a malformed camera XML or a
 hostile packet is an `Err`, not a crash.
 
@@ -130,16 +130,27 @@ full integration suite on every push
 (see [ADR-0013](adrs/adr0013-fake-camera-first-testing.md)).
 
 **Realism policy** (hard-learned): a fake must implement the *standard's*
-semantics, not mirror the implementation's assumptions. The fake's GVSP sender
-and our receiver once shared the same wrong SCPS interpretation (both ignored
-the 36-byte IP+UDP+GVSP overhead), and the fake accepted unaligned READMEM that
-real Hikrobot hardware rejects — in both cases the bugs cancelled out between
-fake and receiver, and every test passed until real hardware and external PRs
-exposed them. Consequences:
+semantics, not mirror the implementation's assumptions. This has now failed
+three times, each time with producer and consumer agreeing with each other and
+jointly disagreeing with the standard, so every test passed:
+
+1. The fake's GVSP sender and our receiver shared the same wrong SCPS
+   interpretation (both ignored the 36-byte IP+UDP+GVSP overhead).
+2. The fake accepted unaligned READMEM that real Hikrobot hardware rejects.
+3. The fake emitted the Discovery ACK MAC at the same wrong offset the parser
+   read it from (#57).
+
+[ADR-0019](adrs/adr0019-transport-conformance-and-spec-derived-fakes.md) turns
+the policy into an enforced one. Consequences:
 
 - Fake behavior is derived from the spec text, not from what our receiver
   happens to send.
-- Tests assert payload sizes and content, not just headers and status codes.
+- Wire formats are pinned by spec-derived golden byte fixtures, asserted
+  independently of the client parser — a round trip through our own code proves
+  only that the two agree.
+- Tests assert payload sizes and content, not just headers and status codes,
+  and identity assertions check values rather than presence.
+- A protocol feature with no fake implementation is not considered implemented.
 - Predicates and test fixtures wire onto real SFNC features; no synthetic
   `Test*` nodes in fake-camera XML.
 
