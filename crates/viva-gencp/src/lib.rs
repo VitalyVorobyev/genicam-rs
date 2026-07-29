@@ -16,6 +16,11 @@ bitflags! {
         const ACK_REQUIRED = 0x0001;
         /// Mark the command as a broadcast.
         const BROADCAST = 0x8000;
+        /// GVCP `ACTION_CMD` only: the payload carries a scheduled action time.
+        ///
+        /// These bit values are this crate's own representation; the mapping to
+        /// the single GVCP flags byte lives in `viva_gige::gvcp`.
+        const SCHEDULED_ACTION = 0x0002;
     }
 }
 

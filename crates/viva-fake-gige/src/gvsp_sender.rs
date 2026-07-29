@@ -27,6 +27,15 @@ const GVSP_PACKET_OVERHEAD: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + GVSP_HE
 /// Payload type for image data.
 const PAYLOAD_IMAGE: u16 = 0x0001;
 
+/// GVCP command message key byte.
+const GVCP_CMD_KEY: u8 = 0x42;
+/// GVCP `EVENT_CMD` opcode.
+const EVENT_CMD: u16 = 0x00C0;
+/// `GEV_EVENT_START_OF_TRANSFER`, emitted as each frame begins.
+const GEV_EVENT_START_OF_TRANSFER: u16 = 0x0005;
+/// Size of one 16-bit-block-id event entry.
+const EVENT_ENTRY_LEN: u16 = 16;
+
 /// Run the GVSP frame sender loop.
 ///
 /// Waits for `acq_start_notify`, then streams frames until `stop_flag` is set.
@@ -52,6 +61,7 @@ pub async fn run(
 
         let frame_interval = Duration::from_micros(1_000_000 / fps.max(1) as u64);
         let mut block_id: u16 = 1;
+        let mut request_id: u16 = 1;
         // Device clock: nanoseconds since acquisition start (1 GHz tick rate).
         let clock_origin = Instant::now();
 
@@ -72,8 +82,24 @@ pub async fn run(
                 pixel_format,
                 chunk_active,
                 exposure_time,
+                event_dest,
             ) = {
                 let store = regs.lock().await;
+                // A real camera emits the event only when EventNotification is
+                // On for the selected id and the message channel has a
+                // destination; both are ordinary registers here.
+                let event_dest = if store.event_notification_on()
+                    && store.event_selector() == GEV_EVENT_START_OF_TRANSFER
+                    && store.message_dest_port() != 0
+                    && store.message_dest_ip() != Ipv4Addr::UNSPECIFIED
+                {
+                    Some(SocketAddr::new(
+                        std::net::IpAddr::V4(store.message_dest_ip()),
+                        store.message_dest_port(),
+                    ))
+                } else {
+                    None
+                };
                 (
                     store.stream_dest_ip(),
                     store.stream_dest_port(),
@@ -83,6 +109,7 @@ pub async fn run(
                     store.pixel_format_code(),
                     store.chunk_mode_active(),
                     store.exposure_time(),
+                    event_dest,
                 )
             };
 
@@ -108,6 +135,19 @@ pub async fn run(
 
             // Device timestamp: nanoseconds since acquisition start.
             let timestamp = clock_origin.elapsed().as_nanos() as u64;
+
+            // GEV_EVENT_START_OF_TRANSFER precedes the leader, as on a real
+            // device: the controller learns a block is starting before its
+            // first GVSP packet arrives.
+            if let Some(event_dest) = event_dest {
+                let event =
+                    build_event(request_id, GEV_EVENT_START_OF_TRANSFER, block_id, timestamp);
+                let _ = socket.send_to(&event, event_dest).await;
+                request_id = request_id.wrapping_add(1);
+                if request_id == 0 {
+                    request_id = 1;
+                }
+            }
 
             // Send leader packet (packet_id = 0).
             let leader = build_leader(block_id, width, height, pixel_format, timestamp);
@@ -258,6 +298,29 @@ fn build_payload(block_id: u16, packet_id: u16, data: &[u8]) -> Vec<u8> {
 }
 
 /// Build a GVSP trailer packet with optional chunk data.
+/// Build a GVCP `EVENT_CMD` carrying one event.
+///
+/// Written out from the GigE Vision field table, not from the client parser:
+/// key byte, flags, opcode, length, request id, then a 16-byte entry of
+/// reserved / event id / stream channel / block id / timestamp. Emitting these
+/// bytes is what proves `viva-gige::message` reads the right offsets — the
+/// previous fake emitted nothing at all, which is why a parser keyed on a
+/// non-existent opcode survived.
+fn build_event(request_id: u16, event_id: u16, block_id: u16, timestamp: u64) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(8 + EVENT_ENTRY_LEN as usize);
+    buf.put_u8(GVCP_CMD_KEY);
+    buf.put_u8(0); // no acknowledgement requested, 16-bit block ids
+    buf.put_u16(EVENT_CMD);
+    buf.put_u16(EVENT_ENTRY_LEN);
+    buf.put_u16(request_id);
+    buf.put_u16(0); // reserved
+    buf.put_u16(event_id);
+    buf.put_u16(0); // stream channel index
+    buf.put_u16(block_id);
+    buf.put_u64(timestamp);
+    buf.to_vec()
+}
+
 fn build_trailer(block_id: u16, packet_id: u16, chunk_data: &[u8]) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(16 + chunk_data.len());
 

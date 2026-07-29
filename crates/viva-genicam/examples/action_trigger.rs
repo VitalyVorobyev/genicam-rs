@@ -35,7 +35,6 @@ struct Args {
     device_key: u32,
     group_key: u32,
     group_mask: u32,
-    channel: u16,
     schedule: Option<u64>,
     timeout_ms: u64,
 }
@@ -46,7 +45,6 @@ fn print_usage() {
     eprintln!("  --device-key <u32>     Device key (default: 0)");
     eprintln!("  --group-key <u32>      Group key (default: 0)");
     eprintln!("  --group-mask <u32>     Group mask (default: 0xFFFF_FFFF)");
-    eprintln!("  --channel <u16>        Stream channel selector (default: 0)");
     eprintln!("  --schedule <ticks>     Optional scheduled time in device ticks");
     eprintln!("  --timeout-ms <u64>     Wait time for acknowledgements (default: 200)");
 }
@@ -57,7 +55,6 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut device_key = 0u32;
     let mut group_key = 0u32;
     let mut group_mask = 0xFFFF_FFFFu32;
-    let mut channel = 0u16;
     let mut schedule = None;
     let mut timeout_ms = 200u64;
 
@@ -87,12 +84,6 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     .ok_or_else(|| "--group-mask requires a value".to_string())?;
                 group_mask = parse_u32_arg(&value)?;
             }
-            "--channel" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--channel requires a value".to_string())?;
-                channel = value.parse()?;
-            }
             "--schedule" => {
                 let value = args
                     .next()
@@ -119,7 +110,6 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         device_key,
         group_key,
         group_mask,
-        channel,
         schedule,
         timeout_ms,
     })
@@ -136,7 +126,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         group_key: args.group_key,
         group_mask: args.group_mask,
         scheduled_time: args.schedule,
-        channel: args.channel,
     };
     let summary = send_action(destination, &params, args.timeout_ms).await?;
     println!(

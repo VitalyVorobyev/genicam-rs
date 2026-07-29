@@ -22,6 +22,10 @@ const READREG_CMD: u16 = 0x0080;
 const WRITEREG_CMD: u16 = 0x0082;
 const READMEM_CMD: u16 = 0x0084;
 const WRITEMEM_CMD: u16 = 0x0086;
+/// Action command. Deliberately spelled out rather than reused from
+/// `viva-gige`: the fake must be able to disagree with the client, which is the
+/// whole point of asserting its bytes independently (ADR-0019).
+const ACTION_CMD: u16 = 0x0100;
 
 // GVCP ack opcodes
 const DISCOVERY_ACK: u16 = 0x0003;
@@ -29,6 +33,16 @@ const READREG_ACK: u16 = 0x0081;
 const WRITEREG_ACK: u16 = 0x0083;
 const READMEM_ACK: u16 = 0x0085;
 const WRITEMEM_ACK: u16 = 0x0087;
+const ACTION_ACK: u16 = 0x0101;
+
+/// Action keys the fake accepts. A command whose keys do not match is ignored
+/// without an acknowledgement, which is how a real device behaves — the command
+/// is broadcast to every camera on the subnet and only the addressed group acts.
+pub const FAKE_DEVICE_KEY: u32 = 0x0000_0042;
+/// Group key the fake belongs to.
+pub const FAKE_GROUP_KEY: u32 = 0x0000_0001;
+/// Group mask bits the fake responds to.
+pub const FAKE_GROUP_MASK: u32 = 0x0000_0001;
 
 /// MAC address the fake camera reports. Public so tests can assert the exact
 /// bytes rather than merely that a MAC is present (ADR-0019).
@@ -75,7 +89,7 @@ pub async fn run(
             continue;
         }
 
-        let _flags = pkt[1];
+        let flags = pkt[1];
         let command = u16::from_be_bytes([pkt[2], pkt[3]]);
         let _length = u16::from_be_bytes([pkt[4], pkt[5]]);
         let request_id = u16::from_be_bytes([pkt[6], pkt[7]]);
@@ -119,6 +133,9 @@ pub async fn run(
                     &acq_stop_flag,
                 )
                 .await;
+            }
+            ACTION_CMD => {
+                handle_action(&socket, peer, request_id, flags, payload).await;
             }
             _ => {
                 debug!(command, "unsupported GVCP command");
@@ -334,6 +351,58 @@ async fn handle_writemem(
     let resp = build_ack(WRITEMEM_ACK, request_id, &resp_payload);
     let _ = socket.send_to(&resp, peer).await;
     trace!(%peer, addr = format!("0x{addr:x}"), len = data.len(), "WRITEMEM response");
+}
+
+/// Handle a GVCP `ACTION_CMD` (0x0100).
+///
+/// Payload is `device_key`, `group_key`, `group_mask` — 12 bytes — plus a
+/// 64-bit action time when flags bit 7 is set. A 24-byte payload, or one
+/// carrying a scheduled time without the flag, is malformed and gets no reply:
+/// the client used to send exactly that, under opcode 0x0080 (`READREG`).
+async fn handle_action(
+    socket: &UdpSocket,
+    peer: SocketAddr,
+    request_id: u16,
+    flags: u8,
+    payload: &[u8],
+) {
+    const SCHEDULED: u8 = 0x80;
+    const ACK_REQUIRED: u8 = 0x01;
+
+    let scheduled = flags & SCHEDULED != 0;
+    let expected = if scheduled { 20 } else { 12 };
+    if payload.len() < expected {
+        warn!(
+            len = payload.len(),
+            expected, scheduled, "malformed action command payload"
+        );
+        return;
+    }
+
+    let device_key = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    let group_key = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    let group_mask = u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]);
+
+    if device_key != FAKE_DEVICE_KEY
+        || group_key != FAKE_GROUP_KEY
+        || group_mask & FAKE_GROUP_MASK == 0
+    {
+        debug!(
+            device_key,
+            group_key, group_mask, "action command not addressed to this device"
+        );
+        return;
+    }
+
+    debug!(%peer, scheduled, "action command accepted");
+    if flags & ACK_REQUIRED != 0 {
+        let mut buf = BytesMut::with_capacity(8);
+        buf.put_u16(STATUS_SUCCESS);
+        buf.put_u16(ACTION_ACK);
+        buf.put_u16(0);
+        buf.put_u16(request_id);
+        let _ = socket.send_to(&buf, peer).await;
+    }
 }
 
 async fn handle_forceip(

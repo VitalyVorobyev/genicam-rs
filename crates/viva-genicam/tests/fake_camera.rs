@@ -482,6 +482,18 @@ async fn setup_stream(
     viva_genicam::FrameStream,
     Arc<Mutex<Camera<GigeRegisterIo>>>,
 ) {
+    let (stream, camera) = setup_stream_owned(device_info).await;
+    (stream, Arc::new(Mutex::new(camera)))
+}
+
+/// As [`setup_stream`], but hands back the `Camera` itself.
+///
+/// `configure_events` is `async` and takes `&mut self`, so a caller that needs
+/// it cannot go through the `Arc<Mutex<_>>` wrapper — a std `MutexGuard` cannot
+/// be held across an await.
+async fn setup_stream_owned(
+    device_info: &gige::DeviceInfo,
+) -> (viva_genicam::FrameStream, Camera<GigeRegisterIo>) {
     use std::net::{IpAddr, SocketAddr};
 
     let control_addr = SocketAddr::new(IpAddr::V4(device_info.ip), gige::GVCP_PORT);
@@ -524,9 +536,8 @@ async fn setup_stream(
 
     let handle = tokio::runtime::Handle::current();
     let transport = GigeRegisterIo::new(handle, device);
-    let camera = Arc::new(Mutex::new(Camera::new(transport, nodemap)));
 
-    (frame_stream, camera)
+    (frame_stream, Camera::new(transport, nodemap))
 }
 
 #[tokio::test]
@@ -726,3 +737,115 @@ async fn test_persistent_ip_roundtrip() {
 // socket does not reliably reach the fake camera across platforms (fails on macOS
 // outright, times out on some Linux CI runners). The FORCEIP payload encoding is
 // validated by the unit test `forceip_payload_encoding` in viva-gige/src/gvcp.rs.
+
+// ── Action commands and events (TC-02, TC-03, TC-07) ────────────────────────
+
+/// A matching `ACTION_CMD` is acknowledged; a non-matching one is ignored.
+///
+/// This is the test that could not exist before: the fake had no action
+/// handler at all, so the client's opcode (0x0080 — `READREG`) and its 24-byte
+/// payload were never contradicted by anything.
+#[tokio::test]
+async fn test_action_command_is_acknowledged() {
+    let _cam = common::TestCamera::start().await;
+
+    let params = gige::action::ActionParams {
+        device_key: viva_fake_gige::FAKE_DEVICE_KEY,
+        group_key: viva_fake_gige::FAKE_GROUP_KEY,
+        group_mask: viva_fake_gige::FAKE_GROUP_MASK,
+        scheduled_time: None,
+    };
+    let dest = std::net::SocketAddr::from(([127, 0, 0, 1], gige::GVCP_PORT));
+    let summary = gige::action::send_action(dest, &params, 1000)
+        .await
+        .expect("send action");
+    assert_eq!(summary.sent, 1);
+    assert_eq!(
+        summary.acks, 1,
+        "fake camera did not acknowledge the action"
+    );
+
+    // A device the command is not addressed to stays silent.
+    let other = gige::action::ActionParams {
+        group_key: viva_fake_gige::FAKE_GROUP_KEY ^ 0xFFFF,
+        ..params
+    };
+    let summary = gige::action::send_action(dest, &other, 300)
+        .await
+        .expect("send action");
+    assert_eq!(
+        summary.acks, 0,
+        "camera answered an action addressed to another group"
+    );
+}
+
+/// The fake emits `GEV_EVENT_START_OF_TRANSFER` per frame; the client decodes
+/// it off the wire with the right event id and a non-zero device timestamp.
+///
+/// Exercises the whole path: `EventSelector`/`EventNotification` through
+/// GenApi, the message-channel bootstrap registers, `EVENT_CMD` on the wire,
+/// and `EventStream`. None of it had a test before, because the fake emitted
+/// no events at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_event_stream_receives_start_of_transfer() {
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let (_frame_stream, mut camera) = setup_stream_owned(&device_info).await;
+    let local: std::net::Ipv4Addr = [127, 0, 0, 1].into();
+    let port = 10_020u16;
+
+    camera
+        .configure_events(local, port, &["StartOfTransfer"])
+        .await
+        .expect("configure events");
+    let events = camera
+        .open_event_stream(local, port)
+        .await
+        .expect("open event stream");
+
+    let camera = Arc::new(Mutex::new(camera));
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        cam.lock().unwrap().acquisition_start().expect("start");
+    })
+    .await
+    .unwrap();
+
+    let event = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .expect("timed out waiting for an event")
+        .expect("event");
+
+    // 0x0005 is GEV_EVENT_START_OF_TRANSFER. A parser reading the id out of
+    // the reserved word — as ours did — sees 0 here.
+    assert_eq!(event.id, 0x0005, "event identifier");
+    assert!(event.ts_dev > 0, "device timestamp should not be zero");
+    assert!(event.data.is_empty(), "EVENT_CMD carries no event data");
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        cam.lock().unwrap().acquisition_stop().expect("stop");
+    })
+    .await
+    .unwrap();
+}
+
+/// A camera with no `EventSelector`/`EventNotification` gets a clear error
+/// rather than a write to an invented "notification mask" register.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_enabling_unknown_event_fails_loudly() {
+    let _cam = common::TestCamera::start().await;
+    let device = discover_fake().await;
+
+    let (mut camera, _xml) = connect_gige_with_xml(&device).await.expect("connect");
+    let err = camera
+        .configure_events([127, 0, 0, 1].into(), 10_021, &["NoSuchEvent"])
+        .await
+        .expect_err("enabling an unknown event should fail");
+    let text = err.to_string();
+    assert!(
+        text.contains("NoSuchEvent"),
+        "error should name the event: {text}"
+    );
+}

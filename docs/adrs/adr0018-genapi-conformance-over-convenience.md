@@ -42,8 +42,8 @@ vendor corpus test that did challenge them stopped at `viva_genapi_xml::parse`
 ## Decision
 
 **Where the GenICam specification is explicit, we implement the
-specification, and we verify against the reference implementation rather
-than against our own reading of it.**
+specification rather than a convenient approximation of it, and we measure
+the result against real vendor XML rather than against our own reading.**
 
 Concretely:
 
@@ -51,8 +51,9 @@ Concretely:
    standard function set including `LG`, the `E`/`PI` constants,
    `<Constant>` and named `<Expression>` bindings — with the C-like
    spellings kept only as tolerated aliases. Operator precedence and the
-   integer/float promotion rules are cross-checked against aravis
-   (`src/arvevaluator.c`), which is cited in the source.
+   integer/float promotion rules come from the GenApi grammar; aravis
+   (`src/arvevaluator.c`) is cited in the source as a second opinion that
+   happens to agree, not as the source of the rule.
 2. A node's type comes from its element name, not from a non-standard
    hint element.
 3. `Addressing` models the address as a **sum of terms**
@@ -95,9 +96,30 @@ say so in a comment, rather than inventing a rule.
   that used to round `5 / 3` to 2 now truncates to 1; a register whose top
   bit is set now reads positive; a converter now reads through the other
   formula. Anything calibrated against the old behaviour will move.
-- Keeping up with the reference implementation is now an ongoing
-  obligation: `../aravis` is cited in the source as the tiebreaker for
-  formula semantics, so divergence there is a bug in ours.
+- Citations in the source now have to say what rank they carry. "The
+  standard says X" states the rule; "aravis does X" records that something
+  independent agrees. Conflating the two is precisely how `../aravis` became
+  the de facto tiebreaker for formula semantics, and keeping them apart is
+  manual work with no lint behind it.
 - The corpus test costs a full nodemap build and evaluation per document.
   It stays out of PR CI — the corpus is fetched from third-party
   repositories — so a regression is caught weekly rather than on merge.
+- Conformance is measured against documents we do not control. A vendor
+  construct that no corpus document happens to exercise can still reach a
+  user first, and the corpus grows only when someone contributes to it.
+
+## Amendment — 2026-07-29
+
+The Decision above originally read "we verify against the reference
+implementation rather than against our own reading of it", and the Negative
+section named `../aravis` the tiebreaker for formula semantics, so that
+"divergence there is a bug in ours". That ranked one third-party
+implementation above both the specification and real hardware. It was not how
+these eight defects were found — the vendor corpus found them — and it is not
+a rule we want a future change to follow.
+
+The wording is corrected above. `CLAUDE.md` now carries the project-wide
+evidence hierarchy: real hardware first, then the specification, then the
+vendor XML corpus, and only then aravis and Wireshark, cited as corroboration
+and never as authority. No conclusion this ADR reached changes; only what is
+allowed to justify the next one.

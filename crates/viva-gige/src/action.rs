@@ -11,17 +11,18 @@ use tokio::net::UdpSocket;
 use tokio::time;
 use tracing::{debug, info, trace, warn};
 
-use crate::gvcp::{GVCP_PORT, GvcpAckHeader, GvcpRequestHeader};
+use crate::gvcp::{GVCP_PORT, GvcpAckHeader, GvcpRequestHeader, consts};
 
-/// Constants describing the layout of action command packets.
-mod consts {
-    /// GVCP opcode for an action command request.
-    pub const ACTION_COMMAND: u16 = 0x0080;
-    /// GVCP opcode for an action acknowledgement.
-    pub const ACTION_ACK: u16 = 0x0081;
-    /// Size of the action command payload in bytes.
-    pub const ACTION_PAYLOAD: usize = 24;
-}
+/// Size of an unscheduled action command payload in bytes.
+///
+/// `device_key` + `group_key` + `group_mask`, per the GigE Vision `ACTION_CMD`
+/// field table (Wireshark's `dissect_action_cmd` reads exactly these three).
+const ACTION_PAYLOAD: usize = 12;
+/// Size of a scheduled action command payload in bytes.
+///
+/// The base payload plus a 64-bit action time at offset 12, present only when
+/// bit 7 of the GVCP flags byte is set.
+const ACTION_PAYLOAD_SCHEDULED: usize = ACTION_PAYLOAD + 8;
 
 /// Parameters used to construct an action command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +34,12 @@ pub struct ActionParams {
     /// Group mask applied to the device key by receivers.
     pub group_mask: u32,
     /// Optional scheduled time expressed in device clock ticks.
+    ///
+    /// `Some` selects a scheduled action command: the time is appended to the
+    /// payload and bit 7 of the GVCP flags byte is set. A device that does not
+    /// implement scheduled actions rejects it, so leave this `None` unless the
+    /// camera advertises `GevSupportedOptionScheduledAction`.
     pub scheduled_time: Option<u64>,
-    /// Stream channel identifier associated with the action.
-    pub channel: u16,
 }
 
 /// Summary of the broadcast performed by [`send_action`].
@@ -48,15 +52,16 @@ pub struct AckSummary {
 }
 
 fn encode_payload(params: &ActionParams) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(consts::ACTION_PAYLOAD);
+    let mut buf = BytesMut::with_capacity(ACTION_PAYLOAD_SCHEDULED);
     buf.put_u32(params.device_key);
     buf.put_u32(params.group_key);
     buf.put_u32(params.group_mask);
-    let ticks = params.scheduled_time.unwrap_or(0);
-    buf.put_u32((ticks >> 32) as u32);
-    buf.put_u32(ticks as u32);
-    buf.put_u16(params.channel);
-    buf.put_u16(0); // reserved
+    // The action time is not a fixed field padded with zeros: an unscheduled
+    // command is 12 bytes and stops here. Sending the extra 8 bytes anyway
+    // makes the payload length disagree with the flags byte.
+    if let Some(ticks) = params.scheduled_time {
+        buf.put_u64(ticks);
+    }
     buf
 }
 
@@ -110,6 +115,9 @@ pub async fn send_action(
     let mut flags = viva_gencp::CommandFlags::ACK_REQUIRED;
     if is_broadcast(&destination) {
         flags |= viva_gencp::CommandFlags::BROADCAST;
+    }
+    if params.scheduled_time.is_some() {
+        flags |= viva_gencp::CommandFlags::SCHEDULED_ACTION;
     }
     let header = GvcpRequestHeader {
         flags,
@@ -178,23 +186,92 @@ pub async fn send_action(
 mod tests {
     use super::*;
 
-    #[test]
-    fn payload_layout() {
-        let params = ActionParams {
+    fn params() -> ActionParams {
+        ActionParams {
             device_key: 0x1122_3344,
             group_key: 0x5566_7788,
             group_mask: 0xFFFF_0000,
-            scheduled_time: Some(0x0102_0304_0506_0708),
-            channel: 0x090A,
-        };
-        let payload = encode_payload(&params);
-        assert_eq!(payload.len(), consts::ACTION_PAYLOAD);
-        assert_eq!(&payload[..4], &0x1122_3344u32.to_be_bytes());
-        assert_eq!(&payload[4..8], &0x5566_7788u32.to_be_bytes());
-        assert_eq!(&payload[8..12], &0xFFFF_0000u32.to_be_bytes());
-        assert_eq!(&payload[12..16], &0x0102_0304u32.to_be_bytes());
-        assert_eq!(&payload[16..20], &0x0506_0708u32.to_be_bytes());
-        assert_eq!(&payload[20..22], &0x090A_u16.to_be_bytes());
+            scheduled_time: None,
+        }
+    }
+
+    /// The whole datagram, byte for byte, written out from the GigE Vision
+    /// `ACTION_CMD` field table rather than from our own encoder.
+    ///
+    /// This is the fixture that would have caught the 0x0080 collision: the
+    /// opcode is a literal here, so an encoder that emits `READREG` fails
+    /// rather than agreeing with itself (ADR-0019).
+    #[test]
+    fn unscheduled_action_matches_spec_bytes() {
+        let payload = encode_payload(&params());
+        let packet = GvcpRequestHeader {
+            flags: viva_gencp::CommandFlags::ACK_REQUIRED,
+            command: consts::ACTION_COMMAND,
+            length: payload.len() as u16,
+            request_id: 0xBEEF,
+        }
+        .encode(&payload);
+
+        #[rustfmt::skip]
+        let expected: [u8; 20] = [
+            0x42,                   // command key
+            0x01,                   // flags: acknowledge required
+            0x01, 0x00,             // ACTION_CMD — *not* 0x0080 (READREG)
+            0x00, 0x0C,             // length: 12, no action time
+            0xBE, 0xEF,             // request id
+            0x11, 0x22, 0x33, 0x44, // device key
+            0x55, 0x66, 0x77, 0x88, // group key
+            0xFF, 0xFF, 0x00, 0x00, // group mask
+        ];
+        assert_eq!(&packet[..], &expected[..]);
+    }
+
+    /// A scheduled action appends the 64-bit time *and* sets flags bit 7.
+    /// Either one alone is a malformed command.
+    #[test]
+    fn scheduled_action_sets_flag_and_appends_time() {
+        let mut p = params();
+        p.scheduled_time = Some(0x0102_0304_0506_0708);
+        let payload = encode_payload(&p);
+        let mut flags = viva_gencp::CommandFlags::ACK_REQUIRED;
+        flags |= viva_gencp::CommandFlags::SCHEDULED_ACTION;
+        let packet = GvcpRequestHeader {
+            flags,
+            command: consts::ACTION_COMMAND,
+            length: payload.len() as u16,
+            request_id: 0xBEEF,
+        }
+        .encode(&payload);
+
+        #[rustfmt::skip]
+        let expected: [u8; 28] = [
+            0x42,
+            0x81,                   // flags: acknowledge required | scheduled
+            0x01, 0x00,
+            0x00, 0x14,             // length: 20
+            0xBE, 0xEF,
+            0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66, 0x77, 0x88,
+            0xFF, 0xFF, 0x00, 0x00,
+            0x01, 0x02, 0x03, 0x04, // action time, big-endian u64
+            0x05, 0x06, 0x07, 0x08,
+        ];
+        assert_eq!(&packet[..], &expected[..]);
+        assert_eq!(payload.len(), ACTION_PAYLOAD_SCHEDULED);
+    }
+
+    #[test]
+    fn unscheduled_payload_stops_at_twelve_bytes() {
+        assert_eq!(encode_payload(&params()).len(), ACTION_PAYLOAD);
+    }
+
+    /// The two opcodes an action must never be confused with.
+    #[test]
+    fn action_opcodes_do_not_collide_with_register_access() {
+        assert_eq!(consts::ACTION_COMMAND, 0x0100);
+        assert_eq!(consts::ACTION_ACK, 0x0101);
+        assert_ne!(consts::ACTION_COMMAND, 0x0080); // READREG_CMD
+        assert_ne!(consts::ACTION_ACK, 0x0081); // READREG_ACK
     }
 
     #[test]

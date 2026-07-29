@@ -1,10 +1,33 @@
 //! GVCP message/event channel handling.
+//!
+//! A device delivers events to the controller as GVCP **commands** on the
+//! message channel — `EVENT_CMD` (0x00C0) for bare notifications and
+//! `EVENTDATA_CMD` (0x00C2) when the event carries device-specific data. Both
+//! are commands, so a datagram begins with the 0x42 key byte and a flags byte,
+//! not with a status code, and both may ask the controller to acknowledge.
+//!
+//! One `EVENT_CMD` can pack several events: the payload is an array of
+//! fixed-size entries, 16 bytes each with 16-bit block IDs or 24 bytes each
+//! when the device sets the extended-ID flag (GigE Vision 2.0). Layout per
+//! entry, from the GigE Vision field table and corroborated by Wireshark's
+//! `dissect_event_cmd`:
+//!
+//! ```text
+//! 16-bit block IDs (16 bytes)      64-bit block IDs (24 bytes)
+//!  0  reserved            u16       0  reserved            u16
+//!  2  event identifier    u16       2  event identifier    u16
+//!  4  stream channel      u16       4  stream channel      u16
+//!  6  block id            u16       6  reserved            u16
+//!  8  timestamp           u64       8  block id            u64
+//!                                  16  timestamp           u64
+//! ```
 
+use std::collections::VecDeque;
 use std::io;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 #[cfg(test)]
 use bytes::{BufMut, BytesMut};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -12,57 +35,58 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 
+use crate::gvcp::consts as gvcp;
+
 /// Constants related to GVCP message packets.
 mod consts {
     /// Size of the GVCP message header in bytes.
     pub const GVCP_HEADER: usize = 8;
-    /// Opcode identifying a GVCP event data acknowledgement.
-    pub const OPCODE_EVENT_DATA_ACK: u16 = 0x000D;
     /// Default receive buffer size requested for the UDP socket (bytes).
     pub const DEFAULT_RCVBUF: usize = 1 << 20; // 1 MiB.
     /// Maximum datagram size accepted on the event channel (bytes).
     pub const MAX_EVENT_SIZE: usize = 2048;
+    /// GVCP command message key: the first byte of every GVCP *command*.
+    ///
+    /// Events arrive as commands from the device, not as acknowledgements —
+    /// which is why the first two bytes are the key and the flags, and not a
+    /// status code.
+    pub const GVCP_CMD_KEY: u8 = 0x42;
+    /// Flags-byte bit requesting an acknowledgement from the controller.
+    pub const FLAG_ACK_REQUIRED: u8 = 0x01;
+    /// Flags-byte bit marking 64-bit block IDs (GigE Vision 2.0).
+    pub const FLAG_EXTENDED_IDS: u8 = 0x10;
 }
 
-/// Parsed representation of a GVCP event packet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventPacket {
-    /// Source address of the datagram.
-    pub src: SocketAddr,
-    /// Event identifier reported by the device.
-    pub event_id: u16,
-    /// Device timestamp carried by the event (ticks).
-    pub timestamp_dev: u64,
-    /// Stream channel associated with the event when present.
-    pub stream_channel: u16,
-    /// GVSP block identifier associated with the event when present.
-    pub block_id: u16,
-    /// Remaining payload bytes following the event header.
-    pub payload: Bytes,
+/// Header of a datagram received on the GVCP message channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MessageHeader {
+    command: u16,
+    length: usize,
+    request_id: u16,
+    ack_required: bool,
+    extended_ids: bool,
 }
 
-impl EventPacket {
-    fn parse(src: SocketAddr, data: &[u8]) -> io::Result<Self> {
-        if data.len() < consts::GVCP_HEADER + 2 {
+impl MessageHeader {
+    fn parse(data: &[u8]) -> io::Result<Self> {
+        if data.len() < consts::GVCP_HEADER {
             return Err(io::Error::new(ErrorKind::InvalidData, "packet too short"));
         }
         if data.len() > consts::MAX_EVENT_SIZE {
             return Err(io::Error::new(ErrorKind::InvalidData, "packet too large"));
         }
-
-        let mut cursor = data;
-        let status = cursor.get_u16();
-        let opcode = cursor.get_u16();
-        let length = cursor.get_u16() as usize;
-        let _request_id = cursor.get_u16();
-
-        if status != 0 {
+        if data[0] != consts::GVCP_CMD_KEY {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
-                "device reported error status",
+                "not a GVCP command packet",
             ));
         }
-        if opcode != consts::OPCODE_EVENT_DATA_ACK {
+        let flags = data[1];
+        let command = u16::from_be_bytes([data[2], data[3]]);
+        let length = u16::from_be_bytes([data[4], data[5]]) as usize;
+        let request_id = u16::from_be_bytes([data[6], data[7]]);
+
+        if !matches!(command, gvcp::EVENT_COMMAND | gvcp::EVENTDATA_COMMAND) {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "unexpected opcode for event packet",
@@ -72,80 +96,143 @@ impl EventPacket {
             return Err(io::Error::new(ErrorKind::InvalidData, "length mismatch"));
         }
 
-        if cursor.remaining() < 2 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "event payload missing identifier",
-            ));
-        }
-        let event_id = cursor.get_u16();
-
-        if cursor.remaining() < 2 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "event payload missing notification",
-            ));
-        }
-        let _notification = cursor.get_u16();
-
-        let timestamp_dev = if cursor.remaining() >= 8 {
-            let high = cursor.get_u32() as u64;
-            let low = cursor.get_u32() as u64;
-            (high << 32) | low
-        } else {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "event payload missing timestamp",
-            ));
-        };
-
-        let mut stream_channel = 0u16;
-        let mut block_id = 0u16;
-        let mut payload_length = 0usize;
-        if cursor.remaining() >= 6 {
-            stream_channel = cursor.get_u16();
-            block_id = cursor.get_u16();
-            payload_length = cursor.get_u16() as usize;
-        }
-
-        if cursor.remaining() < 2 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "event payload missing reserved field",
-            ));
-        }
-        // Consume the reserved field when present.
-        let _reserved = cursor.get_u16();
-
-        let remaining = cursor.remaining();
-        if payload_length != 0 && payload_length != remaining {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "event payload length mismatch",
-            ));
-        }
-
-        let payload = if remaining > 0 {
-            Bytes::copy_from_slice(cursor)
-        } else {
-            Bytes::new()
-        };
-
         Ok(Self {
+            command,
+            length,
+            request_id,
+            ack_required: flags & consts::FLAG_ACK_REQUIRED != 0,
+            extended_ids: flags & consts::FLAG_EXTENDED_IDS != 0,
+        })
+    }
+
+    /// Opcode of the acknowledgement this command expects.
+    fn ack_opcode(&self) -> u16 {
+        match self.command {
+            gvcp::EVENTDATA_COMMAND => gvcp::EVENTDATA_ACK,
+            _ => gvcp::EVENT_ACK,
+        }
+    }
+
+    /// Size of one event entry given the extended-ID flag.
+    fn entry_size(&self) -> usize {
+        if self.extended_ids {
+            gvcp::EVENT_ENTRY_EXTENDED
+        } else {
+            gvcp::EVENT_ENTRY
+        }
+    }
+}
+
+/// Parsed representation of a single GVCP event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventPacket {
+    /// Source address of the datagram.
+    pub src: SocketAddr,
+    /// Event identifier reported by the device.
+    pub event_id: u16,
+    /// Device timestamp carried by the event (ticks).
+    pub timestamp_dev: u64,
+    /// Stream channel associated with the event.
+    pub stream_channel: u16,
+    /// GVSP block identifier associated with the event.
+    ///
+    /// 16-bit on GigE Vision 1.x devices, widened here so a 2.0 device using
+    /// extended block IDs fits without a second type.
+    pub block_id: u64,
+    /// Event data following the entry, empty for a bare `EVENT_CMD`.
+    pub payload: Bytes,
+}
+
+impl EventPacket {
+    /// Decode one event entry. `entry` must be at least `header.entry_size()`.
+    fn parse_entry(src: SocketAddr, header: &MessageHeader, entry: &[u8], payload: Bytes) -> Self {
+        let event_id = u16::from_be_bytes([entry[2], entry[3]]);
+        let stream_channel = u16::from_be_bytes([entry[4], entry[5]]);
+        let (block_id, ts_at) = if header.extended_ids {
+            // entry[6..8] is reserved in the extended layout.
+            let id = u64::from_be_bytes([
+                entry[8], entry[9], entry[10], entry[11], entry[12], entry[13], entry[14],
+                entry[15],
+            ]);
+            (id, 16)
+        } else {
+            (u64::from(u16::from_be_bytes([entry[6], entry[7]])), 8)
+        };
+        let timestamp_dev = u64::from_be_bytes([
+            entry[ts_at],
+            entry[ts_at + 1],
+            entry[ts_at + 2],
+            entry[ts_at + 3],
+            entry[ts_at + 4],
+            entry[ts_at + 5],
+            entry[ts_at + 6],
+            entry[ts_at + 7],
+        ]);
+        Self {
             src,
             event_id,
             timestamp_dev,
             stream_channel,
             block_id,
             payload,
-        })
+        }
     }
+
+    /// Decode every event carried by one message-channel datagram.
+    fn parse_datagram(src: SocketAddr, data: &[u8]) -> io::Result<(MessageHeader, Vec<Self>)> {
+        let header = MessageHeader::parse(data)?;
+        let entry_size = header.entry_size();
+        let body = &data[consts::GVCP_HEADER..];
+
+        if body.len() < entry_size {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "event payload shorter than one entry",
+            ));
+        }
+
+        let events = if header.command == gvcp::EVENTDATA_COMMAND {
+            // One entry, then device-specific data to the end of the datagram.
+            // Packing several variable-length events into one EVENTDATA_CMD
+            // needs the GEV 2.1 per-event size field, which we do not read;
+            // no corpus device has been observed doing it.
+            let payload = Bytes::copy_from_slice(&body[entry_size..]);
+            vec![Self::parse_entry(src, &header, body, payload)]
+        } else {
+            if header.length % entry_size != 0 {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "event payload is not a whole number of entries",
+                ));
+            }
+            body.chunks_exact(entry_size)
+                .map(|entry| Self::parse_entry(src, &header, entry, Bytes::new()))
+                .collect()
+        };
+
+        Ok((header, events))
+    }
+}
+
+/// Build the acknowledgement for a message-channel command.
+///
+/// GVCP acknowledgements carry no payload here: status, opcode, a zero length
+/// and the request id the device used.
+fn encode_ack(ack_opcode: u16, request_id: u16) -> [u8; consts::GVCP_HEADER] {
+    let mut buf = [0u8; consts::GVCP_HEADER];
+    buf[0..2].copy_from_slice(&viva_gencp::StatusCode::Success.to_raw().to_be_bytes());
+    buf[2..4].copy_from_slice(&ack_opcode.to_be_bytes());
+    buf[4..6].copy_from_slice(&0u16.to_be_bytes());
+    buf[6..8].copy_from_slice(&request_id.to_be_bytes());
+    buf
 }
 
 /// Async GVCP message channel socket.
 pub struct EventSocket {
     sock: UdpSocket,
     buffer: Mutex<Vec<u8>>,
+    /// Events decoded from a multi-event datagram but not yet returned.
+    pending: Mutex<VecDeque<EventPacket>>,
 }
 
 impl EventSocket {
@@ -168,19 +255,49 @@ impl EventSocket {
         Ok(Self {
             sock,
             buffer: Mutex::new(vec![0u8; consts::MAX_EVENT_SIZE]),
+            pending: Mutex::new(VecDeque::new()),
         })
     }
 
-    /// Receive and parse the next GVCP event packet.
+    /// Receive and parse the next GVCP event.
+    ///
+    /// A datagram carrying several events is decoded once and drained across
+    /// successive calls. When the device set the acknowledge-required flag the
+    /// acknowledgement is sent before the first event is returned — a device
+    /// that does not get one will retransmit.
     pub async fn recv(&self) -> io::Result<EventPacket> {
         loop {
+            if let Some(packet) = self.pending.lock().await.pop_front() {
+                return Ok(packet);
+            }
+
             let mut buffer = self.buffer.lock().await;
             let (len, src) = self.sock.recv_from(&mut buffer[..]).await?;
             trace!(bytes = len, %src, "received GVCP message");
-            match EventPacket::parse(src, &buffer[..len]) {
-                Ok(packet) => {
-                    debug!(event_id = packet.event_id, %src, "parsed GVCP event");
-                    return Ok(packet);
+            let parsed = EventPacket::parse_datagram(src, &buffer[..len]);
+            drop(buffer);
+
+            match parsed {
+                Ok((header, events)) => {
+                    if header.ack_required {
+                        let ack = encode_ack(header.ack_opcode(), header.request_id);
+                        if let Err(err) = self.sock.send_to(&ack, src).await {
+                            warn!(%src, error = %err, "failed to acknowledge event");
+                        } else {
+                            trace!(%src, request_id = header.request_id, "acknowledged event");
+                        }
+                    }
+                    let mut iter = events.into_iter();
+                    let Some(first) = iter.next() else {
+                        continue;
+                    };
+                    let rest: VecDeque<_> = iter.collect();
+                    if !rest.is_empty() {
+                        debug!(extra = rest.len(), %src, "datagram carried multiple events");
+                        self.pending.lock().await.extend(rest);
+                    }
+                    debug!(event_id = first.event_id, %src, "parsed GVCP event");
+                    return Ok(first);
                 }
                 Err(err) => {
                     warn!(%src, error = %err, "discarding malformed event packet");
@@ -207,42 +324,158 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    fn build_packet() -> Bytes {
-        const EVENT_HEADER_LEN: usize = 20;
-        let mut buf = BytesMut::with_capacity(consts::GVCP_HEADER + EVENT_HEADER_LEN + 4);
-        buf.put_u16(0); // status
-        buf.put_u16(consts::OPCODE_EVENT_DATA_ACK);
-        buf.put_u16((EVENT_HEADER_LEN + 4) as u16);
-        buf.put_u16(0xCAFE); // request id
-        buf.put_u16(0x1234); // event id
-        buf.put_u16(0x0001); // notification (unused)
-        buf.put_u32(0x0002_0003); // ts high
-        buf.put_u32(0x0004_0005); // ts low
-        buf.put_u16(7); // stream channel
-        buf.put_u16(8); // block id
-        buf.put_u16(4); // payload length
+    fn src() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3956)
+    }
+
+    /// One `EVENT_CMD` with a single 16-byte entry, written out from the field
+    /// table rather than produced by our own encoder (ADR-0019).
+    ///
+    /// Every field in this fixture used to land somewhere else: the parser read
+    /// the event id out of the reserved word, the timestamp out of the stream
+    /// channel and block id, and rejected the packet outright because it
+    /// expected opcode 0x000D — which is not a GVCP opcode at all.
+    #[rustfmt::skip]
+    const EVENT_CMD_GOLDEN: [u8; 24] = [
+        0x42,                   // command key
+        0x01,                   // flags: acknowledge required
+        0x00, 0xC0,             // EVENT_CMD
+        0x00, 0x10,             // length: one 16-byte entry
+        0xCA, 0xFE,             // request id
+        0x00, 0x00,             // reserved
+        0x12, 0x34,             // event identifier
+        0x00, 0x07,             // stream channel index
+        0x00, 0x08,             // block id (16-bit)
+        0x00, 0x02, 0x00, 0x03, // timestamp, big-endian u64
+        0x00, 0x04, 0x00, 0x05,
+    ];
+
+    #[test]
+    fn event_cmd_matches_spec_offsets() {
+        let (header, events) =
+            EventPacket::parse_datagram(src(), &EVENT_CMD_GOLDEN).expect("parse");
+        assert_eq!(header.command, gvcp::EVENT_COMMAND);
+        assert!(header.ack_required);
+        assert!(!header.extended_ids);
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(ev.event_id, 0x1234);
+        assert_eq!(ev.stream_channel, 7);
+        assert_eq!(ev.block_id, 8);
+        assert_eq!(ev.timestamp_dev, 0x0002_0003_0004_0005);
+        assert!(ev.payload.is_empty());
+    }
+
+    /// The opcode the parser used to demand. 0x000D is in the GenCP register
+    /// range, not the GVCP event range, so no device ever sent it.
+    #[test]
+    fn event_opcodes_are_in_the_gvcp_event_range() {
+        assert_eq!(gvcp::EVENT_COMMAND, 0x00C0);
+        assert_eq!(gvcp::EVENT_ACK, 0x00C1);
+        assert_eq!(gvcp::EVENTDATA_COMMAND, 0x00C2);
+        assert_eq!(gvcp::EVENTDATA_ACK, 0x00C3);
+
+        let mut wrong = EVENT_CMD_GOLDEN;
+        wrong[2..4].copy_from_slice(&0x000Du16.to_be_bytes());
+        assert!(EventPacket::parse_datagram(src(), &wrong).is_err());
+    }
+
+    #[test]
+    fn multiple_events_in_one_datagram_are_all_returned() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(consts::GVCP_CMD_KEY);
+        buf.put_u8(0);
+        buf.put_u16(gvcp::EVENT_COMMAND);
+        buf.put_u16((gvcp::EVENT_ENTRY * 3) as u16);
+        buf.put_u16(0x0001);
+        for i in 0..3u16 {
+            buf.put_u16(0); // reserved
+            buf.put_u16(0x1000 + i); // event id
+            buf.put_u16(i); // stream channel
+            buf.put_u16(100 + i); // block id
+            buf.put_u64(u64::from(i) + 1);
+        }
+        let (_, events) = EventPacket::parse_datagram(src(), &buf).expect("parse");
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+            vec![0x1000, 0x1001, 0x1002]
+        );
+        assert_eq!(events[2].block_id, 102);
+        assert_eq!(events[2].timestamp_dev, 3);
+    }
+
+    #[test]
+    fn extended_block_ids_shift_the_timestamp() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(consts::GVCP_CMD_KEY);
+        buf.put_u8(consts::FLAG_EXTENDED_IDS);
+        buf.put_u16(gvcp::EVENT_COMMAND);
+        buf.put_u16(gvcp::EVENT_ENTRY_EXTENDED as u16);
+        buf.put_u16(0x0002);
         buf.put_u16(0); // reserved
-        buf.extend_from_slice(&[1u8, 2, 3, 4]);
-        buf.freeze()
+        buf.put_u16(0x4321); // event id
+        buf.put_u16(3); // stream channel
+        buf.put_u16(0); // reserved
+        buf.put_u64(0x0102_0304_0506_0708); // 64-bit block id
+        buf.put_u64(0x1122_3344_5566_7788); // timestamp
+
+        let (header, events) = EventPacket::parse_datagram(src(), &buf).expect("parse");
+        assert!(header.extended_ids);
+        assert_eq!(events[0].event_id, 0x4321);
+        assert_eq!(events[0].block_id, 0x0102_0304_0506_0708);
+        assert_eq!(events[0].timestamp_dev, 0x1122_3344_5566_7788);
     }
 
-    #[tokio::test]
-    async fn parse_valid_packet() {
-        let packet = build_packet();
-        let src = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3956);
-        let parsed = EventPacket::parse(src, &packet).expect("packet");
-        assert_eq!(parsed.event_id, 0x1234);
-        assert_eq!(parsed.timestamp_dev, 0x0002_0003_0004_0005);
-        assert_eq!(parsed.stream_channel, 7);
-        assert_eq!(parsed.block_id, 8);
-        assert_eq!(&parsed.payload[..], &[1, 2, 3, 4]);
+    #[test]
+    fn eventdata_carries_a_payload() {
+        let data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut buf = BytesMut::new();
+        buf.put_u8(consts::GVCP_CMD_KEY);
+        buf.put_u8(0);
+        buf.put_u16(gvcp::EVENTDATA_COMMAND);
+        buf.put_u16((gvcp::EVENT_ENTRY + data.len()) as u16);
+        buf.put_u16(0x0003);
+        buf.put_u16(0);
+        buf.put_u16(0x0009);
+        buf.put_u16(1);
+        buf.put_u16(42);
+        buf.put_u64(0xDEAD_BEEF);
+        buf.extend_from_slice(&data);
+
+        let (header, events) = EventPacket::parse_datagram(src(), &buf).expect("parse");
+        assert_eq!(header.ack_opcode(), gvcp::EVENTDATA_ACK);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, 0x0009);
+        assert_eq!(events[0].block_id, 42);
+        assert_eq!(&events[0].payload[..], &data);
     }
 
-    #[tokio::test]
-    async fn reject_short_packet() {
-        let src = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3956);
-        let data = Bytes::from_static(&[0x00, 0x01, 0x02]);
-        let err = EventPacket::parse(src, &data).unwrap_err();
+    #[test]
+    fn ack_matches_spec_bytes() {
+        let ack = encode_ack(gvcp::EVENT_ACK, 0xCAFE);
+        assert_eq!(ack, [0x00, 0x00, 0x00, 0xC1, 0x00, 0x00, 0xCA, 0xFE]);
+    }
+
+    #[test]
+    fn reject_short_packet() {
+        let err = EventPacket::parse_datagram(src(), &[0x42, 0x00, 0x00]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn reject_ack_shaped_packet() {
+        // An acknowledgement, not a command: no 0x42 key byte.
+        let mut buf = EVENT_CMD_GOLDEN;
+        buf[0] = 0x00;
+        assert!(EventPacket::parse_datagram(src(), &buf).is_err());
+    }
+
+    #[test]
+    fn reject_partial_entry() {
+        let mut buf = EVENT_CMD_GOLDEN.to_vec();
+        buf.truncate(consts::GVCP_HEADER + 12);
+        buf[4..6].copy_from_slice(&12u16.to_be_bytes());
+        assert!(EventPacket::parse_datagram(src(), &buf).is_err());
     }
 }

@@ -65,13 +65,16 @@ independent references rather than against our own fake.**
 Concretely:
 
 1. **Opcodes and payload offsets are cited in the source**, with the reference
-   that establishes them. The GigE Vision specification itself is behind an A3
-   registration form, so the citable references are aravis
-   (`../aravis/src/arvgvcpprivate.h` for the GVCP command enum) and Wireshark's
-   `packet-gvcp.c` dissector for the fields aravis does not implement. Where
-   the two disagree — 0x0004/0x0005 is `BYE` in aravis and `FORCEIP` in
-   Wireshark — the discrepancy is recorded as an open question, not resolved by
-   preference.
+   that establishes them *and the rank that reference carries*. The GigE
+   Vision specification is normative but sits behind an A3 registration form;
+   where we can state what it requires, we cite it. Independent
+   implementations — aravis (`../aravis/src/arvgvcpprivate.h` for the GVCP
+   command enum) and Wireshark's `packet-gvcp.c` dissector for the fields
+   aravis does not implement — are cited as corroboration, never as the rule.
+   Where they disagree with each other or with our reading — 0x0004/0x0005 is
+   `BYE` in aravis and `FORCEIP` in Wireshark — the discrepancy is recorded as
+   an open question for hardware to settle, not resolved by preference. See
+   the evidence hierarchy in `CLAUDE.md`.
 
 2. **Fake wire fixtures are spec-derived byte arrays, asserted independently of
    the client parser.** A test that round-trips the fake through our own parser
@@ -121,9 +124,27 @@ payloads.
 - The golden fixtures are a maintenance cost, and a wrong fixture is now a
   wrong test. They carry the reference citation inline so a reviewer can check
   them against the source rather than against intuition.
-- We cannot verify against the normative document. A3 delivers the GigE Vision
-  specification only after a registration form, so aravis and Wireshark are the
-  practical authorities and their disagreements are ours to resolve.
+- We cannot always quote the normative document. A3 delivers the GigE Vision
+  specification only after a registration form, so some questions have no
+  citable answer short of hardware. aravis and Wireshark are independent
+  implementations carrying their own bugs and approximations, so they
+  corroborate such a question but do not close it.
 - Some of this needs hardware we do not have. FORCEIP has only ever been
   answered by our own fake; confirming it, and the chunk trailer layout, needs
-  a user with a real camera and a packet capture.
+  a user with a real camera and a packet capture. TC-09 and TC-12 are the two
+  open cases, and they stay open rather than being decided by whichever
+  reference we find more persuasive.
+
+## Amendment — 2026-07-29
+
+Decision item 1 originally called aravis and Wireshark "the citable
+references", and the Negative section called them "the practical authorities
+and their disagreements are ours to resolve". Both are corrected above. They
+corroborate; a question they cannot settle goes to the backlog to wait for a
+device, which is what TC-09 has always done and what TC-12 (the `PENDING_ACK`
+field width) was filed under.
+
+The project-wide evidence hierarchy this defers to lives in `CLAUDE.md`. The
+rest of this ADR stands — and item 2 is what makes the demotion practical: a
+golden fixture written out from the specification's own field table needs no
+second implementation to vouch for it.
