@@ -18,7 +18,6 @@
 > against simulators and 35 real vendor XML descriptions, but barely tested
 > against physical cameras -- we have none. We are working towards production
 > readiness one reported camera at a time, and **reports are genuinely welcome**.
-> See [Project status](#project-status--not-production-ready).
 
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
@@ -36,26 +35,6 @@
 - **Time & chunks** -- map device timestamps to host time; parse chunk data (timestamp, exposure, gain)
 - **Service bridge** -- expose cameras over [Zenoh](https://zenoh.io/) for Viva Studio (the desktop GUI in `studio/`)
 - **No hardware required** -- built-in fake cameras (`viva-fake-gige`, `viva-fake-u3v`) for testing and demos
-
-## Project status — not production-ready
-
-**Read this before depending on the project.** viva-genicam is under active
-development and is not yet suitable for production use. It is pre-1.0, the
-API changes between releases, and the odds that an arbitrary camera works
-first time are not yet good enough to build a product on.
-
-We intend to get it there. What follows is where it actually stands.
-
-**What is implemented:**
-
-- GigE Vision — discovery, control, streaming, events, actions, chunks, IP configuration
-- USB3 Vision — discovery, control, streaming, service bridge, CLI
-- GenApi — Tier-1 and Tier-2 nodes, `pValue` delegation, the GenICam formula language, the register address model
-
-**What that is backed by:** 278 automated tests, in-process fake cameras for
-both transports, and a conformance corpus of 35 real vendor GenApi XML
-descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
-Photonic Science, Prosilica, Sony, SVS, TIS).
 
 ## Workspace layout
 
