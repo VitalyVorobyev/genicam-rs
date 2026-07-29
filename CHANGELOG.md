@@ -23,6 +23,17 @@ full audit and the policy that came out of it.
 
 ### Fixed
 
+- **A camera that asks for more time is granted it** (#60). GVCP lets a device
+  answer a slow command with `PENDING_ACK` (0x0089) instead of the real
+  acknowledgement, requesting an extension. We did not know the opcode, so the
+  decode failed and the command was reported as a protocol error — cameras use
+  this for exactly the operations you least want to see fail, flash writes and
+  mode changes. The controller now extends its own deadline and keeps waiting
+  on the same request id rather than resending, since a resend could execute
+  the command twice. Bounded by `MAX_PENDING_ACKS` and `MAX_PENDING_ACK_WAIT`.
+  Handled in the GVCP layer rather than in `viva-gencp`: the U3V side of GenCP
+  signals the same condition with status `0x8006`, so the two transports do not
+  share a representation.
 - **GigE discovery works on Windows APIPA networks** (#57). A camera and host
   both on IPv4 link-local addresses (`169.254.0.0/16`) were undiscoverable: the
   `if-addrs` `link-local` feature was off, and that crate drops `169.254.x.x`
