@@ -32,6 +32,10 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+# Compiled PyO3 extension: maturin builds it in place during `maturin develop`,
+# so it appears in the source tree. It is a platform-specific build artifact.
+*.abi3.so
+*.pyd
 # Claude Code: track only project skills
 .claude/*
 !.claude/skills/
