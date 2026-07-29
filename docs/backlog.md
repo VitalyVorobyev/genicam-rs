@@ -19,8 +19,8 @@ number — so priority can be argued from data rather than from intuition
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| REL-01 | Fix GigE discovery on Windows APIPA networks (#57) | P0 | M | planned | Eight defects, see the table below |
-| REL-02 | Tag and publish 0.3.0 (`v0.3.0`, `py-v0.3.0`) | P0 | S | blocked | Blocked on REL-01. All six version touchpoints already done on `main`; crates.io/PyPI still serve 0.2.8, so #35 and #45 are blocked on a tag, not on code |
+| REL-01 | Fix GigE discovery on Windows APIPA networks ([#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57)) | P0 | M | planned | Eight defects, see the table below |
+| REL-02 | Tag and publish 0.3.0 (`v0.3.0`, `py-v0.3.0`) — [#59](https://github.com/VitalyVorobyev/viva-genicam/issues/59) | P0 | S | blocked | Blocked on REL-01. All six version touchpoints already done on `main`; crates.io/PyPI still serve 0.2.8, so #35 and #45 are blocked on a tag, not on code |
 | REL-03 | Ask #35, #45, #57 to retest against 0.3.0 | P0 | S | blocked | Blocked on REL-02. #57's reporter has JAI APIPA hardware and should confirm REL-01 before the tag |
 | REL-04 | `.github/ISSUE_TEMPLATE/` asking for the artifacts that resolved #35/#45/#57 | P0 | S | planned | Model, OS, install source + version, `RUST_LOG=debug` trace, raw GenApi XML. The Python XML snippet given in #45 was wrong and had to be retracted — the template carries the correct one |
 
@@ -44,10 +44,10 @@ The GVCP/GVSP audit ADR-0018 never reached. Opcodes cross-checked against
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| TC-01 | Handle `PENDING_ACK` (0x0089) | P0 | M | planned | `OpCode::from_ack` (`crates/viva-gencp/src/lib.rs:62-70`) knows only the four GenCP acks, so a pending-ack yields `UnknownOpcode` → hard failure. `transact_with_retry` does not retry on decode failure (`gvcp.rs:661`). Cameras use this for flash writes and mode changes |
-| TC-02 | `ACTION_COMMAND` collides with `READREG` | P0 | S | planned | `crates/viva-gige/src/action.rs:19-21` defines 0x0080/0x0081; `viva-gencp/src/lib.rs:39` uses 0x0080 for `ReadRegister`. Two commands cannot share an opcode |
-| TC-03 | Event-channel opcode is not a GVCP opcode | P0 | M | planned | `crates/viva-gige/src/message.rs:20` keys on 0x000D and rejects everything else; GVCP events are 0x00C0–0x00C3. No EVENT_ACK is ever sent back to the device |
-| TC-04 | Spec-derived golden-byte fixtures for the fakes | P0 | M | planned | The structural fix. Third occurrence of fake-and-client sharing one wrong assumption (SCPS overhead, unaligned READMEM, #57's MAC). Assert the fake's wire bytes against literal spec-derived arrays, independently of the client parser |
+| TC-01 | Handle `PENDING_ACK` (0x0089) — [#60](https://github.com/VitalyVorobyev/viva-genicam/issues/60) | P0 | M | planned | `OpCode::from_ack` (`crates/viva-gencp/src/lib.rs:62-70`) knows only the four GenCP acks, so a pending-ack yields `UnknownOpcode` → hard failure. `transact_with_retry` does not retry on decode failure (`gvcp.rs:661`). Cameras use this for flash writes and mode changes |
+| TC-02 | `ACTION_COMMAND` collides with `READREG` — [#61](https://github.com/VitalyVorobyev/viva-genicam/issues/61) | P0 | S | planned | `crates/viva-gige/src/action.rs:19-21` defines 0x0080/0x0081; `viva-gencp/src/lib.rs:39` uses 0x0080 for `ReadRegister`. Two commands cannot share an opcode |
+| TC-03 | Event-channel opcode is not a GVCP opcode — [#62](https://github.com/VitalyVorobyev/viva-genicam/issues/62) | P0 | M | planned | `crates/viva-gige/src/message.rs:20` keys on 0x000D and rejects everything else; GVCP events are 0x00C0–0x00C3. No EVENT_ACK is ever sent back to the device |
+| TC-04 | Spec-derived golden-byte fixtures for the fakes — [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63) | P0 | M | planned | The structural fix. Third occurrence of fake-and-client sharing one wrong assumption (SCPS overhead, unaligned READMEM, #57's MAC). Assert the fake's wire bytes against literal spec-derived arrays, independently of the client parser |
 | TC-05 | Accept the payload types cameras actually send | P1 | M | planned | `parse_leader` rejects everything but 0x01 (`crates/viva-gige/src/gvsp.rs:255-283`), so Image Extended Chunk (0x4001) — the normal chunk delivery mechanism — never opens a frame. Packet format 0x04 (single-packet block) is likewise `Unsupported` |
 | TC-06 | Chunk trailer layout is self-consistent, not conformant | P1 | M | planned | `parse_chunks` decodes front-to-back big-endian (`gvsp.rs:112-143`) while `crates/viva-genicam/src/chunks.rs:114-142` reads values little-endian. Real cameras append backward-scanned `[data][id][len]` tuples. The fake emits our layout, so the round trip proves nothing |
 | TC-07 | Implement ACTION and EVENT in `viva-fake-gige` | P1 | M | planned | Neither is implemented by the fake, so TC-02 and TC-03 have no test vehicle |
