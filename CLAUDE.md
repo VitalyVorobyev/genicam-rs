@@ -11,7 +11,7 @@ We do not maintain backward compatibility at this early development stage. The p
 ## Related Projects
 
 - **Viva Studio** (`studio/`) — Tauri desktop app, second Cargo workspace in this repo (see `studio/CLAUDE.md`).
-- **aravis** (`../aravis`) — C library for GenICam cameras. Optional; used only for conformance testing against a third-party implementation. Not required for development or CI.
+- **aravis** (`../aravis`) — C library for GenICam cameras. Optional; a corroborating second opinion when reading the wire protocols, not an authority on them (see [Evidence hierarchy](#evidence-hierarchy)). Not required for development or CI.
 
 ## Build Commands
 
@@ -150,11 +150,43 @@ skipped node not listed in their `EXPECTED_SKIPS` allowlist, so new gaps
 surface instead of hiding.
 
 **When the GenICam specification and a convenient approximation disagree,
-implement the specification** — and check the semantics against
-`../aravis` (`src/arvevaluator.c` for formulas,
-`src/arvgcregisternode.c` for addressing and bit extraction) rather than
-against your own reading of the standard. ADR-0018 lists eight defects
-that each looked reasonable in isolation.
+implement the specification** rather than your own reading of it. ADR-0018
+lists eight defects that each looked reasonable in isolation.
+
+### Evidence hierarchy
+
+When two sources disagree about what the wire or the XML means, weigh them
+in this order:
+
+1. **Real hardware.** A camera that a user actually owns is the only
+   evidence that settles a question. Devices are often non-conformant,
+   buggy, or inconsistent with their own documentation — and that is the
+   point: **the goal is to work with the hardware that exists, not with
+   the hardware the standard describes.** If a camera and the
+   specification disagree, we accommodate the camera, and record why.
+2. **The specification**, for anything hardware has not yet contradicted.
+   It is the default and the tie-breaker when nobody has a device to test.
+3. **Vendor XML from the corpus.** Real devices' own descriptions of
+   themselves — weaker than the device but far stronger than intuition,
+   and available without hardware.
+4. **`../aravis` and Wireshark's `packet-gvcp.c`.** Useful corroboration,
+   *not* an authority. aravis is a mature independent implementation, so
+   agreeing with it is reassuring and disagreeing with it is worth a hard
+   look — but it has its own bugs and approximations, and matching them
+   is not a goal. Cite it as "aravis does X", never as "the correct
+   behaviour is X".
+
+Consequence for day-to-day work: **do not close a hardware-dependent
+question by reasoning about aravis.** Say what the spec requires, say what
+aravis does, implement the safer reading, and put the open question in
+`docs/backlog.md` so it can be settled the next time a reporter with the
+relevant device appears. TC-09 (the 0x0004/0x0005 `BYE` vs `FORCEIP`
+disagreement) is the worked example.
+
+This is also why the issue tracker matters more than it looks: a user
+report is not a support burden, it is the highest-quality evidence the
+project can obtain. See "Vendor XML corpus" above — ask for the XML, and
+add it.
 
 ### Fake camera binary
 
@@ -251,6 +283,10 @@ points together:
    ... }`. These are caret ranges, so a minor bump makes them
    unsatisfiable once published; they only keep building locally
    because `path` wins. Bump them whenever the minor version changes.
+7. **The install snippet in `crates/viva-genicam/README.md`** — the
+   `viva-genicam = "X.Y"` line under Usage. Nothing builds this, so it
+   rots silently; it sat at `"0.1"` long after 0.2 shipped, which does
+   not resolve.
 
 A missed file will either break the wheel build (mismatched crate
 vs pyproject version) or publish with the wrong metadata.
