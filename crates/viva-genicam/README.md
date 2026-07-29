@@ -8,12 +8,35 @@ This is the main entry point for the [viva-genicam](https://github.com/VitalyVor
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
 > GenICam is a trademark of EMVA.
 
+## Project status — not production-ready
+
+This crate is under active development and is not yet suitable for production
+use. It is pre-1.0 and the API changes between releases.
+
+The protocols are implemented against the EMVA specifications and covered by
+266 automated tests, in-process fake cameras, and a corpus of 35 real vendor
+GenApi XML descriptions — but **almost none of it has been exercised against
+physical hardware**, because the maintainer has none. Fake cameras only
+reproduce the behaviour we already thought of. Every camera-specific bug found
+so far was found by a user.
+
+We intend to make this production-ready, and the way that happens is one
+reported camera at a time. Cameras deviate from the standard and contradict
+their own documentation; working with the hardware that exists is the goal,
+not a compromise. **If your camera does not work, please
+[open an issue](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose)**
+— and attach the camera's GenApi XML if you can, since that becomes a
+permanent regression fixture for your model.
+
+Current gaps are tracked in
+[docs/backlog.md](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/backlog.md).
+
 ## Features
 
 - **Discovery** -- find GigE Vision cameras on any network interface
 - **Connect & control** -- `connect_gige()` one-liner for camera connection with automatic XML fetch
 - **Feature access** -- typed get/set for Integer, Float, Enum, Boolean, Command, String features
-- **Streaming** -- `FrameStream` async iterator with resend, reassembly, and backpressure
+- **Streaming** -- `FrameStream` async iterator with reassembly and backpressure (packet resend is implemented at the protocol layer but not yet wired into the receive path)
 - **Events & actions** -- subscribe to camera events; trigger synchronized acquisition
 - **Chunks & timestamps** -- parse chunk data; map device timestamps to host time
 - **USB3 Vision** -- optional `u3v` feature for USB3 Vision cameras
@@ -22,7 +45,7 @@ This is the main entry point for the [viva-genicam](https://github.com/VitalyVor
 
 ```toml
 [dependencies]
-viva-genicam = "0.1"
+viva-genicam = "0.2"
 ```
 
 ```rust

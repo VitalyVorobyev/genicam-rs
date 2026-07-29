@@ -13,6 +13,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
+> **Status -- not production-ready.** Under active development, pre-1.0, API
+> changes between releases. The protocols are implemented and well tested
+> against simulators and 35 real vendor XML descriptions, but barely tested
+> against physical cameras -- we have none. We are working towards production
+> readiness one reported camera at a time, and **reports are genuinely welcome**.
+> See [Project status](#project-status--not-production-ready).
+
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
 > GenICam is a trademark of EMVA.
@@ -23,28 +30,67 @@
 
 - **Discovery** -- find GigE Vision cameras via GVCP broadcast; USB3 Vision cameras via USB enumeration
 - **Control** -- read and write device registers and GenApi features (Integer, Float, Enum, Boolean, Command, String, SwissKnife, Converter)
-- **Streaming** -- GigE: GVSP with packet resend, reassembly, and backpressure; U3V: async frame iterator over USB bulk reads
+- **Streaming** -- GigE: GVSP reassembly with backpressure (packet resend is implemented but not yet wired into the receive path); U3V: async frame iterator over USB bulk reads
 - **IP configuration** -- FORCEIP for temporary assignment; persistent IP registers for permanent configuration
 - **Events & actions** -- subscribe to camera events; trigger synchronized acquisition via action commands
 - **Time & chunks** -- map device timestamps to host time; parse chunk data (timestamp, exposure, gain)
 - **Service bridge** -- expose cameras over [Zenoh](https://zenoh.io/) for Viva Studio (the desktop GUI in `studio/`)
 - **No hardware required** -- built-in fake cameras (`viva-fake-gige`, `viva-fake-u3v`) for testing and demos
 
-## Current status
+## Project status — not production-ready
 
-This project implements the GigE Vision and USB3 Vision protocols from the ground up in pure Rust, following the published EMVA specifications. The full control and streaming pipelines are in place, backed by 190+ automated tests that run against built-in fake camera simulators.
+**Read this before depending on the project.** viva-genicam is under active
+development and is not yet suitable for production use. It is pre-1.0, the
+API changes between releases, and the odds that an arbitrary camera works
+first time are not yet good enough to build a product on.
 
-**What works today:**
-- GigE Vision: discovery, control, streaming, events, actions, chunks, IP configuration
-- USB3 Vision: discovery, control, streaming, service bridge, CLI
-- GenApi: Tier-1 + Tier-2 nodes including pValue delegation and SwissKnife expressions
+We intend to get it there. What follows is where it actually stands.
 
-**What hasn't happened yet:**
-- Testing against a broad range of physical cameras from different manufacturers
-- Deployment in production environments
-- Interoperability validation beyond the built-in simulators
+**What is implemented:**
 
-The protocol implementations are spec-faithful and the architecture is designed for real-world use, but real devices have quirks that only surface with hardware in the loop. Bug reports and camera compatibility feedback are especially welcome at this stage.
+- GigE Vision — discovery, control, streaming, events, actions, chunks, IP configuration
+- USB3 Vision — discovery, control, streaming, service bridge, CLI
+- GenApi — Tier-1 and Tier-2 nodes, `pValue` delegation, the GenICam formula language, the register address model
+
+**What that is backed by:** 266 automated tests, in-process fake cameras for
+both transports, and a conformance corpus of 35 real vendor GenApi XML
+descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
+Photonic Science, Prosilica, Sony, SVS, TIS).
+
+**The honest limitation:** almost none of this has been exercised against
+physical hardware. The maintainer has no GigE Vision or USB3 Vision cameras.
+Fake cameras only reproduce the behaviour we already thought of, so they
+confirm that our assumptions are self-consistent — not that they are right.
+Every camera-specific bug found so far was found by a user, not by us.
+
+That has a visible track record. Three reports, three real defects:
+
+| Report | Cause | Outcome |
+|---|---|---|
+| [#45](https://github.com/VitalyVorobyev/viva-genicam/issues/45) FLIR Blackfly S | XML entity unescaping over CDATA; then the `=` equality operator | Fixed; the reporter's XML is now a permanent test fixture |
+| [#35](https://github.com/VitalyVorobyev/viva-genicam/issues/35) Hikrobot MV-CS050-10GC | Register addressing and the formula language, ten defects in one audit | Fixed; the reporter's XML is in the corpus, and the audit became [ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) |
+| [#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57) JAI FS-3200T on Windows | Link-local addresses dropped; MAC parsed two bytes off | Fixed; the reporter supplied protocol evidence and a patch |
+
+In each case one vendor construct made a camera impossible to open, and in
+each case the fix generalised well beyond the camera that reported it.
+
+**So: if your camera does not work, that is a bug worth reporting, and we
+want the report.** Cameras deviate from the standard, contradict their own
+documentation, and behave inconsistently across firmware revisions — working
+with the hardware that exists, rather than the hardware the specification
+describes, is the goal rather than a compromise. The most useful thing you
+can attach is your camera's GenApi XML: it becomes a permanent regression
+fixture, which is how this class of bug stops recurring for everyone with
+that model. See the
+[issue templates](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose).
+
+**Known gaps**, tracked in [docs/backlog.md](docs/backlog.md) and
+[docs/roadmap.md](docs/roadmap.md):
+
+- GVSP packet resend is implemented at the protocol layer but not wired into the receive path
+- The GVCP/GVSP layer is mid-audit; `ACTION` and `EVENT` opcode handling is known to be wrong
+- Several GenApi features are parsed but not yet honoured (`pInvalidator`, `Cachable`, dynamic `pMin`/`pMax`)
+- No feature-matrix or MSRV enforcement in CI
 
 ## Workspace layout
 
