@@ -87,54 +87,27 @@ pub(crate) fn configure_message_channel_raw<T: crate::genapi::RegisterIo>(
     transport
         .write(addr, &ip.octets())
         .map_err(|err| GenicamError::transport(format!("write message addr: {err}")))?;
+    // GevMCP is 32-bit with the port in the low half; a bare `u16` write puts
+    // it in the high half.
     transport
-        .write(gvcp_consts::MESSAGE_DESTINATION_PORT, &port.to_be_bytes())
+        .write(
+            gvcp_consts::MESSAGE_DESTINATION_PORT,
+            &u32::from(port).to_be_bytes(),
+        )
         .map_err(|err| GenicamError::transport(format!("write message port: {err}")))?;
     info!(%ip, port, "configured message channel via raw registers");
     Ok(())
 }
 
-/// Enable or disable delivery of a raw event identifier by toggling the notification mask.
-pub(crate) fn enable_event_raw<T: crate::genapi::RegisterIo>(
-    transport: &T,
-    event_id: u16,
-    on: bool,
-) -> Result<(), GenicamError> {
-    let index = (event_id / 32) as u64;
-    let bit = 1u32 << (event_id % 32);
-    let addr =
-        gvcp_consts::EVENT_NOTIFICATION_BASE + index * gvcp_consts::EVENT_NOTIFICATION_STRIDE;
-    let current = transport
-        .read(addr, 4)
-        .map_err(|err| GenicamError::transport(format!("read event mask: {err}")))?;
-    if current.len() != 4 {
-        return Err(GenicamError::transport("event mask length mismatch"));
-    }
-    let mut bytes = [0u8; 4];
-    bytes.copy_from_slice(&current);
-    let mut value = u32::from_be_bytes(bytes);
-    if on {
-        value |= bit;
-    } else {
-        value &= !bit;
-    }
-    transport
-        .write(addr, &value.to_be_bytes())
-        .map_err(|err| GenicamError::transport(format!("write event mask: {err}")))?;
-    info!(event_id, enabled = on, "updated event notification mask");
-    Ok(())
-}
-
-/// Parse a textual event identifier into a numeric value for raw fallbacks.
-pub(crate) fn parse_event_id(text: &str) -> Option<u16> {
-    if let Some(stripped) = text.strip_prefix("0x") {
-        u16::from_str_radix(stripped, 16).ok()
-    } else if let Some(stripped) = text.strip_prefix("0X") {
-        u16::from_str_radix(stripped, 16).ok()
-    } else {
-        text.parse::<u16>().ok()
-    }
-}
+// There is deliberately no raw fallback for *enabling* an event.
+//
+// One used to live here, toggling a bit in a "notification mask" at
+// 0x0900_0300 + id/32. No such bootstrap register exists: event delivery is
+// selected through the GenApi `EventSelector` / `EventNotification` features,
+// and the address was invented alongside the equally invented message-channel
+// pair next to it. Writing to it could only corrupt whatever a real device
+// keeps at that address, so a camera without those SFNC nodes now gets an
+// error naming what is missing (ADR-0019).
 
 /// Bind an [`EventSocket`] on the provided interface.
 pub(crate) async fn bind_socket(ip: IpAddr, port: u16) -> Result<EventSocket, GenicamError> {
@@ -147,14 +120,6 @@ pub(crate) async fn bind_socket(ip: IpAddr, port: u16) -> Result<EventSocket, Ge
 mod tests {
     use super::*;
     use std::net::SocketAddr;
-
-    #[test]
-    fn parse_numeric_event_ids() {
-        assert_eq!(parse_event_id("1234"), Some(1234));
-        assert_eq!(parse_event_id("0x00AF"), Some(0x00AF));
-        assert_eq!(parse_event_id("0XFF10"), Some(0xFF10));
-        assert_eq!(parse_event_id("not-a-number"), None);
-    }
 
     #[test]
     fn map_packet_without_sync() {

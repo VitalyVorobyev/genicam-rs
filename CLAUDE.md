@@ -262,7 +262,7 @@ A codegraph MCP index of the workspace lives in `.codegraph/` (gitignored, regen
 ## Version Bumps
 
 A single release version is shared by all workspace crates plus the
-Python package. When cutting a new version, update all four touch-
+Python package. When cutting a new version, update all six touch-
 points together:
 
 1. `Cargo.toml` — `[workspace.package] version` (picked up by every
@@ -283,13 +283,17 @@ points together:
    ... }`. These are caret ranges, so a minor bump makes them
    unsatisfiable once published; they only keep building locally
    because `path` wins. Bump them whenever the minor version changes.
-7. **The install snippet in `crates/viva-genicam/README.md`** — the
-   `viva-genicam = "X.Y"` line under Usage. Nothing builds this, so it
-   rots silently; it sat at `"0.1"` long after 0.2 shipped, which does
-   not resolve.
 
 A missed file will either break the wheel build (mismatched crate
 vs pyproject version) or publish with the wrong metadata.
+
+**Do not add a version-pinned install snippet to any README.** Both
+READMEs say `cargo add viva-genicam`, which always resolves to what is
+actually published. The crate README used to carry
+`viva-genicam = "X.Y"`; nothing builds that line, so it rotted to `"0.1"`
+and stayed there through all of 0.2, and any tree-vs-crates.io value it
+could hold is wrong at one end or the other — the tree carries the next
+version while crates.io still serves the last one.
 
 ## Dependency Upgrades
 

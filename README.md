@@ -52,7 +52,7 @@ We intend to get it there. What follows is where it actually stands.
 - USB3 Vision — discovery, control, streaming, service bridge, CLI
 - GenApi — Tier-1 and Tier-2 nodes, `pValue` delegation, the GenICam formula language, the register address model
 
-**What that is backed by:** 266 automated tests, in-process fake cameras for
+**What that is backed by:** 278 automated tests, in-process fake cameras for
 both transports, and a conformance corpus of 35 real vendor GenApi XML
 descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
 Photonic Science, Prosilica, Sony, SVS, TIS).
@@ -88,7 +88,7 @@ that model. See the
 [docs/roadmap.md](docs/roadmap.md):
 
 - GVSP packet resend is implemented at the protocol layer but not wired into the receive path
-- The GVCP/GVSP layer is mid-audit; `ACTION` and `EVENT` opcode handling is known to be wrong
+- The GVCP/GVSP layer is mid-audit. `ACTION` and `EVENT` are fixed, but chunk delivery still is not: the leader rejects the Image Extended Chunk payload type, and the chunk trailer layout matches our own fake rather than the specification
 - Several GenApi features are parsed but not yet honoured (`pInvalidator`, `Cachable`, dynamic `pMin`/`pMax`)
 - No feature-matrix or MSRV enforcement in CI
 

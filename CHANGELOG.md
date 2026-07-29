@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Action commands were indistinguishable from register reads** (#61).
+  `ACTION_CMD` was sent as opcode 0x0080 — which is `READREG_CMD`. A camera
+  receiving one saw a register read with a 24-byte payload, so an action either
+  failed or was interpreted as six register accesses. The opcode is 0x0100
+  (`ACTION_ACK` 0x0101), and the payload is 12 bytes — `device_key`,
+  `group_key`, `group_mask` — extended to 20 by a 64-bit action time only when
+  the scheduled-action flag (bit 7 of the GVCP flags byte) is set. The old
+  encoder always sent the time, plus a stream-channel field and a reserved word
+  that the format does not have. `ActionParams::channel` is gone.
+- **The GVCP event channel could not have worked against any camera** (#62).
+  Four defects stacked on top of each other:
+  - The parser required opcode 0x000D, which is not a GVCP opcode. Events
+    arrive as `EVENT_CMD` (0x00C0) or `EVENTDATA_CMD` (0x00C2).
+  - It decoded the datagram as an acknowledgement, reading the 0x42 command key
+    and flags byte as a status word. Every field after that was shifted: the
+    event identifier was read out of the reserved word, and the timestamp out
+    of the stream channel and block id.
+  - One `EVENT_CMD` may pack several events (`length / 16`, or `/ 24` with
+    GigE Vision 2.0 extended block IDs). Only the first was considered.
+  - No `EVENT_ACK`/`EVENTDATA_ACK` was ever returned, so a device that set the
+    acknowledge-required flag would retransmit indefinitely.
+
+  All four are fixed, and `EventPacket::block_id` widens to `u64` to carry
+  extended block IDs.
+- **Message-channel bootstrap registers pointed at nothing.** The destination
+  address and port were written to 0x0900_0200 and 0x0900_0204. The real
+  registers are `GevMCDA` at 0x0B10 and `GevMCP` at 0x0B00 — 0x0900 is
+  `GevNumberOfMessageChannels`, and its value was being used as a base, so
+  every write landed roughly 150 MB into the device's register space. The port
+  was additionally written as a bare `u16` into a 32-bit register, placing it
+  in the high half.
+
+### Removed
+
+- **The raw event-enable fallback**, which toggled a bit in a "notification
+  mask" at 0x0900_0300. No such bootstrap register exists: which events a
+  device emits is selected through the GenApi `EventSelector` and
+  `EventNotification` features. A camera exposing neither now gets an error
+  naming what is missing, instead of a write to an invented address.
+  `GigeDevice::enable_event_raw` is gone with it.
+
+### Added
+
+- **The fake camera implements actions and events.** It acknowledges an
+  `ACTION_CMD` addressed to its device and group keys and ignores one that is
+  not, and emits `GEV_EVENT_START_OF_TRANSFER` per frame once
+  `EventNotification` is `On` for it — both backed by real registers and real
+  SFNC features. Per [ADR-0019](docs/adrs/adr0019-transport-conformance-and-spec-derived-fakes.md),
+  a protocol feature the fake does not implement is not considered implemented;
+  neither of these had ever been exercised, which is how both opcode errors
+  survived. Golden-byte fixtures for `ACTION_CMD` and `EVENT_CMD` are asserted
+  against literal spec-derived arrays, independently of our own encoder.
+
+### Changed
+
+- **ADR-0018 and ADR-0019 no longer treat aravis as an authority.** ADR-0018
+  said to verify against "the reference implementation" and named `../aravis`
+  the tiebreaker for formula semantics; ADR-0019 called aravis and Wireshark
+  "the practical authorities". Both are amended. `CLAUDE.md` carries the
+  ranking they now defer to: real hardware, then the specification, then the
+  vendor XML corpus, then independent implementations as corroboration that is
+  cited but never decisive. A question they cannot settle goes to the backlog
+  to wait for a device (TC-09, TC-12).
+- Both READMEs install with `cargo add viva-genicam` rather than a pinned
+  `viva-genicam = "X.Y"` line. Nothing built that line, so it rotted to `"0.1"`
+  and stayed there through all of 0.2; and a pin is wrong at one end or the
+  other whenever the tree is ahead of what crates.io serves.
+
 ## [0.3.0] - 2026-07-29
 
 The GenApi layer now implements the GenICam formula language and register

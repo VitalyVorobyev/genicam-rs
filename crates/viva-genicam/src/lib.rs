@@ -60,7 +60,6 @@
 //!     group_key: 1,
 //!     group_mask: 0xFFFF_FFFF,
 //!     scheduled_time: None,
-//!     channel: 0,
 //! };
 //! let dest: SocketAddr = "255.255.255.255:3956".parse().unwrap();
 //! let summary = send_action(dest, &params, 200).await?;
@@ -91,7 +90,6 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::events::{
     bind_socket as bind_event_socket_internal,
     configure_message_channel_raw as configure_message_channel_fallback,
-    enable_event_raw as enable_event_fallback, parse_event_id,
 };
 use crate::genapi::{GenApiError, Node, NodeMap, RegisterIo, SkOutput};
 use gige::GigeDevice;
@@ -558,15 +556,17 @@ impl<T: RegisterIo> Camera<T> {
             true
         });
 
-        if !used_sfnc {
-            for &name in enable_ids {
-                let Some(event_id) = parse_event_id(name) else {
-                    return Err(GenicamError::transport(format!(
-                        "event '{name}' missing from nodemap and not numeric"
-                    )));
-                };
-                enable_event_fallback(&self.transport, event_id, true)?;
-            }
+        if !used_sfnc && !enable_ids.is_empty() {
+            // The message channel is addressable through bootstrap registers,
+            // but which events a device emits is a GenApi decision with no
+            // bootstrap equivalent. Say so rather than writing somewhere
+            // hopeful.
+            return Err(GenicamError::transport(format!(
+                "cannot enable events {enable_ids:?}: camera exposes neither \
+                 `{}` nor `{}`, and event selection has no bootstrap register",
+                viva_sfnc::EVENT_SELECTOR,
+                viva_sfnc::EVENT_NOTIFICATION,
+            )));
         }
 
         Ok(())

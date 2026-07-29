@@ -6,6 +6,8 @@
 //! |-------------|--------|---------------------------------|----------|
 //! | `0x0a00`    | 4      | CCP (Control Channel Privilege) | u32 BE   |
 //! | `0x0938`    | 4      | Heartbeat Timeout               | u32 BE   |
+//! | `0x0b00`    | 4      | GevMCP (message channel port)   | u32 BE   |
+//! | `0x0b10`    | 4      | GevMCDA (message channel addr)  | u32 BE   |
 //! | `0x0d00+`   | varies | Stream Channel 0 registers      | u32 BE   |
 //! | `0x20000`   | 4      | Width                           | u32 BE   |
 //! | `0x20004`   | 4      | Height                          | u32 BE   |
@@ -31,6 +33,8 @@
 //! | `0x20080`   | 4      | ChunkModeActive                 | u32 BE   |
 //! | `0x20084`   | 4      | ChunkSelector                   | u32 BE   |
 //! | `0x20088`   | 4      | ChunkEnable                     | u32 BE   |
+//! | `0x200a0`   | 4      | EventSelector                   | u32 BE   |
+//! | `0x200a4`   | 4      | EventNotification               | u32 BE   |
 //! | `0x20100`   | 4      | WidthMin (RO)                   | u32 BE   |
 //! | `0x20104`   | 4      | WidthMax (RO)                   | u32 BE   |
 //! | `0x20108`   | 4      | HeightMin (RO)                  | u32 BE   |
@@ -52,6 +56,10 @@ pub const PERSISTENT_SUBNET_MASK: u64 = 0x065C;
 pub const PERSISTENT_DEFAULT_GATEWAY: u64 = 0x066C;
 pub const CCP: u64 = 0x0a00;
 pub const HEARTBEAT_TIMEOUT: u64 = 0x0938;
+/// Message channel destination port (`GevMCP`), port in the low 16 bits.
+pub const MESSAGE_CHANNEL_PORT: u64 = 0x0b00;
+/// Message channel destination address (`GevMCDA`).
+pub const MESSAGE_CHANNEL_ADDRESS: u64 = 0x0b10;
 pub const STREAM_CHANNEL_BASE: u64 = 0x0d00;
 /// Address stride between GigE Vision stream channel register blocks.
 pub const STREAM_CHANNEL_STRIDE: u64 = 0x40;
@@ -122,6 +130,11 @@ pub const REG_TIMESTAMP_LATCH: u64 = 0x20070;
 pub const REG_CHUNK_MODE_ACTIVE: u64 = 0x20080;
 pub const REG_CHUNK_SELECTOR: u64 = 0x20084;
 pub const REG_CHUNK_ENABLE: u64 = 0x20088;
+
+/// `EventSelector` backing register: a GigE Vision event identifier.
+pub const REG_EVENT_SELECTOR: u64 = 0x200a0;
+/// `EventNotification` backing register for the selected event (0 = Off, 1 = On).
+pub const REG_EVENT_NOTIFICATION: u64 = 0x200a4;
 
 /// Limit registers.
 pub const REG_WIDTH_MIN: u64 = 0x20100;
@@ -233,6 +246,12 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <pFeature>ChunkModeActive</pFeature>
     <pFeature>ChunkSelector</pFeature>
     <pFeature>ChunkEnable</pFeature>
+  </Category>
+
+  <Category Name="EventControl">
+    <DisplayName>Event Control</DisplayName>
+    <pFeature>EventSelector</pFeature>
+    <pFeature>EventNotification</pFeature>
   </Category>
 
   <!-- ════════════════════════════════════════════════════════════════════
@@ -635,6 +654,26 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <Endianess>BigEndian</Endianess>
   </Integer>
 
+  <!-- Event delivery is selected through GenApi, not through a bootstrap
+       register: EventSelector picks a GigE Vision event id and
+       EventNotification turns it on. The ids are the standard ones
+       (GEV_EVENT_START_OF_TRANSFER = 0x0005, END_OF_TRANSFER = 0x0006). -->
+  <Enumeration Name="EventSelector" NameSpace="Standard">
+    <ToolTip>Select which event to configure</ToolTip>
+    <EnumEntry Name="StartOfTransfer"><Value>5</Value></EnumEntry>
+    <EnumEntry Name="EndOfTransfer"><Value>6</Value></EnumEntry>
+    <pValue>EventSelectorReg</pValue>
+  </Enumeration>
+  <IntReg Name="EventSelectorReg"><Address>0x200A0</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
+
+  <Enumeration Name="EventNotification" NameSpace="Standard">
+    <ToolTip>Enable notification for the selected event</ToolTip>
+    <EnumEntry Name="Off"><Value>0</Value></EnumEntry>
+    <EnumEntry Name="On"><Value>1</Value></EnumEntry>
+    <pValue>EventNotificationReg</pValue>
+  </Enumeration>
+  <IntReg Name="EventNotificationReg"><Address>0x200A4</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
+
 </RegisterDescription>
 "#;
 
@@ -676,6 +715,8 @@ impl RegisterMap {
         // ── Bootstrap registers ─────────────────────────────────────────
         regs.insert(CCP, vec![0, 0, 0, 0]);
         regs.insert(HEARTBEAT_TIMEOUT, 3000u32.to_be_bytes().to_vec());
+        regs.insert(MESSAGE_CHANNEL_PORT, 0u32.to_be_bytes().to_vec());
+        regs.insert(MESSAGE_CHANNEL_ADDRESS, vec![0, 0, 0, 0]);
 
         // IP configuration: DHCP + persistent + LLA = 0x07
         regs.insert(CURRENT_IP_CONFIG, 0x0000_0005u32.to_be_bytes().to_vec());
@@ -751,6 +792,8 @@ impl RegisterMap {
         regs.insert(REG_CHUNK_MODE_ACTIVE, 0u32.to_be_bytes().to_vec());
         regs.insert(REG_CHUNK_SELECTOR, 1u32.to_be_bytes().to_vec()); // Timestamp
         regs.insert(REG_CHUNK_ENABLE, 0u32.to_be_bytes().to_vec());
+        regs.insert(REG_EVENT_SELECTOR, 5u32.to_be_bytes().to_vec());
+        regs.insert(REG_EVENT_NOTIFICATION, 0u32.to_be_bytes().to_vec());
 
         // ── XML URL register ────────────────────────────────────────────
         let (xml_blob, xml_name) = if zip_xml {
@@ -860,6 +903,30 @@ impl RegisterMap {
     pub fn stream_dest_port(&self) -> u16 {
         let data = self.read(STREAM_CHANNEL_BASE + SCP_HOST_PORT, 4);
         u16::from_be_bytes([data[2], data[3]])
+    }
+
+    /// Message channel destination address (`GevMCDA`).
+    pub fn message_dest_ip(&self) -> Ipv4Addr {
+        let data = self.read(MESSAGE_CHANNEL_ADDRESS, 4);
+        Ipv4Addr::new(data[0], data[1], data[2], data[3])
+    }
+
+    /// Message channel destination port (`GevMCP`), low 16 bits of the register.
+    pub fn message_dest_port(&self) -> u16 {
+        let data = self.read(MESSAGE_CHANNEL_PORT, 4);
+        u16::from_be_bytes([data[2], data[3]])
+    }
+
+    /// Event identifier currently selected by `EventSelector`.
+    pub fn event_selector(&self) -> u16 {
+        let data = self.read(REG_EVENT_SELECTOR, 4);
+        u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as u16
+    }
+
+    /// Whether `EventNotification` is `On` for the selected event.
+    pub fn event_notification_on(&self) -> bool {
+        let data = self.read(REG_EVENT_NOTIFICATION, 4);
+        u32::from_be_bytes([data[0], data[1], data[2], data[3]]) != 0
     }
 
     /// Stream packet size.

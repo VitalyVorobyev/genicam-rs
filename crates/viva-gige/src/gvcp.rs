@@ -43,6 +43,38 @@ pub mod consts {
     /// condition with status `0x8006` — so it is handled in the GVCP layer.
     pub const PENDING_ACK: u16 = 0x0089;
 
+    // ── Event channel and action commands ───────────────────────────────
+    //
+    // These four opcodes are the ones a device sends *to* us on the message
+    // channel, plus the two we broadcast for actions. They live here rather
+    // than in `action`/`message` because keeping every GVCP opcode in one
+    // table is what makes a collision visible: `ACTION_COMMAND` was 0x0080 —
+    // `READ_REGISTER` — for as long as it had its own private constant.
+    // GigE Vision 2.0 section 18; corroborated by Wireshark's `packet-gvcp.c`
+    // (`GVCP_ACTION_CMD`, `GVCP_EVENT_CMD`, `GVCP_EVENTDATA_CMD`) and, for the
+    // register commands it shadowed, `../aravis/src/arvgvcpprivate.h`.
+
+    /// Opcode of the event command sent by a device on the message channel.
+    pub const EVENT_COMMAND: u16 = 0x00C0;
+    /// Opcode of the acknowledgement a controller returns for an `EVENT_CMD`.
+    pub const EVENT_ACK: u16 = 0x00C1;
+    /// Opcode of the event command that carries device-specific event data.
+    pub const EVENTDATA_COMMAND: u16 = 0x00C2;
+    /// Opcode of the acknowledgement returned for an `EVENTDATA_CMD`.
+    pub const EVENTDATA_ACK: u16 = 0x00C3;
+    /// Opcode of the action command.
+    pub const ACTION_COMMAND: u16 = 0x0100;
+    /// Opcode of the action acknowledgement.
+    pub const ACTION_ACK: u16 = 0x0101;
+
+    /// Size of one event entry in an `EVENT_CMD` with 16-bit block IDs.
+    pub const EVENT_ENTRY: usize = 16;
+    /// Size of one event entry in an `EVENT_CMD` with 64-bit block IDs.
+    ///
+    /// GigE Vision 2.0 extended block IDs, signalled by bit 4 of the GVCP
+    /// flags byte.
+    pub const EVENT_ENTRY_EXTENDED: usize = 24;
+
     /// Current IP configuration flags register.
     ///
     /// Bit 2 = DHCP, bit 1 = persistent IP, bit 0 = LLA.
@@ -65,14 +97,30 @@ pub mod consts {
     /// CCP value indicating an exclusive owner.
     pub const CCP_EXCLUSIVE: u32 = 1 << 0;
 
-    /// Address of the SFNC `GevMessageChannel0DestinationAddress` register.
-    pub const MESSAGE_DESTINATION_ADDRESS: u64 = 0x0900_0200;
-    /// Address of the SFNC `GevMessageChannel0DestinationPort` register.
-    pub const MESSAGE_DESTINATION_PORT: u64 = 0x0900_0204;
-    /// Base address of the event notification mask (`GevEventNotificationAll`).
-    pub const EVENT_NOTIFICATION_BASE: u64 = 0x0900_0300;
-    /// Stride between successive event notification mask registers (bytes).
-    pub const EVENT_NOTIFICATION_STRIDE: u64 = 4;
+    // ── Message channel bootstrap registers ─────────────────────────────
+    //
+    // These sit in the 0x0B00 block, next to CCP at 0x0A00 and the stream
+    // channels at 0x0D00. They previously read 0x0900_0200 / 0x0900_0204,
+    // which is not a bootstrap address at all: 0x0900 is
+    // `GevNumberOfMessageChannels`, and the low half was being used as if it
+    // were a base. Every event-channel write therefore landed ~150 MB into
+    // the device's register space. Wireshark's `packet-gvcp.c`
+    // (`GVCP_MC_DESTINATION_PORT`, `GVCP_MC_DESTINATION_ADDRESS`) gives the
+    // real values, and the CCP and stream-channel addresses we already had
+    // right corroborate the scheme.
+
+    /// Number of message channels the device implements (`GevNumberOfMessageChannels`).
+    pub const NUMBER_OF_MESSAGE_CHANNELS: u64 = 0x0000_0900;
+    /// Message channel destination port register (`GevMCP`).
+    ///
+    /// A 32-bit register; the UDP port occupies the low 16 bits.
+    pub const MESSAGE_DESTINATION_PORT: u64 = 0x0000_0B00;
+    /// Message channel destination address register (`GevMCDA`).
+    pub const MESSAGE_DESTINATION_ADDRESS: u64 = 0x0000_0B10;
+    /// Message channel transmission timeout in milliseconds (`GevMCTT`).
+    pub const MESSAGE_CHANNEL_TIMEOUT: u64 = 0x0000_0B14;
+    /// Message channel retry count (`GevMCRC`).
+    pub const MESSAGE_CHANNEL_RETRY_COUNT: u64 = 0x0000_0B18;
 
     /// Maximum number of bytes we read per GenCP `ReadMem` operation.
     pub const GENCP_MAX_BLOCK: usize = 512;
@@ -158,6 +206,12 @@ impl GvcpRequestHeader {
     }
 
     /// Convert `CommandFlags` to the single-byte GVCP flag field.
+    ///
+    /// Bit 4 is overloaded by the specification: it means "allow broadcast
+    /// acknowledge" on `DISCOVERY_CMD` and "64-bit block IDs" on
+    /// `PACKETRESEND_CMD`/`EVENT_CMD`/`EVENTDATA_CMD`. We only ever set it for
+    /// the former and only ever read it for the latter, so one mapping covers
+    /// both.
     fn gvcp_flags_byte(&self) -> u8 {
         let mut byte = 0u8;
         if self.flags.contains(CommandFlags::ACK_REQUIRED) {
@@ -165,6 +219,9 @@ impl GvcpRequestHeader {
         }
         if self.flags.contains(CommandFlags::BROADCAST) {
             byte |= 0x10;
+        }
+        if self.flags.contains(CommandFlags::SCHEDULED_ACTION) {
+            byte |= 0x80;
         }
         byte
     }
@@ -1048,8 +1105,13 @@ impl GigeDevice {
         info!(%ip, port, "configuring message channel destination");
         self.write_mem(consts::MESSAGE_DESTINATION_ADDRESS, &ip.octets())
             .await?;
-        self.write_mem(consts::MESSAGE_DESTINATION_PORT, &port.to_be_bytes())
-            .await?;
+        // GevMCP is a 32-bit register with the port in the low half. Writing
+        // only the two port bytes lands them in the *high* half.
+        self.write_mem(
+            consts::MESSAGE_DESTINATION_PORT,
+            &u32::from(port).to_be_bytes(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1130,32 +1192,6 @@ impl GigeDevice {
             port,
         })
     }
-
-    /// Enable or disable delivery of the provided event identifier.
-    pub async fn enable_event_raw(&mut self, id: u16, on: bool) -> Result<(), GigeError> {
-        let index = (id / 32) as u64;
-        let bit = 1u32 << (id % 32);
-        let addr = consts::EVENT_NOTIFICATION_BASE + index * consts::EVENT_NOTIFICATION_STRIDE;
-        let current = self.read_mem(addr, 4).await?;
-        if current.len() != 4 {
-            return Err(GigeError::Protocol(
-                "event notification register length mismatch".into(),
-            ));
-        }
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&current);
-        let mut value = u32::from_be_bytes(bytes);
-        if on {
-            value |= bit;
-        } else {
-            value &= !bit;
-        }
-        let new_bytes = value.to_be_bytes();
-        self.write_mem(addr, &new_bytes).await?;
-        debug!(event_id = id, enabled = on, "updated event mask");
-        Ok(())
-    }
-
     /// Read the persistent IP configuration from the device.
     ///
     /// Returns `(ip, subnet, gateway)`.
