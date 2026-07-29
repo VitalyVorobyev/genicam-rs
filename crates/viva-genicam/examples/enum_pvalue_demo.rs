@@ -104,7 +104,7 @@ fn run_real() -> Result<(), Box<dyn Error>> {
         }
     }))?;
     let model = viva_genapi_xml::parse(&xml)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = rt.handle().clone();
     let device = match std::sync::Arc::try_unwrap(device) {
         Ok(mutex) => mutex.into_inner(),
@@ -157,7 +157,7 @@ fn run_real() -> Result<(), Box<dyn Error>> {
 
 fn build_mock_camera(mode_value: u32, provider_value: u32) -> Camera<MockIo> {
     let model = viva_genapi_xml::parse(MOCK_XML).expect("parse mock xml");
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
     let mut transport = MockIo::new();
     transport.set_u32(MODE_ADDR, mode_value);
     transport.set_u32(PROVIDER_ADDR, provider_value);

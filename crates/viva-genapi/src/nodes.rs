@@ -3,10 +3,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use viva_genapi_xml::{AccessMode, Addressing, BitField, ByteOrder, EnumEntryDecl, FloatEncoding};
+use viva_genapi_xml::{
+    AccessMode, Addressing, BitField, ByteOrder, EnumEntryDecl, FloatEncoding, Sign,
+};
 pub use viva_genapi_xml::{NodeMeta, PredicateRefs, Representation, SkOutput, Visibility};
 
-use crate::swissknife::AstNode;
+use crate::swissknife::{AstNode, Value};
 
 /// Node kinds supported by the Tier-1 subset.
 #[derive(Debug)]
@@ -194,6 +196,8 @@ pub struct IntegerNode {
     pub unit: Option<String>,
     /// Optional bitfield metadata restricting active bits.
     pub bitfield: Option<BitField>,
+    /// Whether the register payload is signed. GenICam defaults to unsigned.
+    pub sign: Sign,
     /// Selector nodes controlling the visibility of this node.
     pub selectors: Vec<String>,
     /// Selector gating rules in the form `(selector, allowed values)`.
@@ -304,8 +308,9 @@ pub struct BooleanNode {
 
 /// SwissKnife node evaluating an arithmetic expression referencing other nodes.
 ///
-/// Integer outputs follow round-to-nearest semantics with ties towards zero
-/// after the expression has been evaluated as `f64`.
+/// `<IntSwissKnife>` (`output` = [`SkOutput::Integer`]) evaluates in integer
+/// arithmetic, where `/` truncates and 64-bit values stay exact;
+/// `<SwissKnife>` evaluates in floating point.
 #[derive(Debug)]
 pub struct SkNode {
     /// Unique feature name.
@@ -321,7 +326,7 @@ pub struct SkNode {
     /// Predicate refs gating implementation / availability.
     pub predicates: PredicateRefs,
     /// Cached value alongside the generation it was computed in.
-    pub cache: RefCell<Option<(f64, u64)>>,
+    pub cache: RefCell<Option<(Value, u64)>>,
 }
 
 /// Command feature metadata.
@@ -352,11 +357,18 @@ pub struct CategoryNode {
     pub predicates: PredicateRefs,
 }
 
-/// Converter node transforming raw values to/from float values via formulas.
+/// Converter node transforming a raw register value to/from a float feature
+/// value via two formulas.
 ///
-/// Converters use two formulas:
-/// - `formula_to`: converts from raw register value to user-facing float (reading)
-/// - `formula_from`: converts from user-facing float to raw register value (writing)
+/// The GenICam direction names read backwards at first glance, and getting
+/// them the wrong way round is silent — the identity converter behaves the
+/// same either way. They are named after the *target* of the conversion:
+///
+/// - `<FormulaFrom>` converts **from the raw value to the feature value** and
+///   is what a **read** evaluates. Its `TO` variable is bound to `p_value`.
+/// - `<FormulaTo>` converts **from the feature value to the raw value** and is
+///   what a **write** evaluates. Its `FROM` variable is bound to the incoming
+///   value and `OLD`, where declared, to the current raw value.
 #[derive(Debug)]
 pub struct ConverterNode {
     /// Unique feature name.
@@ -365,13 +377,13 @@ pub struct ConverterNode {
     pub meta: NodeMeta,
     /// Name of the node providing the raw register value.
     pub p_value: String,
-    /// Parsed AST for the formula converting raw → user value.
+    /// Parsed `<FormulaTo>`: feature value → raw value, evaluated on write.
     pub ast_to: AstNode,
-    /// Parsed AST for the formula converting user → raw value.
+    /// Parsed `<FormulaFrom>`: raw value → feature value, evaluated on read.
     pub ast_from: AstNode,
-    /// Variable mappings for formula_to (reading).
+    /// Variable mappings for `<FormulaTo>` (the write direction).
     pub vars_to: Vec<(String, String)>,
-    /// Variable mappings for formula_from (writing).
+    /// Variable mappings for `<FormulaFrom>` (the read direction).
     pub vars_from: Vec<(String, String)>,
     /// Optional engineering unit.
     pub unit: Option<String>,
@@ -380,10 +392,14 @@ pub struct ConverterNode {
     /// Predicate refs gating implementation / availability / lock state.
     pub predicates: PredicateRefs,
     /// Cached user-facing value alongside the generation it was computed in.
-    pub cache: RefCell<Option<(f64, u64)>>,
+    pub cache: RefCell<Option<(Value, u64)>>,
 }
 
-/// IntConverter node transforming raw values to/from integer values via formulas.
+/// IntConverter node transforming a raw register value to/from an integer
+/// feature value via two formulas.
+///
+/// Same direction convention as [`ConverterNode`], evaluated in integer
+/// arithmetic.
 #[derive(Debug)]
 pub struct IntConverterNode {
     /// Unique feature name.
@@ -392,13 +408,13 @@ pub struct IntConverterNode {
     pub meta: NodeMeta,
     /// Name of the node providing the raw register value.
     pub p_value: String,
-    /// Parsed AST for the formula converting raw → user value.
+    /// Parsed `<FormulaTo>`: feature value → raw value, evaluated on write.
     pub ast_to: AstNode,
-    /// Parsed AST for the formula converting user → raw value.
+    /// Parsed `<FormulaFrom>`: raw value → feature value, evaluated on read.
     pub ast_from: AstNode,
-    /// Variable mappings for formula_to (reading).
+    /// Variable mappings for `<FormulaTo>` (the write direction).
     pub vars_to: Vec<(String, String)>,
-    /// Variable mappings for formula_from (writing).
+    /// Variable mappings for `<FormulaFrom>` (the read direction).
     pub vars_from: Vec<(String, String)>,
     /// Optional engineering unit.
     pub unit: Option<String>,

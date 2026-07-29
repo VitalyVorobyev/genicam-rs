@@ -5,9 +5,18 @@ use quick_xml::events::{BytesStart, Event};
 
 use super::{NodeMetaBuilder, TAG_VALUE, handle_predicate_start};
 use crate::util::{attribute_value, attribute_value_required, read_text_start, skip_element};
-use crate::{NodeDecl, PredicateRefs, SkOutput, SwissKnifeDecl, XmlError};
+use crate::{FormulaBindings, NodeDecl, PredicateRefs, SkOutput, SwissKnifeDecl, XmlError};
 
-/// Parse a `<SwissKnife>` element into a [`NodeDecl::SwissKnife`].
+/// Parse a `<SwissKnife>` or `<IntSwissKnife>` element into a
+/// [`NodeDecl::SwissKnife`].
+///
+/// The element name is what decides the arithmetic: `<IntSwissKnife>`
+/// evaluates in `i64` and yields an integer, `<SwissKnife>` evaluates in
+/// `f64`. Real descriptions carry no `<Output>` element — it appears zero
+/// times across the whole vendor corpus while `<IntSwissKnife>` appears over
+/// three thousand times — so deriving the type from `<Output>` alone silently
+/// made every integer knife a float one. `<Output>` is still honoured as an
+/// override for the tools that do emit it.
 pub fn parse_swissknife(
     reader: &mut Reader<&[u8]>,
     start: BytesStart<'_>,
@@ -15,7 +24,12 @@ pub fn parse_swissknife(
     let name = attribute_value_required(&start, b"Name")?;
     let mut expr: Option<String> = None;
     let mut variables: Vec<(String, String)> = Vec::new();
-    let mut output = SkOutput::Float;
+    let mut output = if start.name().as_ref() == b"IntSwissKnife" {
+        SkOutput::Integer
+    } else {
+        SkOutput::Float
+    };
+    let mut bindings = FormulaBindings::default();
     let mut predicates = PredicateRefs::default();
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
@@ -24,7 +38,21 @@ pub fn parse_swissknife(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"Constant" => {
+                    let const_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        return Err(XmlError::Invalid(format!(
+                            "SwissKnife node {name} has empty <Constant Name=\"{const_name}\">"
+                        )));
+                    }
+                    bindings.constants.push((const_name, trimmed.to_string()));
+                }
+                // A named `<Expression>` is a sub-formula, not the formula.
+                // Only the unnamed spelling aliases `<Formula>`.
                 b"Expression" | b"Formula" => {
+                    let sub_name = attribute_value(e, b"Name")?;
                     let text = read_text_start(reader, e)?;
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
@@ -32,7 +60,12 @@ pub fn parse_swissknife(
                             "SwissKnife node {name} has empty <Expression>"
                         )));
                     }
-                    expr = Some(trimmed.to_string());
+                    match sub_name {
+                        Some(sub_name) => {
+                            bindings.expressions.push((sub_name, trimmed.to_string()));
+                        }
+                        None => expr = Some(trimmed.to_string()),
+                    }
                 }
                 b"pVariable" => {
                     let var_name = attribute_value_required(e, b"Name")?;
@@ -117,6 +150,7 @@ pub fn parse_swissknife(
         expr,
         variables,
         output,
+        bindings,
         predicates,
     }))
 }

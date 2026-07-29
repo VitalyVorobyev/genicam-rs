@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wrap device into Camera for acquisition commands.
     let handle = tokio::runtime::Handle::current();
     let transport = GigeRegisterIo::new(handle, device);
-    let nodemap = viva_genicam::genapi::NodeMap::from(viva_genapi_xml::parse(&xml)?);
+    let nodemap = viva_genicam::genapi::NodeMap::try_from_xml(viva_genapi_xml::parse(&xml)?)?;
     let cam = std::sync::Arc::new(std::sync::Mutex::new(Camera::new(transport, nodemap)));
 
     // Start acquisition via spawn_blocking (block_on can't nest in async).

@@ -102,7 +102,7 @@ async fn build_camera(
     })
     .await?;
     let model = viva_genapi_xml::parse(&xml)?;
-    let nodemap = genapi::NodeMap::from(model);
+    let nodemap = genapi::NodeMap::try_from_xml(model)?;
     let handle = tokio::runtime::Handle::current();
     let device = Arc::try_unwrap(control)
         .map_err(|_| "control connection still in use")?

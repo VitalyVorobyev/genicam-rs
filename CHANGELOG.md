@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+The GenApi layer now implements the GenICam formula language and register
+address model rather than plausible approximations of them. **Every user on
+0.2.x should upgrade**: 27 of the 30 real camera descriptions in our vendor
+corpus could not be opened at all on 0.2.8, and those that could were reading
+the wrong registers.
+
+This release grew out of a Hikrobot MV-CS050-10GC report (#35) whose author
+attached a dump of their parsed model. Cross-checking it against the vendor
+corpus showed that none of the defects it exposed were vendor-specific. See
+[ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) for the
+full audit and the policy that came out of it.
+
+### Fixed
+
+- **`=` and `<>` are the GenICam equality operators.** We required the C
+  spellings `==` / `!=` and rejected `=` outright with "use `==` for equality".
+  27 of 30 corpus documents contain at least one formula we therefore refused —
+  531 of 679 in `Basler_acA1600_20gm` alone. `==` and `!=` remain accepted.
+- **`<IntSwissKnife>` and `<IntConverter>` evaluate in integer arithmetic.**
+  Everything ran through `f64`, so `(HIGH << 32) | LOW` lost its low bits and
+  `(IDX / 2) * 4` did not truncate. A wide shift could also overflow and panic
+  outright in a debug build.
+- **A node's numeric type comes from its element name.** `<Output>` is not a
+  GenApi element — it appears zero times across the corpus, while
+  `<IntSwissKnife>` appears 3 125 times — so every integer knife on every real
+  camera was modelled as a float.
+- **Register addresses are the sum of their terms.** `<Address>`, `<pAddress>`
+  and `<pIndex>` all contribute; we kept one and logged
+  `ignoring fixed <Address> in favour of <pAddress>` for the rest. 42 registers
+  on the reporter's camera — including the stream-channel registers — resolved
+  to the wrong address, as did 454 on `FLIR_ORX_10G_51S5M` and 418 on
+  `PGR_BlackflyS_13Y3M`.
+- **`<pIndex Offset="N">` is now parsed** (197 occurrences across AVT,
+  Prosilica and the GenICam conformance document). It was ignored, so every
+  indexed register read the block base.
+- **`<StructReg>` shares all of its address terms with its entries.** Only
+  `<Address>` was read, and a `<StructReg>` without one defaulted to address 0:
+  860 nodes on the reporter's camera, and 33 of 38 struct registers in
+  `PGR_Blackfly_13E4C-CS`. A `<StructReg>` with no address at all is now
+  reported instead of silently pointed at register zero.
+- **Registers are unsigned unless `<Sign>Signed</Sign>` says otherwise.** We
+  always sign-extended, so any register with its top bit set read negative — a
+  `GevCurrentIPAddress` of 192.168.1.160 came back as `-1062731360`, and mask
+  comparisons such as `(CTRL | 0xFDFFFFFF) = 0xFFFFFFFF` could never be true.
+  `<StructReg>` entries also declared the full `i64` range, which made a set bit
+  sign-extend to `-1` and quietly broke every `(INQ = 1)` test.
+- **Converter reads use `<FormulaFrom>`, writes use `<FormulaTo>`.** The two
+  were swapped. An identity converter behaves the same either way, which is how
+  this survived; a `FROM * 100` / `TO / 100` pair read back wrong by 10⁴.
+- **Converters can be written.** `<FormulaTo>` was parsed and never evaluated,
+  so converter features were read-only. Writes now bind `FROM` to the incoming
+  value and `OLD` to the register's current contents, so read-modify-write
+  formulas such as `FROM | (OLD & 0xffff0000)` preserve the bits they should.
+- **`<Constant>` and named `<Expression>` elements are supported**, resolved by
+  substitution when the node is built.
+- **`LG()` and the `E` / `PI` constants are supported.** `LG` is used by every
+  Baumer TXG description for its dB scale.
+- **`connect_gige` no longer panics on a malformed model** (backlog SR-01).
+  `NodeMap::from` called `.expect()` on remote input.
+
+### Changed
+
+- **A node we cannot build costs that one feature, not the whole camera.** The
+  per-node isolation added to the XML layer in 0.2.8 now extends to nodemap
+  construction: failures are recorded in `NodeMap::skipped()` and logged rather
+  than aborting. `connect_gige` logs one summary line naming how many features
+  are unavailable.
+- The vendor corpus test now has a second stage in `viva-genapi` that builds a
+  `NodeMap` from each document and evaluates every node in it. Parsing was only
+  ever half the job — every defect above lived above the parser, where the old
+  test could not see it. All 30 documents now pass: 21 784 nodes.
+- The in-tree fake camera's XML uses conformant GenICam spelling (`=`, `&lt;&gt;`,
+  no `<Output>`), and exercises a summed `<Address>` + `<pIndex>` stream-channel
+  register and a `<pAddress>`-addressed `<StructReg>` end to end.
+
+### Breaking
+
+- `Addressing::Fixed` and `Addressing::Indirect` are replaced by
+  `Addressing::Sum { terms, len }` with the new `AddressTerm` and `IndexOffset`
+  types. `Addressing::fixed()`, `byte_len()` and `referenced_nodes()` are
+  provided as helpers.
+- `impl From<XmlModel> for NodeMap` is replaced by `TryFrom`; use
+  `NodeMap::try_from_xml`.
+- `bytes_to_i64` and `i64_to_bytes` take a `Sign`.
+- `NodeDecl::Integer` and `IntegerNode` gain a `sign` field; the SwissKnife and
+  Converter declarations gain `bindings`.
+- `viva_genapi::swissknife` is now public: `evaluate` takes an `EvalMode` and
+  works in `Value` rather than `f64`.
+
 ## [0.2.8] - 2026-07-28
 
 Second hotfix in the same family as 0.2.7: a single unusual node in a camera's
@@ -244,7 +335,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.0
 [0.2.8]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.8
 [0.2.7]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.7
 [0.2.6]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.6

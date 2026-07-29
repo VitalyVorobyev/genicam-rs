@@ -15,7 +15,7 @@ Immediate, actionable tasks. Mid-term direction lives in
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| SR-01 | Make connect fallible on malformed camera XML (`NodeMap::from` `expect` → error) | P0 | S | planned | Panic reachable from remote input |
+| SR-01 | Make connect fallible on malformed camera XML (`NodeMap::from` `expect` → error) | P0 | S | done | 0.3.0: `From` replaced by `TryFrom`; per-node failures land in `NodeMap::skipped()` instead of aborting |
 | SR-02 | SCPS read-back after write; stride follows negotiated value (incl. extended-ID stride) | P0 | M | planned | Cameras clamp requested packet size |
 | SR-03 | Per-stream ephemeral ports + `source_filter` enforcement | P0 | M | planned | Multi-camera cross-talk |
 | SR-04 | Wire packet resend end-to-end through the GVCP transaction demux, gated on `resend_enabled` | P1 | L | planned | `ResendPlanner`/`request_resend` tested but dead |
@@ -30,9 +30,12 @@ than as GitHub issues so the tracker stays user-facing.
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| XML-01 | Support negative `<Address>` (chunk-relative offsets) | P2 | M | planned | Confirmed: `Baumer_HXG20` `ChunkImageLength`; sole `EXPECTED_SKIPS` entry in the corpus test. Needs signed/relative addressing in the data model |
+| XML-01 | Support negative `<Address>` (chunk-relative offsets) | P2 | M | planned | Confirmed: `Baumer_HXG20` `ChunkImageLength`; sole `EXPECTED_SKIPS` entry in both corpus tests. `Addressing::Sum` now models terms, so this needs a signed `AddressTerm::Fixed` plus a chunk base to resolve against |
 | XML-02 | Fall back to lossy decoding for non-UTF-8 GenApi XML | P2 | S | planned | Unconfirmed. `fetch.rs` `String::from_utf8` is strict, so an `ISO-8859-1` document fails the connect outright |
 | XML-03 | Accept uppercase `0X` hex prefix in `parse_u64`/`parse_i64` | P2 | S | planned | Unconfirmed. Hex digits are already case-insensitive, only the prefix is not. No corpus document uses it |
+| XML-04 | Inline `<IntSwissKnife>` as a register address term | P2 | M | planned | Unconfirmed: no corpus document nests one inside a register, but the schema allows it. Today it is skipped by `skip_element`, so the term is dropped silently — it should at least be recorded |
+| XML-05 | Honour `<Slope>` on Converter min/max propagation | P2 | S | planned | Unconfirmed. A decreasing converter inverts min and max; we propagate neither, so limits on converter features are unconstrained |
+| XML-06 | Decide the sign of scaled `<Float>` and `<Enumeration>` payloads | P2 | S | planned | GenICam declares no `<Sign>` for either, so 0.3.0 kept the historical signed reading. Worth confirming against hardware before changing |
 
 ## CI
 
@@ -72,7 +75,7 @@ than as GitHub issues so the tracker stays user-facing.
 | ST-12 | Auto-update via Tauri v2 updater plugin (GitHub Releases as update server) | P2 | M | planned | From studio backlog RP-03 (M12) |
 | ST-13 | Studio performance benchmarks in CI (BMP encode, UiGraph parse, Zenoh round-trip) | P2 | M | planned | From studio backlog RP-04 (M12); fail on >10% regression |
 
-## API — 0.3.0 consolidation (roadmap Phase 3, breaking)
+## API — 0.4.0 consolidation (roadmap Phase 3, breaking)
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|

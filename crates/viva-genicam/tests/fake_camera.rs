@@ -120,6 +120,56 @@ async fn test_connect_and_fetch_xml() {
     );
 }
 
+/// A register whose address is `<Address>` + `<pIndex>` must resolve to the
+/// sum, over the wire.
+///
+/// The GigE stream-channel block lives at `0x0D00 + channel * 0x40`, so
+/// `GevSCPSPacketSize` is a fixed offset plus a scaled index. Dropping the
+/// `<pIndex>` term would still return a plausible value — channel 0's — which
+/// is why this needs an end-to-end check rather than a unit test.
+#[tokio::test]
+async fn test_summed_address_resolves_over_the_wire() {
+    let _cam = common::TestCamera::start().await;
+    let camera = connect_fake().await;
+
+    // Channel 0 lives at 0x0D04, channel 1 at 0x0D44, and the fake camera gives
+    // them different packet sizes. An ignored <pIndex> term would return
+    // channel 0's value both times.
+    let channel0 = blocking_get(&camera, "GevSCPSPacketSize")
+        .await
+        .expect("read channel 0 packet size");
+    assert_eq!(channel0, "1500");
+
+    blocking_set(&camera, "GevStreamChannelSelector", "1")
+        .await
+        .expect("select channel 1");
+    let channel1 = blocking_get(&camera, "GevSCPSPacketSize")
+        .await
+        .expect("read channel 1 packet size");
+    assert_eq!(
+        channel1, "9000",
+        "the <pIndex> term did not move the address"
+    );
+}
+
+/// `<StructReg>` bits addressed through `<pAddress>` + `<Address>` read the
+/// right register, and read as 1 rather than -1.
+#[tokio::test]
+async fn test_struct_reg_inquiry_bits_over_the_wire() {
+    let _cam = common::TestCamera::start().await;
+    let camera = connect_fake().await;
+
+    // The fake camera reports 0xC0000000: capability bits 0 and 1 set, 2 clear.
+    for (bit, expected) in [
+        ("FrameRateControlInq_Bit", "1"),
+        ("ChunkSupportInq_Bit", "1"),
+        ("SequencerInq_Bit", "0"),
+    ] {
+        let value = blocking_get(&camera, bit).await.expect("read inquiry bit");
+        assert_eq!(value, expected, "{bit} read as {value}");
+    }
+}
+
 #[tokio::test]
 async fn test_connect_with_zipped_xml() {
     // Many real cameras (Basler, FLIR, Hikrobot, ...) serve their GenApi XML
@@ -374,7 +424,7 @@ async fn setup_stream(
     .expect("fetch XML");
 
     let model = viva_genapi_xml::parse(&xml).expect("parse XML");
-    let nodemap = viva_genicam::genapi::NodeMap::from(model);
+    let nodemap = viva_genicam::genapi::NodeMap::try_from_xml(model).expect("build nodemap");
 
     // Main device: claim CCP, configure stream.
     let mut device = gige::GigeDevice::open(control_addr)

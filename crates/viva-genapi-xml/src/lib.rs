@@ -231,22 +231,135 @@ impl AccessMode {
 /// Register addressing metadata for a node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Addressing {
-    /// Node uses a fixed register block regardless of selector state.
-    Fixed { address: u64, len: u32 },
+    /// Register address is the **sum** of every declared address term.
+    ///
+    /// This is the GenICam register address model: `<Address>`, `<pAddress>`
+    /// and `<pIndex>` may each appear any number of times on one register and
+    /// all of them add up. A node such as
+    ///
+    /// ```xml
+    /// <IntReg Name="SerialPortSource_Val">
+    ///   <pAddress>SerialPortSourceAddr</pAddress>
+    ///   <Address>0x00000008</Address>
+    /// </IntReg>
+    /// ```
+    ///
+    /// lives eight bytes past the block base, not at the base and not at
+    /// offset eight. Keeping only one term reads the wrong register and says
+    /// nothing about it — that was issue #35.
+    Sum {
+        /// Terms to add together, in declaration order.
+        terms: Vec<AddressTerm>,
+        /// Length of the register block in bytes.
+        len: u32,
+    },
     /// Node switches between register blocks based on a selector value.
+    ///
+    /// This is `<Selected>`/`<pSelected>`, which picks one block rather than
+    /// contributing an offset, so it is not a term in the sum above.
     BySelector {
         /// Name of the selector node controlling the address.
         selector: String,
         /// Mapping of selector value to `(address, length)` pair.
         map: Vec<(String, (u64, u32))>,
     },
-    /// Node resolves its register block through another node providing the address.
-    Indirect {
-        /// Node providing the register address at runtime.
-        p_address_node: String,
-        /// Length of the target register block in bytes.
-        len: u32,
+}
+
+/// One contribution to a register address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AddressTerm {
+    /// `<Address>` — a literal offset.
+    Fixed(u64),
+    /// `<pAddress>` — an offset read from another node at runtime.
+    Node(String),
+    /// `<pIndex>` — an index read from another node, scaled by a stride.
+    Index {
+        /// Node supplying the index.
+        node: String,
+        /// Stride each index step advances the address by.
+        offset: IndexOffset,
     },
+}
+
+/// Stride applied to a `<pIndex>` value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndexOffset {
+    /// `<pIndex Offset="64">` — a literal stride.
+    Fixed(u64),
+    /// `<pIndex pOffset="Node">` — a stride read from another node.
+    Node(String),
+    /// `<pIndex>` with neither attribute: the stride is the register length.
+    Length,
+}
+
+impl Addressing {
+    /// A plain register at a literal address.
+    pub fn fixed(address: u64, len: u32) -> Self {
+        Addressing::Sum {
+            terms: vec![AddressTerm::Fixed(address)],
+            len,
+        }
+    }
+
+    /// Register block length in bytes, when it does not depend on a selector.
+    pub fn byte_len(&self) -> Option<u32> {
+        match self {
+            Addressing::Sum { len, .. } => Some(*len),
+            Addressing::BySelector { .. } => None,
+        }
+    }
+
+    /// Names of every node this addressing reads at resolution time.
+    ///
+    /// Used to build the invalidation graph: when one of these changes, the
+    /// address changes, so anything cached against it is stale.
+    pub fn referenced_nodes(&self) -> Vec<&str> {
+        match self {
+            Addressing::Sum { terms, .. } => terms
+                .iter()
+                .flat_map(|term| match term {
+                    AddressTerm::Fixed(_) => Vec::new(),
+                    AddressTerm::Node(node) => vec![node.as_str()],
+                    AddressTerm::Index { node, offset } => match offset {
+                        IndexOffset::Node(stride) => vec![node.as_str(), stride.as_str()],
+                        _ => vec![node.as_str()],
+                    },
+                })
+                .collect(),
+            Addressing::BySelector { selector, .. } => vec![selector.as_str()],
+        }
+    }
+}
+
+/// Whether a register's bits are interpreted as a signed or unsigned integer.
+///
+/// GenICam's default is `Unsigned`; `<Sign>Signed</Sign>` opts in. Getting
+/// this wrong is invisible until a register's top bit is set — a
+/// `GevCurrentIPAddress` of 192.168.1.160 then reads as a large negative
+/// number, and a mask comparison such as `(CTRL | 0xFDFFFFFF) = 0xFFFFFFFF`
+/// can never be true.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sign {
+    /// `<Sign>Unsigned</Sign>`, and the default when `<Sign>` is absent.
+    #[default]
+    Unsigned,
+    /// `<Sign>Signed</Sign>`: the payload is two's complement.
+    Signed,
+}
+
+impl Sign {
+    pub(crate) fn parse(tag: &str) -> Option<Self> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "signed" => Some(Sign::Signed),
+            "unsigned" => Some(Sign::Unsigned),
+            _ => None,
+        }
+    }
+
+    /// Whether values should be sign-extended.
+    pub fn is_signed(self) -> bool {
+        matches!(self, Sign::Signed)
+    }
 }
 
 /// Byte order used to interpret a multi-byte register payload.
@@ -327,6 +440,36 @@ impl SkOutput {
         }
     }
 }
+/// Named literals and sub-formulas declared alongside a formula.
+///
+/// GenApi lets a `<SwissKnife>`, `<IntSwissKnife>` or `<Converter>` name parts
+/// of its own formula:
+///
+/// ```xml
+/// <Constant Name="TEN">10</Constant>
+/// <Expression Name="XPLUS2">TEN + X</Expression>
+/// <Formula>TEN * XPLUS2</Formula>
+/// ```
+///
+/// Both are resolved by substitution when the runtime builds the node, so the
+/// evaluator never sees them. Declaration order matters: an `<Expression>` may
+/// refer to constants and to expressions declared before it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormulaBindings {
+    /// `<Constant Name="..">literal</Constant>` pairs, in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constants: Vec<(String, String)>,
+    /// `<Expression Name="..">formula</Expression>` pairs, in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expressions: Vec<(String, String)>,
+}
+
+impl FormulaBindings {
+    /// Whether nothing was declared.
+    pub fn is_empty(&self) -> bool {
+        self.constants.is_empty() && self.expressions.is_empty()
+    }
+}
 
 /// Declaration of a SwissKnife node consisting of an arithmetic expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,6 +484,9 @@ pub struct SwissKnifeDecl {
     pub variables: Vec<(String, String)>,
     /// Desired output type (integer or float).
     pub output: SkOutput,
+    /// Named literals and sub-formulas referenced by `expr`.
+    #[serde(default, skip_serializing_if = "FormulaBindings::is_empty")]
+    pub bindings: FormulaBindings,
     /// Predicate refs gating implementation / availability.
     #[serde(default, skip_serializing_if = "PredicateRefs::is_empty")]
     pub predicates: PredicateRefs,
@@ -358,14 +504,20 @@ pub struct ConverterDecl {
     pub meta: NodeMeta,
     /// Name of the node providing the raw register value.
     pub p_value: String,
-    /// Expression converting raw register value to user-facing value (FROM direction).
+    /// `<FormulaTo>`: converts the feature value to the raw register value.
+    /// This is the *write* direction; its `FROM` variable is the incoming
+    /// value.
     pub formula_to: String,
-    /// Expression converting user-facing value back to raw register value (TO direction).
+    /// `<FormulaFrom>`: converts the raw register value to the feature value.
+    /// This is the *read* direction; its `TO` variable is the raw value.
     pub formula_from: String,
-    /// Mapping of expression variables to provider node names for `formula_to`.
+    /// Mapping of formula variables to provider node names for `formula_to`.
     pub variables_to: Vec<(String, String)>,
-    /// Mapping of expression variables to provider node names for `formula_from`.
+    /// Mapping of formula variables to provider node names for `formula_from`.
     pub variables_from: Vec<(String, String)>,
+    /// Named literals and sub-formulas referenced by either formula.
+    #[serde(default, skip_serializing_if = "FormulaBindings::is_empty")]
+    pub bindings: FormulaBindings,
     /// Engineering unit (if provided).
     pub unit: Option<String>,
     /// Desired output type.
@@ -384,14 +536,20 @@ pub struct IntConverterDecl {
     pub meta: NodeMeta,
     /// Name of the node providing the raw register value.
     pub p_value: String,
-    /// Expression converting raw register value to user-facing value (FROM direction).
+    /// `<FormulaTo>`: converts the feature value to the raw register value.
+    /// This is the *write* direction; its `FROM` variable is the incoming
+    /// value.
     pub formula_to: String,
-    /// Expression converting user-facing value back to raw register value (TO direction).
+    /// `<FormulaFrom>`: converts the raw register value to the feature value.
+    /// This is the *read* direction; its `TO` variable is the raw value.
     pub formula_from: String,
-    /// Mapping of expression variables to provider node names for `formula_to`.
+    /// Mapping of formula variables to provider node names for `formula_to`.
     pub variables_to: Vec<(String, String)>,
-    /// Mapping of expression variables to provider node names for `formula_from`.
+    /// Mapping of formula variables to provider node names for `formula_from`.
     pub variables_from: Vec<(String, String)>,
+    /// Named literals and sub-formulas referenced by either formula.
+    #[serde(default, skip_serializing_if = "FormulaBindings::is_empty")]
+    pub bindings: FormulaBindings,
     /// Engineering unit (if provided).
     pub unit: Option<String>,
     /// Predicate refs gating implementation / availability / lock state.
@@ -440,6 +598,9 @@ pub enum NodeDecl {
         unit: Option<String>,
         /// Optional bitfield metadata describing the active bit range.
         bitfield: Option<BitField>,
+        /// Whether the register payload is signed. Defaults to unsigned.
+        #[serde(default)]
+        sign: Sign,
         /// Selector nodes referencing this feature.
         selectors: Vec<String>,
         /// Selector gating rules in the form (selector name, allowed values).
@@ -558,6 +719,45 @@ pub enum NodeDecl {
     IntConverter(IntConverterDecl),
     /// StringReg for string-typed register access.
     String(StringDecl),
+}
+
+impl NodeDecl {
+    /// Feature name declared by this node.
+    pub fn name(&self) -> &str {
+        match self {
+            NodeDecl::Integer { name, .. }
+            | NodeDecl::Float { name, .. }
+            | NodeDecl::Enum { name, .. }
+            | NodeDecl::Boolean { name, .. }
+            | NodeDecl::Command { name, .. }
+            | NodeDecl::Category { name, .. } => name,
+            NodeDecl::SwissKnife(decl) => &decl.name,
+            NodeDecl::Converter(decl) => &decl.name,
+            NodeDecl::IntConverter(decl) => &decl.name,
+            NodeDecl::String(decl) => &decl.name,
+        }
+    }
+
+    /// Node kind, matching the variant name.
+    ///
+    /// This is the declaration kind rather than the originating XML tag: an
+    /// `<IntReg>` and a `<MaskedIntReg>` both report `Integer`. Useful for
+    /// grouping and for reporting nodes that were dropped downstream of
+    /// parsing.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            NodeDecl::Integer { .. } => "Integer",
+            NodeDecl::Float { .. } => "Float",
+            NodeDecl::Enum { .. } => "Enum",
+            NodeDecl::Boolean { .. } => "Boolean",
+            NodeDecl::Command { .. } => "Command",
+            NodeDecl::Category { .. } => "Category",
+            NodeDecl::SwissKnife(_) => "SwissKnife",
+            NodeDecl::Converter(_) => "Converter",
+            NodeDecl::IntConverter(_) => "IntConverter",
+            NodeDecl::String(_) => "String",
+        }
+    }
 }
 
 /// A node element that could not be parsed and was left out of the model.
@@ -1119,8 +1319,14 @@ mod tests {
         }
     }
 
+    /// `<Address>` and `<pAddress>` on the same register are summed, in the
+    /// order they were declared.
+    ///
+    /// FLIR and Point Grey write exactly this shape — `<pAddress>` for the
+    /// block base, `<Address>` for the offset within it — and dropping either
+    /// term reads the wrong register (issue #35).
     #[test]
-    fn parse_indirect_addressing() {
+    fn address_terms_are_summed() {
         const XML: &str = r#"
             <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
                 <Integer Name="RegAddr">
@@ -1130,8 +1336,9 @@ mod tests {
                     <Min>0</Min>
                     <Max>65535</Max>
                 </Integer>
-                <Integer Name="Gain" Address="0xFFFF">
+                <Integer Name="Gain">
                     <pAddress>RegAddr</pAddress>
+                    <Address>0x00000008</Address>
                     <Length>4</Length>
                     <AccessMode>RW</AccessMode>
                     <Min>0</Min>
@@ -1147,9 +1354,7 @@ mod tests {
                 name, addressing, ..
             } => {
                 assert_eq!(name, "RegAddr");
-                assert!(
-                    matches!(addressing, Some(Addressing::Fixed { address, len }) if *address == 0x2000 && *len == 4)
-                );
+                assert_eq!(addressing.as_ref(), Some(&Addressing::fixed(0x2000, 4)));
             }
             other => panic!("unexpected node: {other:?}"),
         }
@@ -1159,18 +1364,115 @@ mod tests {
             } => {
                 assert_eq!(name, "Gain");
                 match addressing {
-                    Some(Addressing::Indirect {
-                        p_address_node,
-                        len,
-                    }) => {
-                        assert_eq!(p_address_node, "RegAddr");
+                    Some(Addressing::Sum { terms, len }) => {
+                        assert_eq!(
+                            terms,
+                            &[AddressTerm::Node("RegAddr".into()), AddressTerm::Fixed(0x8),]
+                        );
                         assert_eq!(*len, 4);
                     }
-                    other => panic!("expected indirect addressing, got {other:?}"),
+                    other => panic!("expected summed addressing, got {other:?}"),
                 }
             }
             other => panic!("unexpected node: {other:?}"),
         }
+    }
+
+    /// `<pIndex>` contributes an index scaled by its stride.
+    #[test]
+    fn parse_p_index_term() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <MaskedIntReg Name="RegTriggerInqDelay">
+                    <Address>0x13400</Address>
+                    <pIndex Offset="64">IntTriggerSelector</pIndex>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Bit>30</Bit>
+                </MaskedIntReg>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse pIndex xml");
+        match &model.nodes[0] {
+            NodeDecl::Integer { addressing, .. } => match addressing {
+                Some(Addressing::Sum { terms, .. }) => assert_eq!(
+                    terms,
+                    &[
+                        AddressTerm::Fixed(0x13400),
+                        AddressTerm::Index {
+                            node: "IntTriggerSelector".into(),
+                            offset: IndexOffset::Fixed(64),
+                        },
+                    ]
+                ),
+                other => panic!("expected summed addressing, got {other:?}"),
+            },
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    /// A `<StructReg>` shares its address terms with every `<StructEntry>`.
+    ///
+    /// Point Grey declares `<Address>` next to `<pAddress>` here; before the
+    /// additive model the base was dropped and all 38 inquiry bits in the
+    /// document read register 0.
+    #[test]
+    fn struct_reg_inherits_all_address_terms() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <StructReg Comment="Gain Inquiry Register">
+                    <Address>0x520</Address>
+                    <pAddress>CamRegBaseAddress</pAddress>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Endianess>BigEndian</Endianess>
+                    <StructEntry Name="GainPresInq_Bit"><Bit>0</Bit></StructEntry>
+                    <StructEntry Name="GainAutoInq_Bit"><Bit>6</Bit></StructEntry>
+                </StructReg>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse struct reg");
+        assert_eq!(model.nodes.len(), 2);
+        for node in &model.nodes {
+            match node {
+                NodeDecl::Integer { addressing, .. } => match addressing {
+                    Some(Addressing::Sum { terms, len }) => {
+                        assert_eq!(
+                            terms,
+                            &[
+                                AddressTerm::Fixed(0x520),
+                                AddressTerm::Node("CamRegBaseAddress".into()),
+                            ]
+                        );
+                        assert_eq!(*len, 4);
+                    }
+                    other => panic!("expected summed addressing, got {other:?}"),
+                },
+                other => panic!("unexpected node: {other:?}"),
+            }
+        }
+    }
+
+    /// A `<StructReg>` with no address at all is dropped rather than silently
+    /// pointed at register zero.
+    #[test]
+    fn struct_reg_without_address_is_skipped() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <StructReg>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <StructEntry Name="SomeInq_Bit"><Bit>0</Bit></StructEntry>
+                </StructReg>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("document still parses");
+        assert!(model.nodes.is_empty());
+        assert_eq!(model.skipped.len(), 1);
+        assert!(model.skipped[0].error.contains("Address"));
     }
 
     #[test]
@@ -1208,8 +1510,12 @@ mod tests {
                 ..
             } => {
                 assert!(
-                    matches!(addressing, Some(Addressing::Indirect { .. })),
-                    "expected indirect addressing"
+                    matches!(
+                        addressing,
+                        Some(Addressing::Sum { terms, .. })
+                            if terms.iter().any(|t| matches!(t, AddressTerm::Node(_)))
+                    ),
+                    "expected a pAddress term"
                 );
                 assert_eq!(*encoding, FloatEncoding::ScaledInteger);
             }

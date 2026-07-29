@@ -118,8 +118,16 @@ Prosilica, SVS, Sony, TIS) plus the GenICam conformance document.
 
 ```bash
 scripts/fetch-xml-corpus.sh        # into fixtures/vendor-xml/ (gitignored)
-cargo test -p viva-genapi-xml --test vendor_corpus -- --nocapture
+cargo test -p viva-genapi-xml --test vendor_corpus -- --nocapture  # parses
+cargo test -p viva-genapi     --test vendor_corpus -- --nocapture  # + evaluates
 ```
+
+Parsing is only half the job. The `viva-genapi` stage builds a `NodeMap`
+from each document and evaluates every node against a stub transport,
+which is where the formula language, the address model and the numeric
+codecs actually get exercised — every defect behind issue #35 lived
+above the parser, invisible to the XML-layer test. See
+[ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md).
 
 The documents are vendor copyright, published for interoperability by
 third-party projects, so we fetch rather than redistribute them. The test
@@ -131,10 +139,18 @@ from your own hardware. **When a user reports a camera we cannot open,
 ask for their XML and add it to the corpus** -- that is how this class of
 bug stops recurring.
 
-A node we cannot parse no longer fails the document: it is dropped,
-recorded in `XmlModel::skipped`, and logged. The corpus test fails on any
-skipped node not listed in its `EXPECTED_SKIPS` allowlist, so new gaps
+A node we cannot handle no longer fails the document. The XML layer drops
+it into `XmlModel::skipped`; the GenApi layer drops it into
+`NodeMap::skipped()`. Both are logged, and both corpus tests fail on any
+skipped node not listed in their `EXPECTED_SKIPS` allowlist, so new gaps
 surface instead of hiding.
+
+**When the GenICam specification and a convenient approximation disagree,
+implement the specification** — and check the semantics against
+`../aravis` (`src/arvevaluator.c` for formulas,
+`src/arvgcregisternode.c` for addressing and bit extraction) rather than
+against your own reading of the standard. ADR-0018 lists eight defects
+that each looked reasonable in isolation.
 
 ### Fake camera binary
 
@@ -226,6 +242,11 @@ points together:
 5. `CHANGELOG.md` — new `## [X.Y.Z] - YYYY-MM-DD` entry plus a link
    line in the footer. Follow Keep a Changelog categories (Added /
    Changed / Fixed / etc.).
+6. **Intra-workspace dependency ranges** in every `crates/*/Cargo.toml`
+   and `studio/**/Cargo.toml` — `viva-foo = { version = "0.2", path =
+   ... }`. These are caret ranges, so a minor bump makes them
+   unsatisfiable once published; they only keep building locally
+   because `path` wins. Bump them whenever the minor version changes.
 
 A missed file will either break the wheel build (mismatched crate
 vs pyproject version) or publish with the wrong metadata.

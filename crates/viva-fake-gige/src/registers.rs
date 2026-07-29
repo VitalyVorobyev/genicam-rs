@@ -53,6 +53,8 @@ pub const PERSISTENT_DEFAULT_GATEWAY: u64 = 0x066C;
 pub const CCP: u64 = 0x0a00;
 pub const HEARTBEAT_TIMEOUT: u64 = 0x0938;
 pub const STREAM_CHANNEL_BASE: u64 = 0x0d00;
+/// Address stride between GigE Vision stream channel register blocks.
+pub const STREAM_CHANNEL_STRIDE: u64 = 0x40;
 pub const SCP_HOST_PORT: u64 = 0x00;
 pub const SCP_PACKET_SIZE: u64 = 0x04;
 pub const SCP_PACKET_DELAY: u64 = 0x08;
@@ -99,6 +101,17 @@ pub const REG_BLACK_LEVEL: u64 = 0x20050;
 /// as RW here keeps the fake camera a configurable simulator.
 pub const REG_ACQ_FRAME_RATE_ENABLE: u64 = 0x20054;
 pub const REG_SENSOR_TYPE: u64 = 0x20058;
+
+/// Device capability inquiry bits, exposed through a `<StructReg>` whose
+/// address is `<pAddress>` (a base node) plus a fixed `<Address>` offset — the
+/// shape Point Grey, FLIR and Hikrobot use for their inquiry blocks.
+pub const REG_DEVICE_CAPS: u64 = 0x2005c;
+
+/// Which stream channel the `GevSCP*` features address.
+///
+/// Backs a `<pIndex>` term, so changing it moves those registers by
+/// [`STREAM_CHANNEL_STRIDE`].
+pub const REG_STREAM_CHANNEL_SELECTOR: u64 = 0x20090;
 
 /// Timestamp registers.
 pub const REG_TIMESTAMP_FREQ: u64 = 0x20060;
@@ -371,25 +384,73 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
          BayerRG    (1) → BayerRG8
          Color      (2) → RGB8 -->
   <IntSwissKnife Name="PfMono8Avail">
-    <Formula>ST == 0</Formula>
+    <Formula>ST = 0</Formula>
     <pVariable Name="ST">SensorTypeReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
   <IntSwissKnife Name="PfMono16Avail">
-    <Formula>ST == 0</Formula>
+    <Formula>ST = 0</Formula>
     <pVariable Name="ST">SensorTypeReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
   <IntSwissKnife Name="PfBayerRG8Avail">
-    <Formula>ST == 1</Formula>
+    <Formula>ST = 1</Formula>
     <pVariable Name="ST">SensorTypeReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
   <IntSwissKnife Name="PfRGB8Avail">
-    <Formula>ST == 2</Formula>
+    <Formula>ST = 2</Formula>
     <pVariable Name="ST">SensorTypeReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Device capability inquiry bits
+
+       Real inquiry blocks are addressed as `<pAddress>` (the block base) plus
+       a fixed `<Address>` offset, and the individual bits come from a
+       <StructReg>. Both terms contribute: keeping only one reads the wrong
+       register, which is what made issue #35's camera misreport every
+       capability it had.
+       ════════════════════════════════════════════════════════════════════ -->
+  <IntSwissKnife Name="DeviceRegBaseAddress">
+    <Formula>0x20000</Formula>
+  </IntSwissKnife>
+  <StructReg Comment="Device capability inquiry">
+    <pAddress>DeviceRegBaseAddress</pAddress>
+    <Address>0x5C</Address>
+    <Length>4</Length>
+    <AccessMode>RO</AccessMode>
+    <Endianess>BigEndian</Endianess>
+    <StructEntry Name="FrameRateControlInq_Bit"><Bit>0</Bit></StructEntry>
+    <StructEntry Name="ChunkSupportInq_Bit"><Bit>1</Bit></StructEntry>
+    <StructEntry Name="SequencerInq_Bit"><Bit>2</Bit></StructEntry>
+  </StructReg>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       GigE Vision stream channel registers
+
+       Stream channel N lives at 0x0D00 + N * 0x40, so the packet size
+       register is a fixed <Address> plus a <pIndex> scaled by the channel
+       stride. Ignoring the <pIndex> term always addresses channel 0.
+       ════════════════════════════════════════════════════════════════════ -->
+  <Integer Name="GevStreamChannelSelector" NameSpace="Standard">
+    <ToolTip>Stream channel the GevSCP* features address</ToolTip>
+    <Address>0x20090</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <Sign>Unsigned</Sign>
+    <Min>0</Min>
+    <Max>1</Max>
+    <Endianess>BigEndian</Endianess>
+  </Integer>
+  <Integer Name="GevSCPSPacketSize" NameSpace="Standard">
+    <ToolTip>Stream channel packet size in bytes</ToolTip>
+    <Address>0x0D04</Address>
+    <pIndex Offset="0x40">GevStreamChannelSelector</pIndex>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <Sign>Unsigned</Sign>
+    <Min>0</Min>
+    <Max>65535</Max>
+    <Endianess>BigEndian</Endianess>
+  </Integer>
 
   <!-- ════════════════════════════════════════════════════════════════════
        Acquisition Control Features
@@ -426,7 +487,9 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <ToolTip>Enable manual control of AcquisitionFrameRate. When false, the frame rate is unavailable for read/write.</ToolTip>
     <pValue>AcquisitionFrameRateEnableReg</pValue>
   </Boolean>
-  <IntReg Name="AcquisitionFrameRateEnableReg"><Address>0x20054</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
+  <IntReg Name="AcquisitionFrameRateEnableReg"><Address>0x20054</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess>
+    <pIsImplemented>FrameRateControlInq_Bit</pIsImplemented>
+  </IntReg>
 
   <Float Name="AcquisitionFrameRate" NameSpace="Standard">
     <ToolTip>Target frame rate in Hz</ToolTip>
@@ -460,9 +523,8 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <IntReg Name="ExposureAutoReg"><Address>0x20038</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
   <IntSwissKnife Name="ExposureAutoActive">
-    <Formula>EA != 0</Formula>
+    <Formula>EA &lt;&gt; 0</Formula>
     <pVariable Name="EA">ExposureAutoReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
 
   <!-- ════════════════════════════════════════════════════════════════════
@@ -492,9 +554,8 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <IntReg Name="GainAutoReg"><Address>0x20048</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
   <IntSwissKnife Name="GainAutoActive">
-    <Formula>GA != 0</Formula>
+    <Formula>GA &lt;&gt; 0</Formula>
     <pVariable Name="GA">GainAutoReg</pVariable>
-    <Output>Integer</Output>
   </IntSwissKnife>
 
   <Integer Name="BlackLevel" NameSpace="Standard">
@@ -626,6 +687,13 @@ impl RegisterMap {
         let base = STREAM_CHANNEL_BASE;
         regs.insert(base + SCP_HOST_PORT, vec![0, 0, 0, 0]);
         regs.insert(base + SCP_PACKET_SIZE, 1500u32.to_be_bytes().to_vec());
+        // A second channel, so a `<pIndex>` term that is ignored is visible:
+        // its packet size differs from channel 0's.
+        regs.insert(
+            base + STREAM_CHANNEL_STRIDE + SCP_PACKET_SIZE,
+            9000u32.to_be_bytes().to_vec(),
+        );
+        regs.insert(REG_STREAM_CHANNEL_SELECTOR, 0u32.to_be_bytes().to_vec());
         regs.insert(base + SCP_PACKET_DELAY, vec![0, 0, 0, 0]);
         regs.insert(base + SCP_DEST_ADDR, vec![0, 0, 0, 0]);
 
@@ -670,6 +738,9 @@ impl RegisterMap {
         // available at boot.
         regs.insert(REG_ACQ_FRAME_RATE_ENABLE, 1u32.to_be_bytes().to_vec());
         regs.insert(REG_SENSOR_TYPE, 0u32.to_be_bytes().to_vec());
+        // Capability bits, MSB-first as GenICam counts them on a big-endian
+        // register: bit 0 = frame rate control present, bit 1 = chunk support.
+        regs.insert(REG_DEVICE_CAPS, 0xC000_0000u32.to_be_bytes().to_vec());
 
         // ── Timestamp (1 GHz tick frequency) ────────────────────────────
         regs.insert(REG_TIMESTAMP_FREQ, 1_000_000_000u32.to_be_bytes().to_vec());

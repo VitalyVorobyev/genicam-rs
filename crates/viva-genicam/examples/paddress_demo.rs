@@ -5,7 +5,7 @@ use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use viva_genapi_xml::{self, Addressing, NodeDecl};
+use viva_genapi_xml::{self, NodeDecl};
 use viva_genicam::genapi::{GenApiError, Node, NodeMap, RegisterIo};
 use viva_genicam::gige::GigeDevice;
 use viva_genicam::{Camera, GigeRegisterIo};
@@ -47,7 +47,7 @@ fn run_mock() -> Result<()> {
     "#;
 
     let model = viva_genapi_xml::parse(XML)?;
-    let mut nodemap = NodeMap::from(model);
+    let mut nodemap = NodeMap::try_from_xml(model)?;
     let transport = MockIo::with_registers(&[
         (0x2000, vec![0x00, 0x00, 0x30, 0x00]),
         (0x3000, vec![0x00, 0x00, 0x00, 0x7B]),
@@ -106,7 +106,7 @@ fn run_real() -> Result<()> {
         return Ok(());
     }
 
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = rt.handle().clone();
     let device = match std::sync::Arc::try_unwrap(device) {
         Ok(mutex) => mutex.into_inner(),
@@ -151,11 +151,13 @@ fn collect_indirect_integers(model: &viva_genapi_xml::XmlModel) -> Vec<(String, 
     for decl in &model.nodes {
         if let NodeDecl::Integer {
             name,
-            addressing: Some(Addressing::Indirect { p_address_node, .. }),
+            addressing: Some(addressing),
             ..
         } = decl
         {
-            result.push((name.to_string(), p_address_node.to_string()));
+            for provider in addressing.referenced_nodes() {
+                result.push((name.to_string(), provider.to_string()));
+            }
         }
     }
     result
@@ -163,18 +165,18 @@ fn collect_indirect_integers(model: &viva_genapi_xml::XmlModel) -> Vec<(String, 
 
 fn print_indirect_nodes(node: Option<&Node>) {
     if let Some(Node::Integer(viva_genicam::genapi::IntegerNode {
-        addressing:
-            Some(Addressing::Indirect {
-                p_address_node,
-                len,
-            }),
+        addressing: Some(addressing),
         ..
     })) = node
     {
-        println!(
-            "Gain uses indirect addressing via {p_address_node} ({} bytes)",
-            len
-        );
+        let providers = addressing.referenced_nodes();
+        if !providers.is_empty() {
+            println!(
+                "Gain resolves its address through {} ({:?} bytes)",
+                providers.join(" + "),
+                addressing.byte_len()
+            );
+        }
     }
 }
 

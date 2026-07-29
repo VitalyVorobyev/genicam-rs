@@ -5,7 +5,7 @@ use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use viva_genapi_xml::Addressing;
+use viva_genapi_xml::{AddressTerm, Addressing};
 use viva_genicam::genapi::{GenApiError, Node, NodeMap, RegisterIo};
 use viva_genicam::gige::GigeDevice;
 use viva_genicam::sfnc;
@@ -47,7 +47,7 @@ fn run_mock() -> Result<(), Box<dyn Error>> {
     "#;
 
     let model = viva_genapi_xml::parse(XML)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let transport = MockIo::with_registers(&[
         (0x300, vec![0, 0]),
         (0x310, vec![0, 12]),
@@ -104,7 +104,7 @@ fn run_real() -> Result<(), Box<dyn Error>> {
         }
     }))?;
     let model = viva_genapi_xml::parse(&xml)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = rt.handle().clone();
     let device = match std::sync::Arc::try_unwrap(device) {
         Ok(mutex) => mutex.into_inner(),
@@ -138,23 +138,26 @@ fn run_real() -> Result<(), Box<dyn Error>> {
 fn print_gain_addressing(nodemap: &NodeMap) {
     if let Some(Node::Integer(node)) = nodemap.node(sfnc::GAIN) {
         match &node.addressing {
-            Some(Addressing::Fixed { address, len }) => {
-                println!("Gain uses fixed address 0x{address:08X} ({} bytes)", len);
+            Some(Addressing::Sum { terms, len }) => {
+                println!(
+                    "Gain address is the sum of {} term(s), {len} bytes:",
+                    terms.len()
+                );
+                for term in terms {
+                    match term {
+                        AddressTerm::Fixed(address) => println!("  + 0x{address:08X}"),
+                        AddressTerm::Node(node) => println!("  + value of {node}"),
+                        AddressTerm::Index { node, offset } => {
+                            println!("  + {node} * {offset:?}")
+                        }
+                    }
+                }
             }
             Some(Addressing::BySelector { selector, map }) => {
                 println!("Gain addresses by selector {selector}:");
                 for (value, (addr, len)) in map {
                     println!("  {value:>8} -> 0x{addr:08X} ({} bytes)", len);
                 }
-            }
-            Some(Addressing::Indirect {
-                p_address_node,
-                len,
-            }) => {
-                println!(
-                    "Gain resolves address via {p_address_node} ({} bytes per register)",
-                    len
-                );
             }
             None => {
                 println!("Gain has no direct addressing (pValue-backed)");

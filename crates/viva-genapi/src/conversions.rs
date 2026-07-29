@@ -1,13 +1,19 @@
 //! Numeric conversion utilities for register values and bitfields.
 
-use viva_genapi_xml::ByteOrder;
+use viva_genapi_xml::{ByteOrder, Sign};
 
 use crate::GenApiError;
 use crate::bitops::BitOpsError;
 use crate::nodes::FloatNode;
 
-/// Convert a big-endian byte slice (up to 8 bytes) to a signed 64-bit integer.
-pub fn bytes_to_i64(name: &str, bytes: &[u8]) -> Result<i64, GenApiError> {
+/// Convert a big-endian byte slice (up to 8 bytes) to a 64-bit integer.
+///
+/// `sign` decides whether the payload's top bit means "negative" or is just
+/// another value bit. GenICam defaults to [`Sign::Unsigned`], and getting it
+/// wrong is silent right up until a register's top bit is set: a
+/// `GevCurrentIPAddress` of `192.168.1.160` (`0xC0A801A0`) then reads as
+/// `-1062731360`.
+pub fn bytes_to_i64(name: &str, bytes: &[u8], sign: Sign) -> Result<i64, GenApiError> {
     if bytes.is_empty() {
         return Err(GenApiError::Parse(format!(
             "node {name} returned empty payload"
@@ -22,16 +28,30 @@ pub fn bytes_to_i64(name: &str, bytes: &[u8]) -> Result<i64, GenApiError> {
     let mut buf = [0u8; 8];
     let offset = 8 - bytes.len();
     buf[offset..].copy_from_slice(bytes);
-    if !bytes.is_empty() && (bytes[0] & 0x80) != 0 {
+    if sign.is_signed() && (bytes[0] & 0x80) != 0 {
         for byte in &mut buf[..offset] {
             *byte = 0xFF;
         }
     }
-    Ok(i64::from_be_bytes(buf))
+    let value = i64::from_be_bytes(buf);
+    // A full-width unsigned register can hold values an i64 cannot. GenApi's
+    // IInteger is int64, so there is nowhere to put them; say so rather than
+    // hand back a negative number.
+    if !sign.is_signed() && bytes.len() == 8 && value < 0 {
+        return Err(GenApiError::Parse(format!(
+            "node {name} holds an unsigned 64-bit value larger than i64::MAX"
+        )));
+    }
+    Ok(value)
 }
 
-/// Convert a signed 64-bit integer to a big-endian byte vector of specified width.
-pub fn i64_to_bytes(name: &str, value: i64, width: u32) -> Result<Vec<u8>, GenApiError> {
+/// Convert a 64-bit integer to a big-endian byte vector of the given width.
+pub fn i64_to_bytes(
+    name: &str,
+    value: i64,
+    width: u32,
+    sign: Sign,
+) -> Result<Vec<u8>, GenApiError> {
     if width == 0 || width > 8 {
         return Err(GenApiError::Parse(format!(
             "node {name} has unsupported width {width}"
@@ -40,7 +60,7 @@ pub fn i64_to_bytes(name: &str, value: i64, width: u32) -> Result<Vec<u8>, GenAp
     let width = width as usize;
     let bytes = value.to_be_bytes();
     let data = bytes[8 - width..].to_vec();
-    let roundtrip = bytes_to_i64(name, &data)?;
+    let roundtrip = bytes_to_i64(name, &data, sign)?;
     if roundtrip != value {
         return Err(GenApiError::Range(format!(
             "value {value} does not fit {width} bytes for {name}"

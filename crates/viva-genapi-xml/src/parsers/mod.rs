@@ -19,10 +19,13 @@ use quick_xml::events::BytesStart;
 
 use crate::builders::AddressingBuilder;
 use crate::util::{attribute_value, parse_u64, read_text_start};
-use crate::{NodeMeta, PredicateRefs, Representation, Visibility, XmlError};
+use crate::{IndexOffset, NodeMeta, PredicateRefs, Representation, Visibility, XmlError};
 
 /// XML element name referencing another node that provides an address.
 pub const TAG_P_ADDRESS: &[u8] = b"pAddress";
+
+/// `<pIndex>`: an index node whose value is scaled and added to the address.
+pub const TAG_P_INDEX: &[u8] = b"pIndex";
 /// XML element holding an inline literal value.
 pub const TAG_VALUE: &[u8] = b"Value";
 /// XML element referencing another node supplying the value at runtime.
@@ -229,6 +232,23 @@ pub fn handle_selected_empty(
     Ok(())
 }
 
+/// Read the stride of a `<pIndex>` element.
+///
+/// `Offset` gives a literal stride, `pOffset` names a node supplying one, and
+/// neither means the stride is the register length.
+pub fn index_offset(event: &BytesStart<'_>) -> Result<IndexOffset, XmlError> {
+    if let Some(offset) = attribute_value(event, b"Offset")? {
+        return Ok(IndexOffset::Fixed(parse_u64(&offset)?));
+    }
+    if let Some(node) = attribute_value(event, b"pOffset")? {
+        let trimmed = node.trim();
+        if !trimmed.is_empty() {
+            return Ok(IndexOffset::Node(trimmed.to_string()));
+        }
+    }
+    Ok(IndexOffset::Length)
+}
+
 /// Handle common addressing elements for start events.
 ///
 /// Returns `true` if the element was handled, `false` otherwise.
@@ -248,7 +268,16 @@ pub fn handle_addressing_start(
             let text = read_text_start(reader, event)?;
             let target = text.trim();
             if !target.is_empty() {
-                addressing.set_p_address_node(target);
+                addressing.push_p_address(target);
+            }
+            Ok(true)
+        }
+        TAG_P_INDEX => {
+            let offset = index_offset(event)?;
+            let text = read_text_start(reader, event)?;
+            let target = text.trim();
+            if !target.is_empty() {
+                addressing.push_index(target, offset);
             }
             Ok(true)
         }
@@ -346,7 +375,16 @@ pub fn handle_addressing_empty(
             if let Some(value) = attribute_value(event, b"Name")? {
                 let trimmed = value.trim();
                 if !trimmed.is_empty() {
-                    addressing.set_p_address_node(trimmed);
+                    addressing.push_p_address(trimmed);
+                }
+            }
+            Ok(true)
+        }
+        TAG_P_INDEX => {
+            if let Some(value) = attribute_value(event, b"Name")? {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    addressing.push_index(trimmed, index_offset(event)?);
                 }
             }
             Ok(true)

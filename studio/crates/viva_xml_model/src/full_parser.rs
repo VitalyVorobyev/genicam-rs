@@ -1077,6 +1077,7 @@ mod tests {
             inc: None,
             unit: None,
             bitfield: None,
+            sign: Default::default(),
             selectors: vec![],
             selected_if: vec![],
             pvalue: None,
