@@ -6,7 +6,7 @@ use tracing::warn;
 
 use super::{
     NodeMetaBuilder, SelectorState, TAG_BIT, TAG_BYTE_ORDER, TAG_DISPLAY_NAME, TAG_ENDIANESS,
-    TAG_ENDIANNESS, TAG_LSB, TAG_MASK, TAG_MSB, TAG_P_ADDRESS, TAG_P_VALUE, TAG_VALUE,
+    TAG_ENDIANNESS, TAG_LSB, TAG_MASK, TAG_MSB, TAG_P_ADDRESS, TAG_P_INDEX, TAG_P_VALUE, TAG_VALUE,
     handle_addressing_empty, handle_addressing_start, handle_p_selected_empty,
     handle_p_selected_start, handle_predicate_start, handle_selected_empty, handle_selected_start,
 };
@@ -23,7 +23,7 @@ pub fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<N
     let name = attribute_value_required(&start, b"Name")?;
     let mut addressing = AddressingBuilder::default();
     if let Some(addr) = attribute_value(&start, b"Address")? {
-        addressing.set_fixed_address(parse_u64(&addr)?);
+        addressing.push_fixed_address(parse_u64(&addr)?);
     }
     if let Some(len) = attribute_value(&start, b"Length")? {
         let value = parse_u64(&len)?;
@@ -52,7 +52,7 @@ pub fn parse_enum(reader: &mut Reader<&[u8]>, start: BytesStart<'_>) -> Result<N
                         pvalue = Some(target.to_string());
                     }
                 }
-                b"Address" | TAG_P_ADDRESS | b"Length" => {
+                b"Address" | TAG_P_ADDRESS | TAG_P_INDEX | b"Length" => {
                     if !handle_addressing_start(reader, e, &name, &mut addressing)? {
                         skip_element(reader, e.name().as_ref())?;
                     }
@@ -144,7 +144,7 @@ pub fn parse_boolean(
     let name = attribute_value_required(&start, b"Name")?;
     let mut addressing = AddressingBuilder::default();
     if let Some(addr) = attribute_value(&start, b"Address")? {
-        addressing.set_fixed_address(parse_u64(&addr)?);
+        addressing.push_fixed_address(parse_u64(&addr)?);
     }
     if let Some(len) = attribute_value(&start, b"Length")? {
         let value = parse_u64(&len)?;
@@ -182,16 +182,10 @@ pub fn parse_boolean(
                     let text = read_text_start(reader, e)?;
                     off_value = Some(parse_i64(&text)?);
                 }
-                b"Address" => {
-                    let text = read_text_start(reader, e)?;
-                    addressing.attach_selected_address(parse_u64(&text)?, None);
-                }
-                TAG_P_ADDRESS => {
-                    let text = read_text_start(reader, e)?;
-                    let target = text.trim();
-                    if !target.is_empty() {
-                        addressing.set_p_address_node(target);
-                    }
+                // Shared handling so `<Address>`, `<pAddress>` and
+                // `<pIndex>` all contribute their term.
+                b"Address" | TAG_P_ADDRESS | TAG_P_INDEX => {
+                    handle_addressing_start(reader, e, &name, &mut addressing)?;
                 }
                 b"Length" => {
                     let text = read_text_start(reader, e)?;

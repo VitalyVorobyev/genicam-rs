@@ -32,7 +32,7 @@ use viva_genapi_xml::parse;
 
 let xml = std::fs::read_to_string("device.xml")?;
 let model = parse(&xml)?;
-let nodemap = NodeMap::from(model);
+let nodemap = NodeMap::try_from_xml(model)?;
 
 // Browse features offline
 let io = NullIo;

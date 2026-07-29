@@ -28,6 +28,7 @@ here.
 | [0015](adr0015-vendored-libusb-lgpl-notices.md) | Vendored libusb in PyPI Wheels with LGPL Notices | Accepted |
 | [0016](adr0016-cargo-deny-single-gate.md) | cargo-deny as the Single Supply-Chain Gate | Accepted |
 | [0017](adr0017-studio-monorepo-two-workspaces.md) | Studio Monorepo with Two Cargo Workspaces | Accepted |
+| [0018](adr0018-genapi-conformance-over-convenience.md) | GenApi Conformance over Convenient Approximations | Accepted |
 
 **Template:** `# ADR-NNNN: Title`, `**Status:**`, `**Date:**`, `## Context`,
 `## Decision`, `## Consequences` (Positive/Negative). File name:

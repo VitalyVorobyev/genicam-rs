@@ -7,7 +7,7 @@ mod error;
 mod io;
 mod nodemap;
 mod nodes;
-mod swissknife;
+pub mod swissknife;
 
 pub use error::GenApiError;
 pub use io::{NullIo, RegisterIo};
@@ -16,7 +16,8 @@ pub use nodes::{
     BooleanNode, CategoryNode, CommandNode, EnumNode, FloatNode, IntegerNode, Node, NodeMeta,
     Representation, SkNode, Visibility,
 };
-pub use viva_genapi_xml::{AccessMode, SkOutput};
+pub use swissknife::{AstNode, EvalMode, Value};
+pub use viva_genapi_xml::{AccessMode, SkOutput, SkippedNode};
 
 #[cfg(test)]
 mod tests {
@@ -25,6 +26,7 @@ mod tests {
 
     use crate::conversions::{bytes_to_i64, i64_to_bytes};
     use crate::{AccessMode, GenApiError, NodeMap, RegisterIo, Visibility};
+    use viva_genapi_xml::Sign;
 
     const FIXTURE: &str = r#"
         <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="2" SchemaSubMinorVersion="3">
@@ -172,26 +174,22 @@ mod tests {
                 <Max>1000</Max>
             </Integer>
             <SwissKnife Name="ComputedGain">
-                <Expression>(GainRaw * 0.5) + Offset</Expression>
+                <Formula>(GainRaw * 0.5) + Offset</Formula>
                 <pVariable Name="GainRaw">GainRaw</pVariable>
                 <pVariable Name="Offset">Offset</pVariable>
-                <Output>Float</Output>
             </SwissKnife>
-            <SwissKnife Name="DivideInt">
-                <Expression>GainRaw / 3</Expression>
+            <IntSwissKnife Name="DivideInt">
+                <Formula>GainRaw / 3</Formula>
                 <pVariable Name="GainRaw">GainRaw</pVariable>
-                <Output>Integer</Output>
-            </SwissKnife>
-            <SwissKnife Name="Unary">
-                <Expression>-GainRaw + 10</Expression>
+            </IntSwissKnife>
+            <IntSwissKnife Name="Unary">
+                <Formula>-GainRaw + 10</Formula>
                 <pVariable Name="GainRaw">GainRaw</pVariable>
-                <Output>Integer</Output>
-            </SwissKnife>
+            </IntSwissKnife>
             <SwissKnife Name="DivideByZero">
-                <Expression>GainRaw / B</Expression>
+                <Formula>GainRaw / B</Formula>
                 <pVariable Name="GainRaw">GainRaw</pVariable>
                 <pVariable Name="B">B</pVariable>
-                <Output>Float</Output>
             </SwissKnife>
         </RegisterDescription>
     "#;
@@ -244,27 +242,27 @@ mod tests {
 
     fn build_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(FIXTURE).expect("parse fixture");
-        NodeMap::from(model)
+        NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
     fn build_indirect_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(INDIRECT_FIXTURE).expect("parse indirect fixture");
-        NodeMap::from(model)
+        NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
     fn build_enum_pvalue_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(ENUM_PVALUE_FIXTURE).expect("parse enum pvalue fixture");
-        NodeMap::from(model)
+        NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
     fn build_bitfield_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(BITFIELD_FIXTURE).expect("parse bitfield fixture");
-        NodeMap::from(model)
+        NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
     fn build_swissknife_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(SWISSKNIFE_FIXTURE).expect("parse swissknife fixture");
-        NodeMap::from(model)
+        NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
     #[test]
@@ -309,7 +307,8 @@ mod tests {
     "#;
 
     fn build_ieee754_nodemap() -> NodeMap {
-        NodeMap::from(viva_genapi_xml::parse(IEEE754_FIXTURE).expect("parse ieee754"))
+        NodeMap::try_from_xml(viva_genapi_xml::parse(IEEE754_FIXTURE).expect("parse ieee754"))
+            .expect("build nodemap")
     }
 
     #[test]
@@ -346,7 +345,10 @@ mod tests {
         // so it must stay on the scaled-integer path even after the heuristic.
         let nodemap = build_nodemap();
         let raw = 50_000i64;
-        let io = MockIo::with_registers(&[(0x200, i64_to_bytes("ExposureTime", raw, 4).unwrap())]);
+        let io = MockIo::with_registers(&[(
+            0x200,
+            i64_to_bytes("ExposureTime", raw, 4, Sign::Signed).unwrap(),
+        )]);
         let exposure = nodemap
             .get_float("ExposureTime", &io)
             .expect("read exposure");
@@ -407,7 +409,10 @@ mod tests {
     "#;
 
     fn build_predicate_nodemap() -> NodeMap {
-        NodeMap::from(viva_genapi_xml::parse(PREDICATE_FIXTURE).expect("parse predicate fixture"))
+        NodeMap::try_from_xml(
+            viva_genapi_xml::parse(PREDICATE_FIXTURE).expect("parse predicate fixture"),
+        )
+        .expect("build nodemap")
     }
 
     fn predicate_io(ctrl: u32) -> MockIo {
@@ -515,7 +520,8 @@ mod tests {
                 </IntReg>
             </RegisterDescription>
         "#;
-        let nodemap = NodeMap::from(viva_genapi_xml::parse(xml).unwrap());
+        let nodemap =
+            NodeMap::try_from_xml(viva_genapi_xml::parse(xml).unwrap()).expect("build nodemap");
         let io = MockIo::with_registers(&[(0x500, 0u32.to_be_bytes().to_vec())]);
         let mut entries = nodemap.available_enum_entries("Mode", &io).unwrap();
         entries.sort();
@@ -526,7 +532,10 @@ mod tests {
     fn float_conversion_roundtrip() {
         let mut nodemap = build_nodemap();
         let raw = 50_000i64; // 50 ms with 1/1000 scale
-        let io = MockIo::with_registers(&[(0x200, i64_to_bytes("ExposureTime", raw, 4).unwrap())]);
+        let io = MockIo::with_registers(&[(
+            0x200,
+            i64_to_bytes("ExposureTime", raw, 4, Sign::Signed).unwrap(),
+        )]);
         let exposure = nodemap
             .get_float("ExposureTime", &io)
             .expect("read exposure");
@@ -534,7 +543,8 @@ mod tests {
         nodemap
             .set_float("ExposureTime", 75.0, &io)
             .expect("write exposure");
-        let raw_back = bytes_to_i64("ExposureTime", &io.read(0x200, 4).unwrap()).unwrap();
+        let raw_back =
+            bytes_to_i64("ExposureTime", &io.read(0x200, 4).unwrap(), Sign::Signed).unwrap();
         assert_eq!(raw_back, 75_000);
     }
 
@@ -542,9 +552,12 @@ mod tests {
     fn selector_address_switching() {
         let mut nodemap = build_nodemap();
         let io = MockIo::with_registers(&[
-            (0x300, i64_to_bytes("GainSelector", 0, 2).unwrap()),
-            (0x310, i64_to_bytes("Gain", 10, 2).unwrap()),
-            (0x314, i64_to_bytes("Gain", 24, 2).unwrap()),
+            (
+                0x300,
+                i64_to_bytes("GainSelector", 0, 2, Sign::Signed).unwrap(),
+            ),
+            (0x310, i64_to_bytes("Gain", 10, 2, Sign::Signed).unwrap()),
+            (0x314, i64_to_bytes("Gain", 24, 2, Sign::Signed).unwrap()),
         ]);
 
         let gain_all = nodemap.get_integer("Gain", &io).expect("gain for All");
@@ -552,7 +565,7 @@ mod tests {
         assert_eq!(io.read_count(0x310), 1);
         assert_eq!(io.read_count(0x314), 0);
 
-        io.write(0x314, &i64_to_bytes("Gain", 32, 2).unwrap())
+        io.write(0x314, &i64_to_bytes("Gain", 32, 2, Sign::Signed).unwrap())
             .expect("update red gain");
         nodemap
             .set_enum("GainSelector", "Red", &io)
@@ -586,7 +599,7 @@ mod tests {
             "no read expected for missing mapping"
         );
 
-        io.write(0x310, &i64_to_bytes("Gain", 12, 2).unwrap())
+        io.write(0x310, &i64_to_bytes("Gain", 12, 2, Sign::Signed).unwrap())
             .expect("update all gain");
         nodemap
             .set_enum("GainSelector", "All", &io)
@@ -625,9 +638,12 @@ mod tests {
     fn indirect_address_resolution() {
         let mut nodemap = build_indirect_nodemap();
         let io = MockIo::with_registers(&[
-            (0x2000, i64_to_bytes("RegAddr", 0x3000, 4).unwrap()),
-            (0x3000, i64_to_bytes("Gain", 123, 4).unwrap()),
-            (0x3100, i64_to_bytes("Gain", 77, 4).unwrap()),
+            (
+                0x2000,
+                i64_to_bytes("RegAddr", 0x3000, 4, Sign::Signed).unwrap(),
+            ),
+            (0x3000, i64_to_bytes("Gain", 123, 4, Sign::Signed).unwrap()),
+            (0x3100, i64_to_bytes("Gain", 77, 4, Sign::Signed).unwrap()),
         ]);
 
         let initial = nodemap.get_integer("Gain", &io).expect("read gain");
@@ -647,31 +663,413 @@ mod tests {
         assert_eq!(io.read_count(0x3100), 1);
     }
 
+    /// A `<pAddress>` term that cannot be an address at all is rejected before
+    /// the read.
+    ///
+    /// Zero deliberately is *not* rejected: under the additive address model a
+    /// `<pAddress>` supplies one term of a sum, and a base of zero next to a
+    /// fixed `<Address>` offset is ordinary. Only a value that cannot be a
+    /// register address — a negative one — is a modelling error rather than a
+    /// device state.
+    /// A `<pAddress>` term that cannot be an address at all is rejected before
+    /// the read.
+    ///
+    /// Zero deliberately is *not* rejected: under the additive address model a
+    /// `<pAddress>` supplies one term of a sum, and a base of zero next to a
+    /// fixed `<Address>` offset is ordinary. Only a value that cannot be a
+    /// register address — a negative one, which takes a signed provider — is a
+    /// modelling error rather than a device state.
     #[test]
     fn indirect_bad_address() {
-        let mut nodemap = build_indirect_nodemap();
-        let io = MockIo::with_registers(&[(0x2000, vec![0, 0, 0, 0])]);
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="RegAddr">
+                    <Address>0x2000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Sign>Signed</Sign>
+                    <Min>-65535</Min>
+                    <Max>65535</Max>
+                </Integer>
+                <Integer Name="Gain">
+                    <pAddress>RegAddr</pAddress>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>255</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
 
-        nodemap
-            .set_integer("RegAddr", 0, &io)
-            .expect("write zero address");
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[(
+            0x2000,
+            i64_to_bytes("RegAddr", -4, 4, Sign::Signed).unwrap(),
+        )]);
+
         let err = nodemap.get_integer("Gain", &io).unwrap_err();
         match err {
             GenApiError::BadIndirectAddress { name, addr } => {
                 assert_eq!(name, "Gain");
-                assert_eq!(addr, 0);
+                assert_eq!(addr, -4);
             }
             other => panic!("unexpected error: {other:?}"),
         }
-        assert_eq!(io.read_count(0x2000), 0);
+    }
+
+    /// GenICam registers are unsigned unless `<Sign>Signed</Sign>` says
+    /// otherwise. Sign-extending everything turned an IPv4 address into a
+    /// negative number and broke every mask comparison downstream.
+    #[test]
+    fn unsigned_registers_do_not_sign_extend() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="GevCurrentIPAddress">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Min>0</Min>
+                    <Max>4294967295</Max>
+                </Integer>
+                <Integer Name="TemperatureOffset">
+                    <Address>0x1004</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Sign>Signed</Sign>
+                    <Min>-2147483648</Min>
+                    <Max>2147483647</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[
+            // 192.168.1.160 — the top bit is set.
+            (0x1000, vec![0xC0, 0xA8, 0x01, 0xA0]),
+            (0x1004, vec![0xFF, 0xFF, 0xFF, 0xFB]),
+        ]);
+
+        assert_eq!(
+            nodemap
+                .get_integer("GevCurrentIPAddress", &io)
+                .expect("read address"),
+            0xC0A8_01A0
+        );
+        assert_eq!(
+            nodemap
+                .get_integer("TemperatureOffset", &io)
+                .expect("read offset"),
+            -5
+        );
+    }
+
+    /// `<FormulaFrom>` is the read direction and `<FormulaTo>` the write one.
+    ///
+    /// With an identity converter both directions look the same, which is how
+    /// this stayed inverted: reads evaluated `<FormulaTo>` and every non-trivial
+    /// converter — a Hikrobot `FROM * 100` / `TO / 100` pair, for instance —
+    /// came back wrong by the square of its scale factor.
+    #[test]
+    fn converter_directions_are_not_swapped() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <IntReg Name="ExposureTimeRaw">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                </IntReg>
+                <Converter Name="ExposureTime">
+                    <FormulaTo>FROM * 100</FormulaTo>
+                    <FormulaFrom>TO / 100</FormulaFrom>
+                    <pValue>ExposureTimeRaw</pValue>
+                    <Unit>us</Unit>
+                </Converter>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let mut nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[(
+            0x1000,
+            i64_to_bytes("ExposureTimeRaw", 5000, 4, Sign::Unsigned).unwrap(),
+        )]);
+
+        // Read goes through FormulaFrom: 5000 / 100.
+        let value = nodemap.get_float("ExposureTime", &io).expect("read");
+        assert!((value - 50.0).abs() < 1e-9, "got {value}");
+
+        // Write goes through FormulaTo: 75 * 100.
+        nodemap.set_float("ExposureTime", 75.0, &io).expect("write");
+        assert_eq!(
+            nodemap
+                .get_integer("ExposureTimeRaw", &io)
+                .expect("read raw back"),
+            7500
+        );
+        let roundtrip = nodemap.get_float("ExposureTime", &io).expect("re-read");
+        assert!((roundtrip - 75.0).abs() < 1e-9, "got {roundtrip}");
+    }
+
+    /// A read-modify-write `<FormulaTo>` sees the register's current contents
+    /// through `OLD`.
+    #[test]
+    fn int_converter_write_preserves_other_bits() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <IntReg Name="Binning_Reg">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                </IntReg>
+                <IntConverter Name="BinningHorizontal">
+                    <FormulaTo>FROM | (OLD &amp; 0xffff0000)</FormulaTo>
+                    <FormulaFrom>TO &amp; 0x0000ffff</FormulaFrom>
+                    <pVariable Name="OLD">Binning_Reg</pVariable>
+                    <pValue>Binning_Reg</pValue>
+                </IntConverter>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let mut nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[(
+            0x1000,
+            i64_to_bytes("Binning_Reg", 0x0004_0002, 4, Sign::Unsigned).unwrap(),
+        )]);
+
+        assert_eq!(
+            nodemap
+                .get_integer("BinningHorizontal", &io)
+                .expect("read low half"),
+            2
+        );
+
+        nodemap
+            .set_integer("BinningHorizontal", 3, &io)
+            .expect("write low half");
+        // The vertical half in the high word must survive.
+        assert_eq!(
+            nodemap
+                .get_integer("Binning_Reg", &io)
+                .expect("read raw back"),
+            0x0004_0003
+        );
+    }
+
+    /// Signedness comes from `<Sign>` alone — `<Min>` says nothing about it.
+    ///
+    /// `<Min>` is optional and defaults to `i64::MIN`, and **no** `<IntReg>` or
+    /// `<MaskedIntReg>` in the entire vendor corpus declares one: all 9 779 of
+    /// them omit it. Inferring "signed" from a negative minimum therefore fires
+    /// on every register-backed integer on every real camera — which is exactly
+    /// the case `<Sign>` exists to decide. Note the registers here carry no
+    /// `<Min>`, which is the shape real documents actually use.
+    #[test]
+    fn sign_does_not_depend_on_min() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <IntReg Name="GevCurrentIPAddress">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Sign>Unsigned</Sign>
+                </IntReg>
+                <IntReg Name="DeviceTemperatureRaw">
+                    <Address>0x1004</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Sign>Signed</Sign>
+                </IntReg>
+                <IntReg Name="ImplicitlyUnsigned">
+                    <Address>0x1008</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                </IntReg>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[
+            (0x1000, vec![0xC0, 0xA8, 0x01, 0xA0]),
+            (0x1004, vec![0xFF, 0xFF, 0xFF, 0xFB]),
+            (0x1008, vec![0xFF, 0xFF, 0xFF, 0xFF]),
+        ]);
+
+        assert_eq!(
+            nodemap
+                .get_integer("GevCurrentIPAddress", &io)
+                .expect("read address"),
+            0xC0A8_01A0
+        );
+        assert_eq!(
+            nodemap
+                .get_integer("DeviceTemperatureRaw", &io)
+                .expect("read temperature"),
+            -5
+        );
+        // No `<Sign>` at all: GenICam's default is unsigned.
+        assert_eq!(
+            nodemap
+                .get_integer("ImplicitlyUnsigned", &io)
+                .expect("read default-signed register"),
+            0xFFFF_FFFFu32 as i64
+        );
+    }
+
+    /// A `<StructReg>` bit reads as 1, not -1.
+    ///
+    /// Entries used to declare the full `i64` range, which looked like a
+    /// signed field; a set bit then sign-extended to -1 and every
+    /// `(INQ = 1)` test in the document silently failed.
+    #[test]
+    fn struct_entry_bits_read_unsigned() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <StructReg Comment="Gain Inquiry Register">
+                    <Address>0x520</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Endianess>BigEndian</Endianess>
+                    <StructEntry Name="GainPresInq_Bit"><Bit>0</Bit></StructEntry>
+                    <StructEntry Name="GainAutoInq_Bit"><Bit>6</Bit></StructEntry>
+                </StructReg>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        // `<Bit>` indices count from the MSB on a big-endian register (the
+        // same rule the reference implementation applies), so bits 0 and 6 are
+        // the top byte's 0x80 and 0x02.
+        let io = MockIo::with_registers(&[(0x520, vec![0x82, 0x00, 0x00, 0x00])]);
+
+        assert_eq!(
+            nodemap
+                .get_integer("GainPresInq_Bit", &io)
+                .expect("read presence bit"),
+            1
+        );
+        assert_eq!(
+            nodemap
+                .get_integer("GainAutoInq_Bit", &io)
+                .expect("read auto bit"),
+            1
+        );
+    }
+
+    /// The whole point of the additive model: `<Address>` and `<pAddress>` on
+    /// the same register add up. Keeping only one of them silently read the
+    /// wrong register on FLIR, Point Grey and Hikrobot cameras (issue #35).
+    #[test]
+    fn address_terms_sum() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="RegBase">
+                    <Address>0x2000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>65535</Max>
+                </Integer>
+                <Integer Name="Gain">
+                    <pAddress>RegBase</pAddress>
+                    <Address>0x8</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>255</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[
+            (
+                0x2000,
+                i64_to_bytes("RegBase", 0x3000, 4, Sign::Signed).unwrap(),
+            ),
+            // Only the summed address holds the value we expect.
+            (0x3008, i64_to_bytes("Gain", 77, 4, Sign::Signed).unwrap()),
+            (0x3000, i64_to_bytes("Gain", 11, 4, Sign::Signed).unwrap()),
+        ]);
+
+        assert_eq!(nodemap.get_integer("Gain", &io).expect("read gain"), 77);
+    }
+
+    /// `<pIndex Offset="N">` scales an index node into the address. AVT Manta
+    /// and Prosilica use it for every per-trigger inquiry register.
+    #[test]
+    fn p_index_scales_into_the_address() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="TriggerSelectorIdx">
+                    <Address>0x2000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>7</Max>
+                </Integer>
+                <Integer Name="TriggerInqDelay">
+                    <Address>0x13400</Address>
+                    <pIndex Offset="64">TriggerSelectorIdx</pIndex>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Min>0</Min>
+                    <Max>255</Max>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let mut nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[
+            (
+                0x2000,
+                i64_to_bytes("TriggerSelectorIdx", 2, 4, Sign::Signed).unwrap(),
+            ),
+            (
+                0x13400,
+                i64_to_bytes("TriggerInqDelay", 1, 4, Sign::Signed).unwrap(),
+            ),
+            (
+                0x13480,
+                i64_to_bytes("TriggerInqDelay", 42, 4, Sign::Signed).unwrap(),
+            ),
+        ]);
+
+        // index 2 * stride 64 = 0x80 past the base.
+        assert_eq!(
+            nodemap
+                .get_integer("TriggerInqDelay", &io)
+                .expect("read indexed register"),
+            42
+        );
+
+        // Changing the index moves the register.
+        nodemap
+            .set_integer("TriggerSelectorIdx", 0, &io)
+            .expect("select index 0");
+        assert_eq!(
+            nodemap
+                .get_integer("TriggerInqDelay", &io)
+                .expect("read indexed register"),
+            1
+        );
     }
 
     #[test]
     fn enum_literal_entry_read() {
         let nodemap = build_enum_pvalue_nodemap();
         let io = MockIo::with_registers(&[
-            (0x4000, i64_to_bytes("Mode", 10, 4).unwrap()),
-            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+            (0x4000, i64_to_bytes("Mode", 10, 4, Sign::Signed).unwrap()),
+            (
+                0x4100,
+                i64_to_bytes("RegModeVal", 42, 4, Sign::Signed).unwrap(),
+            ),
         ]);
 
         let value = nodemap.get_enum("Mode", &io).expect("read mode");
@@ -687,8 +1085,11 @@ mod tests {
     fn enum_provider_entry_read() {
         let nodemap = build_enum_pvalue_nodemap();
         let io = MockIo::with_registers(&[
-            (0x4000, i64_to_bytes("Mode", 42, 4).unwrap()),
-            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+            (0x4000, i64_to_bytes("Mode", 42, 4, Sign::Signed).unwrap()),
+            (
+                0x4100,
+                i64_to_bytes("RegModeVal", 42, 4, Sign::Signed).unwrap(),
+            ),
         ]);
 
         let value = nodemap.get_enum("Mode", &io).expect("read dynamic mode");
@@ -700,14 +1101,17 @@ mod tests {
     fn enum_set_uses_provider_value() {
         let mut nodemap = build_enum_pvalue_nodemap();
         let io = MockIo::with_registers(&[
-            (0x4000, i64_to_bytes("Mode", 0, 4).unwrap()),
-            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+            (0x4000, i64_to_bytes("Mode", 0, 4, Sign::Signed).unwrap()),
+            (
+                0x4100,
+                i64_to_bytes("RegModeVal", 42, 4, Sign::Signed).unwrap(),
+            ),
         ]);
 
         nodemap
             .set_enum("Mode", "DynFromReg", &io)
             .expect("write enum");
-        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap()).unwrap();
+        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap(), Sign::Signed).unwrap();
         assert_eq!(raw, 42);
         assert_eq!(io.read_count(0x4100), 1);
     }
@@ -716,8 +1120,11 @@ mod tests {
     fn enum_provider_update_invalidates_mapping() {
         let mut nodemap = build_enum_pvalue_nodemap();
         let io = MockIo::with_registers(&[
-            (0x4000, i64_to_bytes("Mode", 42, 4).unwrap()),
-            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+            (0x4000, i64_to_bytes("Mode", 42, 4, Sign::Signed).unwrap()),
+            (
+                0x4100,
+                i64_to_bytes("RegModeVal", 42, 4, Sign::Signed).unwrap(),
+            ),
         ]);
 
         assert_eq!(nodemap.get_enum("Mode", &io).unwrap(), "DynFromReg");
@@ -726,13 +1133,13 @@ mod tests {
         nodemap
             .set_integer("RegModeVal", 17, &io)
             .expect("update provider");
-        io.write(0x4000, &i64_to_bytes("Mode", 0, 4).unwrap())
+        io.write(0x4000, &i64_to_bytes("Mode", 0, 4, Sign::Signed).unwrap())
             .expect("reset mode register");
 
         nodemap
             .set_enum("Mode", "DynFromReg", &io)
             .expect("write enum after provider change");
-        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap()).unwrap();
+        let raw = bytes_to_i64("Mode", &io.read(0x4000, 4).unwrap(), Sign::Signed).unwrap();
         assert_eq!(raw, 17);
     }
 
@@ -740,8 +1147,11 @@ mod tests {
     fn enum_unknown_value_error() {
         let nodemap = build_enum_pvalue_nodemap();
         let io = MockIo::with_registers(&[
-            (0x4000, i64_to_bytes("Mode", 99, 4).unwrap()),
-            (0x4100, i64_to_bytes("RegModeVal", 42, 4).unwrap()),
+            (0x4000, i64_to_bytes("Mode", 99, 4, Sign::Signed).unwrap()),
+            (
+                0x4100,
+                i64_to_bytes("RegModeVal", 42, 4, Sign::Signed).unwrap(),
+            ),
         ]);
 
         let err = nodemap.get_enum("Mode", &io).unwrap_err();
@@ -838,9 +1248,12 @@ mod tests {
     fn swissknife_evaluates_and_invalidates() {
         let mut nodemap = build_swissknife_nodemap();
         let io = MockIo::with_registers(&[
-            (0x3000, i64_to_bytes("GainRaw", 100, 4).unwrap()),
-            (0x3008, i64_to_bytes("Offset", 3, 4).unwrap()),
-            (0x3010, i64_to_bytes("B", 1, 4).unwrap()),
+            (
+                0x3000,
+                i64_to_bytes("GainRaw", 100, 4, Sign::Signed).unwrap(),
+            ),
+            (0x3008, i64_to_bytes("Offset", 3, 4, Sign::Signed).unwrap()),
+            (0x3010, i64_to_bytes("B", 1, 4, Sign::Signed).unwrap()),
         ]);
 
         let value = nodemap
@@ -861,15 +1274,17 @@ mod tests {
     fn swissknife_integer_rounding_and_unary() {
         let mut nodemap = build_swissknife_nodemap();
         let io = MockIo::with_registers(&[
-            (0x3000, i64_to_bytes("GainRaw", 5, 4).unwrap()),
-            (0x3008, i64_to_bytes("Offset", 0, 4).unwrap()),
-            (0x3010, i64_to_bytes("B", 1, 4).unwrap()),
+            (0x3000, i64_to_bytes("GainRaw", 5, 4, Sign::Signed).unwrap()),
+            (0x3008, i64_to_bytes("Offset", 0, 4, Sign::Signed).unwrap()),
+            (0x3010, i64_to_bytes("B", 1, 4, Sign::Signed).unwrap()),
         ]);
 
+        // `<IntSwissKnife>` evaluates in integer arithmetic, so 5 / 3 truncates
+        // to 1. Rounding to 2 would mean the division ran in floating point.
         let divided = nodemap
             .get_integer("DivideInt", &io)
             .expect("integer division");
-        assert_eq!(divided, 2);
+        assert_eq!(divided, 1);
 
         nodemap
             .set_integer("GainRaw", 3, &io)
@@ -897,23 +1312,60 @@ mod tests {
         "#;
 
         let model = viva_genapi_xml::parse(XML).expect("parse invalid swissknife");
-        let err = NodeMap::try_from_xml(model).expect_err("unknown variable");
-        match err {
-            GenApiError::UnknownVariable { name, var } => {
-                assert_eq!(name, "Bad");
-                assert_eq!(var, "Missing");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let nodemap = NodeMap::try_from_xml(model).expect("model builds despite the bad node");
+
+        // The unusable node is dropped and recorded, not fatal: issues #35 and
+        // #45 were both a single odd node making an entire camera unopenable.
+        let skipped = nodemap.skipped();
+        assert_eq!(skipped.len(), 1, "expected exactly one dropped node");
+        assert_eq!(skipped[0].name.as_deref(), Some("Bad"));
+        assert!(
+            skipped[0].error.contains("Missing"),
+            "the record should name the unresolved variable: {}",
+            skipped[0].error
+        );
+        assert!(nodemap.node("Bad").is_none());
+
+        // Everything else still works.
+        assert!(nodemap.node("A").is_some());
+    }
+
+    /// A formula our parser cannot handle costs that feature, not the camera.
+    #[test]
+    fn unparsable_formula_is_isolated() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="Width">
+                    <Address>0x2000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Min>0</Min>
+                    <Max>4096</Max>
+                </Integer>
+                <IntSwissKnife Name="Broken">
+                    <Formula>Width +</Formula>
+                    <pVariable Name="Width">Width</pVariable>
+                </IntSwissKnife>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse model");
+        let nodemap = NodeMap::try_from_xml(model).expect("model builds despite the bad formula");
+        assert_eq!(nodemap.skipped().len(), 1);
+        assert_eq!(nodemap.skipped()[0].name.as_deref(), Some("Broken"));
+        assert!(nodemap.node("Width").is_some());
     }
 
     #[test]
     fn swissknife_division_by_zero() {
         let nodemap = build_swissknife_nodemap();
         let io = MockIo::with_registers(&[
-            (0x3000, i64_to_bytes("GainRaw", 10, 4).unwrap()),
-            (0x3008, i64_to_bytes("Offset", 0, 4).unwrap()),
-            (0x3010, i64_to_bytes("B", 0, 4).unwrap()),
+            (
+                0x3000,
+                i64_to_bytes("GainRaw", 10, 4, Sign::Signed).unwrap(),
+            ),
+            (0x3008, i64_to_bytes("Offset", 0, 4, Sign::Signed).unwrap()),
+            (0x3010, i64_to_bytes("B", 0, 4, Sign::Signed).unwrap()),
         ]);
 
         let err = nodemap
@@ -972,7 +1424,7 @@ mod tests {
     #[test]
     fn nodes_at_visibility_beginner_returns_only_beginner() {
         let model = viva_genapi_xml::parse(VISIBILITY_FIXTURE).expect("parse visibility fixture");
-        let nodemap = NodeMap::from(model);
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
 
         let visible = nodemap.nodes_at_visibility(Visibility::Beginner);
         assert!(
@@ -996,7 +1448,7 @@ mod tests {
     #[test]
     fn nodes_at_visibility_guru_includes_beginner_and_expert_but_not_invisible() {
         let model = viva_genapi_xml::parse(VISIBILITY_FIXTURE).expect("parse visibility fixture");
-        let nodemap = NodeMap::from(model);
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
 
         let visible = nodemap.nodes_at_visibility(Visibility::Guru);
         assert!(

@@ -1,19 +1,20 @@
 //! Builder types for constructing addressing and bitfield metadata.
 
-use tracing::warn;
-
-use crate::{Addressing, BitField, ByteOrder, XmlError};
+use crate::{AddressTerm, Addressing, BitField, ByteOrder, IndexOffset, XmlError};
 
 /// Builder for collecting address-related elements during parsing.
+///
+/// GenICam register addresses are additive: `<Address>`, `<pAddress>` and
+/// `<pIndex>` may each appear several times and every one of them contributes.
+/// This builder therefore *appends* terms; it never replaces one with another.
 #[derive(Debug, Default)]
 pub struct AddressingBuilder {
-    pub(crate) fixed_address: Option<u64>,
+    pub(crate) terms: Vec<AddressTerm>,
     pub(crate) length: Option<u32>,
     pub(crate) selector: Option<String>,
     pub(crate) entries: Vec<AddressEntry>,
     pub(crate) pending_value: Option<String>,
     pub(crate) pending_len: Option<u32>,
-    pub(crate) p_address_node: Option<String>,
 }
 
 /// A single selector-to-address mapping entry.
@@ -27,15 +28,7 @@ pub struct AddressEntry {
 impl AddressingBuilder {
     /// Create a new builder with the node name for error messages.
     pub fn new(_node: &str) -> Self {
-        Self {
-            fixed_address: None,
-            length: None,
-            selector: None,
-            entries: Vec::new(),
-            pending_value: None,
-            pending_len: None,
-            p_address_node: None,
-        }
+        Self::default()
     }
 
     /// Finalize the builder into an [`Addressing`] variant using default length 0.
@@ -44,13 +37,11 @@ impl AddressingBuilder {
     /// default to the full register.
     pub fn build(self) -> Addressing {
         let len = self.length.unwrap_or(0);
-        if let Some(p_address_node) = self.p_address_node {
-            Addressing::Indirect {
-                p_address_node,
+        if !self.terms.is_empty() {
+            Addressing::Sum {
+                terms: self.terms,
                 len,
             }
-        } else if let Some(address) = self.fixed_address {
-            Addressing::Fixed { address, len }
         } else if !self.entries.is_empty() {
             let selector = self.selector.unwrap_or_default();
             let map = self
@@ -60,14 +51,13 @@ impl AddressingBuilder {
                 .collect();
             Addressing::BySelector { selector, map }
         } else {
-            // Return fixed with zero address if nothing specified
-            Addressing::Fixed { address: 0, len }
+            Addressing::fixed(0, len)
         }
     }
 
-    /// Set a fixed register address.
-    pub fn set_fixed_address(&mut self, address: u64) {
-        self.fixed_address = Some(address);
+    /// Add a literal `<Address>` term.
+    pub fn push_fixed_address(&mut self, address: u64) {
+        self.terms.push(AddressTerm::Fixed(address));
     }
 
     /// Set the register length in bytes.
@@ -75,9 +65,17 @@ impl AddressingBuilder {
         self.length = Some(len);
     }
 
-    /// Set an indirect address provider node.
-    pub fn set_p_address_node(&mut self, node: &str) {
-        self.p_address_node = Some(node.to_string());
+    /// Add a `<pAddress>` term naming a node that supplies an offset.
+    pub fn push_p_address(&mut self, node: &str) {
+        self.terms.push(AddressTerm::Node(node.to_string()));
+    }
+
+    /// Add a `<pIndex>` term: an index node scaled by a stride.
+    pub fn push_index(&mut self, node: &str, offset: IndexOffset) {
+        self.terms.push(AddressTerm::Index {
+            node: node.to_string(),
+            offset,
+        });
     }
 
     /// Register a selector node for address switching.
@@ -103,6 +101,9 @@ impl AddressingBuilder {
     }
 
     /// Attach an address to the current pending selector value.
+    ///
+    /// Without a pending `<Selected>` value this is an ordinary `<Address>`
+    /// term.
     pub fn attach_selected_address(&mut self, address: u64, len_override: Option<u32>) {
         if let Some(value) = self.pending_value.take() {
             let len = len_override.or(self.pending_len.take());
@@ -112,7 +113,7 @@ impl AddressingBuilder {
                 len,
             });
         } else {
-            self.fixed_address = Some(address);
+            self.push_fixed_address(address);
             if let Some(len) = len_override {
                 self.length = Some(len);
             }
@@ -141,43 +142,21 @@ impl AddressingBuilder {
                     map.push((entry.value.clone(), (entry.address, len)));
                 }
             }
-            if self.p_address_node.is_some() {
-                warn!(
-                    node = %node,
-                    "ignoring <pAddress> in favour of selector table"
-                );
-            }
-            if self.fixed_address.is_some() {
-                warn!(
-                    node = %node,
-                    selector = %selector,
-                    "ignoring fixed <Address> in favour of selector table"
-                );
-            }
             Ok(Addressing::BySelector { selector, map })
         } else {
             let len = self
                 .length
                 .or(default_len)
                 .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Length>")))?;
-            if let Some(p_address_node) = self.p_address_node {
-                if self.fixed_address.is_some() {
-                    warn!(
-                        node = %node,
-                        address_node = %p_address_node,
-                        "ignoring fixed <Address> in favour of <pAddress>"
-                    );
-                }
-                Ok(Addressing::Indirect {
-                    p_address_node,
-                    len,
-                })
-            } else {
-                let address = self.fixed_address.ok_or_else(|| {
-                    XmlError::Invalid(format!("node {node} is missing <Address>"))
-                })?;
-                Ok(Addressing::Fixed { address, len })
+            if self.terms.is_empty() {
+                return Err(XmlError::Invalid(format!(
+                    "node {node} is missing <Address>"
+                )));
             }
+            Ok(Addressing::Sum {
+                terms: self.terms,
+                len,
+            })
         }
     }
 }
@@ -399,8 +378,7 @@ impl BitfieldBuilder {
 /// Extract lengths from an addressing variant.
 pub fn addressing_lengths(addressing: &Addressing) -> Vec<u32> {
     match addressing {
-        Addressing::Fixed { len, .. } => vec![*len],
-        Addressing::Indirect { len, .. } => vec![*len],
+        Addressing::Sum { len, .. } => vec![*len],
         Addressing::BySelector { map, .. } => map.iter().map(|(_, (_, len))| *len).collect(),
     }
 }

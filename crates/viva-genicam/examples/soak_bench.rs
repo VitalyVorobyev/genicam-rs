@@ -243,7 +243,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     })
     .await?;
     let model = viva_genapi_xml::parse(&xml)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = tokio::runtime::Handle::current();
     let control_device = std::sync::Arc::try_unwrap(control)
         .map_err(|_| "control connection still in use")?

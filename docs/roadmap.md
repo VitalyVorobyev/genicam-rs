@@ -7,13 +7,17 @@ are tracked in [backlog.md](backlog.md).
 Phase 1 (July 2026 — CI un-break, Hikrobot READMEM fix #35, external PR #34,
 0.2.6 release with LGPL notices, CI modernization) is complete.
 
+0.3.0 (July 2026) shipped GenApi conformance — the formula language, the
+additive register address model, `<Sign>`, and converter direction — after
+issue #35 showed that 27 of the 30 documents in the vendor corpus could not be
+opened. That was a breaking release, but not the *planned* breaking release:
+the API consolidation below is unaffected and now targets 0.4.0. See
+[ADR-0018](adrs/adr0018-genapi-conformance-over-convenience.md).
+
 ## Phase 2 — Streaming reliability (industrial core, next up)
 
 The features that make the library trustworthy on a factory floor.
 
-- **Fallible connect on malformed camera XML** — `NodeMap::from` currently
-  `expect`s during connect; a camera serving broken XML must yield an error,
-  not a panic.
 - **SCPS read-back after write** — cameras clamp the requested packet size;
   the receiver's stride must follow the *negotiated* value read back from
   SCPS, including the extended-ID stride variant.
@@ -28,7 +32,7 @@ The features that make the library trustworthy on a factory floor.
 - **Fix unsound `unsafe impl Sync` on `MockUsbTransfer`** — replace the
   `RefCell` interior with a `Mutex`.
 
-## Phase 3 — 0.3.0 API consolidation (breaking)
+## Phase 3 — 0.4.0 API consolidation (breaking)
 
 One deliberate breaking release to pay down surface-area debt.
 

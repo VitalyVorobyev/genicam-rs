@@ -77,7 +77,7 @@ impl RegisterIo for MockIo {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let model = viva_genapi_xml::parse(XML)?;
-    let mut nodemap = NodeMap::from(model);
+    let mut nodemap = NodeMap::try_from_xml(model)?;
     let io = MockIo::new(&[
         (0x6000, vec![0xAA, 0xBB, 0xCC, 0xDD]),
         (0x6004, vec![0b1010_0000, 0b0000_0000]),

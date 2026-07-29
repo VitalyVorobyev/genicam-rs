@@ -834,9 +834,7 @@ pub async fn connect_gige_with_xml(
     .await
     .map_err(|e| GenicamError::transport(e.to_string()))?;
 
-    let model = viva_genapi_xml::parse(&xml)
-        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
-    let nodemap = genapi::NodeMap::from(model);
+    let nodemap = build_nodemap(&xml)?;
 
     // Extract the device and create the blocking adapter.
     let handle = tokio::runtime::Handle::current();
@@ -952,9 +950,7 @@ pub fn connect_u3v_with_xml(
         .fetch_xml()
         .map_err(|e| GenicamError::transport(e.to_string()))?;
 
-    let model = viva_genapi_xml::parse(&xml)
-        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
-    let nodemap = genapi::NodeMap::from(model);
+    let nodemap = build_nodemap(&xml)?;
     let transport = U3vRegisterIo::new(device);
 
     info!("USB3 Vision camera connected successfully");
@@ -975,11 +971,53 @@ pub fn open_u3v_device<T: u3v::usb::UsbTransfer + 'static>(
     let xml = device
         .fetch_xml()
         .map_err(|e| GenicamError::transport(e.to_string()))?;
-    let model = viva_genapi_xml::parse(&xml)
-        .map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
-    let nodemap = genapi::NodeMap::from(model);
+    let nodemap = build_nodemap(&xml)?;
     let transport = U3vRegisterIo::new(device);
     Ok((Camera::new(transport, nodemap), xml))
+}
+
+/// Parse a camera's GenApi XML and build its nodemap, reporting what we could
+/// not represent.
+///
+/// Both layers isolate per-node failures, so a camera opens with a missing
+/// feature rather than not at all. That only helps if the loss is visible:
+/// every dropped node is logged here, and a summary line goes out at `warn`
+/// so a user hitting an unsupported construct has something to report.
+fn build_nodemap(xml: &str) -> Result<NodeMap, GenicamError> {
+    let model =
+        viva_genapi_xml::parse(xml).map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
+    let xml_skipped = model.skipped.len();
+    for skipped in &model.skipped {
+        debug!(
+            tag = %skipped.tag,
+            node = skipped.name.as_deref().unwrap_or("<unnamed>"),
+            error = %skipped.error,
+            "GenApi XML node not parsed"
+        );
+    }
+
+    let nodemap = NodeMap::try_from_xml(model)
+        .map_err(|e| GenicamError::parse(format!("GenApi model: {e}")))?;
+    for skipped in nodemap.skipped() {
+        debug!(
+            kind = %skipped.tag,
+            node = skipped.name.as_deref().unwrap_or("<unnamed>"),
+            error = %skipped.error,
+            "GenApi node not built"
+        );
+    }
+
+    let total = xml_skipped + nodemap.skipped().len();
+    if total > 0 {
+        warn!(
+            unparsed = xml_skipped,
+            unbuilt = nodemap.skipped().len(),
+            features = nodemap.node_names().count(),
+            "some camera features are unavailable; enable debug logging for the list \
+             and please report them at https://github.com/VitalyVorobyev/viva-genicam/issues"
+        );
+    }
+    Ok(nodemap)
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

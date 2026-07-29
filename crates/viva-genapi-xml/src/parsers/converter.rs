@@ -7,8 +7,8 @@ use super::{NodeMetaBuilder, TAG_P_VALUE, handle_predicate_start};
 use crate::builders::AddressingBuilder;
 use crate::util::{attribute_value, attribute_value_required, read_text_start, skip_element};
 use crate::{
-    AccessMode, ConverterDecl, IntConverterDecl, NodeDecl, PredicateRefs, SkOutput, StringDecl,
-    XmlError,
+    AccessMode, ConverterDecl, FormulaBindings, IntConverterDecl, NodeDecl, PredicateRefs,
+    SkOutput, StringDecl, XmlError,
 };
 
 /// Parse a `<Converter>` element into a [`NodeDecl::Converter`].
@@ -27,6 +27,7 @@ pub fn parse_converter(
     let mut predicates = PredicateRefs::default();
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
+    let mut bindings = FormulaBindings::default();
     let mut meta_builder = NodeMetaBuilder::default();
 
     loop {
@@ -51,6 +52,24 @@ pub fn parse_converter(
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         formula_from = Some(trimmed.to_string());
+                    }
+                }
+                // Named literals and sub-formulas, resolved by substitution
+                // when the runtime builds the node.
+                b"Constant" => {
+                    let const_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        bindings.constants.push((const_name, trimmed.to_string()));
+                    }
+                }
+                b"Expression" => {
+                    let sub_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        bindings.expressions.push((sub_name, trimmed.to_string()));
                     }
                 }
                 b"pVariable" => {
@@ -122,14 +141,17 @@ pub fn parse_converter(
     let p_value = p_value
         .ok_or_else(|| XmlError::Invalid(format!("Converter node {name} missing <pValue>")))?;
 
-    // FormulaTo converts from raw to user value (reading direction)
-    // FormulaFrom converts from user to raw value (writing direction)
-    // If missing, use identity: just the pValue variable
+    // `<FormulaFrom>` converts the raw value to the feature value — the read
+    // direction — and binds `TO` to `<pValue>`. `<FormulaTo>` goes the other
+    // way and binds `FROM` to the value being written. Missing formulas
+    // default to the identity.
     let formula_to = formula_to.unwrap_or_else(|| "FROM".to_string());
     let formula_from = formula_from.unwrap_or_else(|| "TO".to_string());
 
-    // Ensure the pValue is available as a variable named "FROM" in formula_to
-    // and "TO" in formula_from (GenICam convention)
+    // `TO` names the raw value in the read direction, so bind it to
+    // `<pValue>`. `FROM` names the value being written, which only exists at
+    // write time — the write path rebinds it; the fallback here just keeps the
+    // formula resolvable when it is inspected offline.
     if !variables_to.iter().any(|(n, _)| n == "FROM") {
         variables_to.push(("FROM".to_string(), p_value.clone()));
     }
@@ -145,6 +167,7 @@ pub fn parse_converter(
         formula_from,
         variables_to,
         variables_from,
+        bindings,
         unit,
         output,
         predicates,
@@ -166,6 +189,7 @@ pub fn parse_int_converter(
     let mut predicates = PredicateRefs::default();
     let node_name = start.name().as_ref().to_vec();
     let mut buf = Vec::new();
+    let mut bindings = FormulaBindings::default();
     let mut meta_builder = NodeMetaBuilder::default();
 
     loop {
@@ -190,6 +214,24 @@ pub fn parse_int_converter(
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         formula_from = Some(trimmed.to_string());
+                    }
+                }
+                // Named literals and sub-formulas, resolved by substitution
+                // when the runtime builds the node.
+                b"Constant" => {
+                    let const_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        bindings.constants.push((const_name, trimmed.to_string()));
+                    }
+                }
+                b"Expression" => {
+                    let sub_name = attribute_value_required(e, b"Name")?;
+                    let text = read_text_start(reader, e)?;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        bindings.expressions.push((sub_name, trimmed.to_string()));
                     }
                 }
                 b"pVariable" => {
@@ -272,6 +314,7 @@ pub fn parse_int_converter(
         formula_from,
         variables_to,
         variables_from,
+        bindings,
         unit,
         predicates,
     }))
@@ -310,7 +353,7 @@ pub fn parse_string(
                     let text = read_text_start(reader, e)?;
                     let target = text.trim();
                     if !target.is_empty() {
-                        addressing.set_p_address_node(target);
+                        addressing.push_p_address(target);
                     }
                 }
                 b"AccessMode" => {
@@ -331,7 +374,7 @@ pub fn parse_string(
                 {
                     let trimmed = value.trim();
                     if !trimmed.is_empty() {
-                        addressing.set_p_address_node(trimmed);
+                        addressing.push_p_address(trimmed);
                     }
                 }
             }

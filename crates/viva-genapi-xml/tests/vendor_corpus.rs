@@ -89,7 +89,7 @@ fn vendor_xml_corpus_parses() {
             .to_string_lossy()
             .into_owned();
         let bytes = std::fs::read(path).expect("read corpus document");
-        // Encoding handling is tracked separately (#49); lossy decoding keeps
+        // Encoding handling is tracked separately (XML-02); lossy decoding keeps
         // this test focused on the parser.
         let xml = String::from_utf8_lossy(&bytes);
 

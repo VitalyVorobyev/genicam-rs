@@ -1,22 +1,111 @@
-//! SwissKnife expression parser and evaluator.
+//! GenApi formula parser and evaluator.
 //!
-//! Supports the GenICam SwissKnife expression language including:
+//! Covers the expression language used by `<SwissKnife>`, `<IntSwissKnife>`,
+//! `<Converter>` and `<IntConverter>` nodes:
+//!
 //! - Arithmetic: `+ - * / %` and `**` for power
-//! - Comparison: `< <= > >= == !=`
-//! - Logical: `&& || !`
+//! - Comparison: `< <= > >=`, `=` (equality) and `<>` (inequality)
+//! - Logical: `&& ||`
 //! - Bitwise: `& | ^ ~ << >>`
 //! - Ternary: `condition ? then : else`
-//! - Functions: `sin cos tan asin acos atan atan2 sqrt abs ceil floor round
-//!              log ln exp pow min max sgn neg`
+//! - Functions: `SGN NEG ATAN SIN COS TAN ABS EXP LN LG SQRT TRUNC ROUND
+//!   FLOOR CEIL ASIN ACOS`, plus the constants `E` and `PI`
+//!
+//! Two details trip up implementations that reach for a C-like grammar, and
+//! both appear in the majority of real vendor descriptions:
+//!
+//! 1. **`=` is equality, `<>` is inequality.** There is no assignment in the
+//!    language, so `=` is never ambiguous. `==` and `!=` are accepted as
+//!    tolerated aliases.
+//! 2. **Integer formulas evaluate in `i64`, not `f64`.** `IntSwissKnife` and
+//!    `IntConverter` use [`EvalMode::Integer`], where `/` truncates and 64-bit
+//!    register values stay exact. Evaluating `(HIGH << 32) | LOW` in `f64`
+//!    silently loses the low bits.
+//!
+//! Operator precedence and the integer/float promotion rules follow the GenApi
+//! specification, cross-checked against the reference implementation in
+//! aravis (`src/arvevaluator.c`: `arv_evaluator_token_infos` for precedence,
+//! the `integer_mode` branches of `arv_evaluator_evaluate` for promotion).
 
 use std::collections::HashSet;
 use std::fmt;
 
-/// Parsed SwissKnife expression represented as an abstract syntax tree.
+/// Numeric value flowing through a GenApi formula.
+///
+/// The language is dynamically typed over `i64` and `f64`. Keeping the two
+/// apart matters: register values are integers up to 64 bits wide, and `f64`
+/// cannot represent them all exactly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Value {
+    /// Integer value.
+    Int(i64),
+    /// Floating point value.
+    Float(f64),
+}
+
+impl Value {
+    /// View the value as an `i64`, truncating a float towards zero.
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Value::Int(value) => value,
+            Value::Float(value) => value as i64,
+        }
+    }
+
+    /// View the value as an `f64`.
+    pub fn as_f64(self) -> f64 {
+        match self {
+            Value::Int(value) => value as f64,
+            Value::Float(value) => value,
+        }
+    }
+
+    /// Whether the value is held as an integer.
+    pub fn is_int(self) -> bool {
+        matches!(self, Value::Int(_))
+    }
+
+    /// Whether the value counts as true in a condition (non-zero).
+    pub fn is_truthy(self) -> bool {
+        match self {
+            Value::Int(value) => value != 0,
+            Value::Float(value) => value != 0.0,
+        }
+    }
+
+    fn from_bool(value: bool) -> Self {
+        Value::Int(i64::from(value))
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Int(value) => write!(f, "{value}"),
+            Value::Float(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// Arithmetic mode for a formula.
+///
+/// `IntSwissKnife` and `IntConverter` declare integer semantics; `SwissKnife`
+/// and `Converter` declare floating point ones. The distinction is observable:
+/// `7 / 2` is `3` in [`EvalMode::Integer`] and `3.5` in [`EvalMode::Float`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvalMode {
+    /// Integer arithmetic: `/` truncates, results stay in `i64`.
+    Integer,
+    /// Floating point arithmetic. Bitwise operators still work on `i64`.
+    #[default]
+    Float,
+}
+
+/// Parsed GenApi formula represented as an abstract syntax tree.
 #[derive(Debug, Clone)]
 pub enum AstNode {
-    /// Numeric literal stored as `f64`.
-    Number(f64),
+    /// Numeric literal.
+    Literal(Value),
     /// Variable lookup resolved at evaluation time.
     Variable(String),
     /// Unary operator applied to a sub-expression.
@@ -53,7 +142,7 @@ pub enum AstNode {
     },
 }
 
-/// Binary operator kinds supported by the SwissKnife expression language.
+/// Binary operator kinds supported by the GenApi formula language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic
@@ -81,7 +170,7 @@ pub enum BinaryOp {
     Shr,
 }
 
-/// Unary operator kinds supported by the SwissKnife expression language.
+/// Unary operator kinds supported by the GenApi formula language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Plus,
@@ -90,27 +179,36 @@ pub enum UnaryOp {
     BitNot,
 }
 
-/// Error produced while parsing a SwissKnife expression.
+/// Error produced while parsing a GenApi formula.
 #[derive(Debug, Clone)]
 pub struct ParseError {
     msg: String,
+    offset: usize,
 }
 
 impl ParseError {
-    fn new<S: Into<String>>(msg: S) -> Self {
-        Self { msg: msg.into() }
+    fn new<S: Into<String>>(msg: S, offset: usize) -> Self {
+        Self {
+            msg: msg.into(),
+            offset,
+        }
+    }
+
+    /// Byte offset within the formula at which the error was detected.
+    pub fn offset(&self) -> usize {
+        self.offset
     }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.msg)
+        write!(f, "{} (at offset {})", self.msg, self.offset)
     }
 }
 
 impl std::error::Error for ParseError {}
 
-/// Error produced while evaluating a SwissKnife expression.
+/// Error produced while evaluating a GenApi formula.
 #[derive(Debug, Clone)]
 pub enum EvalError {
     /// Variable referenced by the expression has no bound value.
@@ -146,59 +244,84 @@ impl fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
-/// Parse a SwissKnife expression into an [`AstNode`].
+/// Parse a GenApi formula into an [`AstNode`].
 pub fn parse_expression(input: &str) -> Result<AstNode, ParseError> {
     let mut parser = Parser::new(input)?;
     let expr = parser.parse_ternary()?;
     if !matches!(parser.lookahead, Token::End) {
-        return Err(ParseError::new("unexpected trailing tokens"));
+        return Err(ParseError::new("unexpected trailing tokens", parser.pos));
     }
     Ok(expr)
 }
 
+/// Value of a GenApi built-in constant, if `name` denotes one.
+///
+/// The language defines `E` and `PI` as constants rather than variables, so a
+/// formula may reference them without a matching `<pVariable>`. Matching is
+/// case-insensitive, as in the reference implementation.
+pub fn builtin_constant(name: &str) -> Option<Value> {
+    match name.to_ascii_lowercase().as_str() {
+        "e" => Some(Value::Float(std::f64::consts::E)),
+        "pi" => Some(Value::Float(std::f64::consts::PI)),
+        _ => None,
+    }
+}
+
+/// Whether `name` denotes a GenApi built-in constant.
+///
+/// Callers validating that every identifier in a formula has a `<pVariable>`
+/// must exempt these.
+pub fn is_builtin_constant(name: &str) -> bool {
+    builtin_constant(name).is_some()
+}
+
 /// Evaluate an [`AstNode`] using the provided variable resolver.
 ///
-/// The resolver receives variable identifiers and must return their numeric
-/// value. Returning [`EvalError::UnknownVariable`] is propagated to the caller.
+/// The resolver receives variable identifiers and must return their value.
+/// An identifier the resolver rejects with [`EvalError::UnknownVariable`] is
+/// retried against the built-in constants before the error is propagated, so a
+/// declared `<pVariable>` always shadows a same-named constant.
 pub fn evaluate(
     ast: &AstNode,
-    vars: &mut dyn FnMut(&str) -> Result<f64, EvalError>,
-) -> Result<f64, EvalError> {
+    vars: &mut dyn FnMut(&str) -> Result<Value, EvalError>,
+    mode: EvalMode,
+) -> Result<Value, EvalError> {
     match ast {
-        AstNode::Number(value) => Ok(*value),
-        AstNode::Variable(name) => vars(name),
-        AstNode::Unary { op, expr } => {
-            let inner = evaluate(expr, vars)?;
-            match op {
-                UnaryOp::Plus => Ok(inner),
-                UnaryOp::Minus => Ok(-inner),
-                UnaryOp::Not => Ok(if inner == 0.0 { 1.0 } else { 0.0 }),
-                UnaryOp::BitNot => Ok(!(inner as i64) as f64),
+        AstNode::Literal(value) => Ok(*value),
+        AstNode::Variable(name) => match vars(name) {
+            Ok(value) => Ok(value),
+            Err(EvalError::UnknownVariable(_)) => {
+                builtin_constant(name).ok_or_else(|| EvalError::UnknownVariable(name.clone()))
             }
+            Err(other) => Err(other),
+        },
+        AstNode::Unary { op, expr } => {
+            let inner = evaluate(expr, vars, mode)?;
+            Ok(eval_unary(*op, inner, mode))
         }
         AstNode::Binary { op, left, right } => {
             // Short-circuit evaluation for logical operators
             match op {
                 BinaryOp::And => {
-                    let lhs = evaluate(left, vars)?;
-                    if lhs == 0.0 {
-                        return Ok(0.0);
+                    let lhs = evaluate(left, vars, mode)?;
+                    if !lhs.is_truthy() {
+                        return Ok(Value::from_bool(false));
                     }
-                    let rhs = evaluate(right, vars)?;
-                    Ok(if rhs != 0.0 { 1.0 } else { 0.0 })
+                    let rhs = evaluate(right, vars, mode)?;
+                    Ok(Value::from_bool(rhs.is_truthy()))
                 }
                 BinaryOp::Or => {
-                    let lhs = evaluate(left, vars)?;
-                    if lhs != 0.0 {
-                        return Ok(1.0);
+                    let lhs = evaluate(left, vars, mode)?;
+                    if lhs.is_truthy() {
+                        return Ok(Value::from_bool(true));
                     }
-                    let rhs = evaluate(right, vars)?;
-                    Ok(if rhs != 0.0 { 1.0 } else { 0.0 })
+                    let rhs = evaluate(right, vars, mode)?;
+                    Ok(Value::from_bool(rhs.is_truthy()))
                 }
                 _ => {
-                    let lhs = evaluate(left, vars)?;
-                    let rhs = evaluate(right, vars)?;
-                    eval_binary(*op, lhs, rhs)
+                    let lhs = evaluate(left, vars, mode)?;
+                    let rhs = evaluate(right, vars, mode)?;
+                    eval_binary(*op, lhs, rhs, mode)
                 }
             }
         }
@@ -207,138 +330,238 @@ pub fn evaluate(
             then_expr,
             else_expr,
         } => {
-            let cond_val = evaluate(cond, vars)?;
-            if cond_val != 0.0 {
-                evaluate(then_expr, vars)
+            if evaluate(cond, vars, mode)?.is_truthy() {
+                evaluate(then_expr, vars, mode)
             } else {
-                evaluate(else_expr, vars)
+                evaluate(else_expr, vars, mode)
             }
         }
         AstNode::FnCall { name, args } => {
-            let evaluated: Result<Vec<f64>, _> = args.iter().map(|a| evaluate(a, vars)).collect();
+            let evaluated: Result<Vec<Value>, _> =
+                args.iter().map(|a| evaluate(a, vars, mode)).collect();
             let arg_vals = evaluated?;
-            eval_function(name, &arg_vals)
+            eval_function(name, &arg_vals, mode)
         }
     }
 }
 
-fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> Result<f64, EvalError> {
-    Ok(match op {
-        BinaryOp::Add => lhs + rhs,
-        BinaryOp::Sub => lhs - rhs,
-        BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => {
-            if rhs == 0.0 {
-                return Err(EvalError::DivisionByZero);
+fn eval_unary(op: UnaryOp, value: Value, mode: EvalMode) -> Value {
+    match op {
+        UnaryOp::Plus => value,
+        UnaryOp::Minus => {
+            if mode == EvalMode::Integer || value.is_int() {
+                Value::Int(value.as_i64().wrapping_neg())
+            } else {
+                Value::Float(-value.as_f64())
             }
-            lhs / rhs
+        }
+        UnaryOp::Not => Value::from_bool(!value.is_truthy()),
+        UnaryOp::BitNot => Value::Int(!value.as_i64()),
+    }
+}
+
+/// Whether an arithmetic result should stay integral.
+fn integral(mode: EvalMode, lhs: Value, rhs: Value) -> bool {
+    mode == EvalMode::Integer || (lhs.is_int() && rhs.is_int())
+}
+
+/// Shift counts are masked to the register width, matching the reference
+/// implementation's reliance on hardware shift semantics. Without this,
+/// `HIGH << 32` on a wide value panics in a debug build.
+fn shift_amount(value: Value) -> u32 {
+    (value.as_i64() as u64 & 63) as u32
+}
+
+fn eval_binary(op: BinaryOp, lhs: Value, rhs: Value, mode: EvalMode) -> Result<Value, EvalError> {
+    Ok(match op {
+        BinaryOp::Add => {
+            if integral(mode, lhs, rhs) {
+                Value::Int(lhs.as_i64().wrapping_add(rhs.as_i64()))
+            } else {
+                Value::Float(lhs.as_f64() + rhs.as_f64())
+            }
+        }
+        BinaryOp::Sub => {
+            if integral(mode, lhs, rhs) {
+                Value::Int(lhs.as_i64().wrapping_sub(rhs.as_i64()))
+            } else {
+                Value::Float(lhs.as_f64() - rhs.as_f64())
+            }
+        }
+        BinaryOp::Mul => {
+            if integral(mode, lhs, rhs) {
+                Value::Int(lhs.as_i64().wrapping_mul(rhs.as_i64()))
+            } else {
+                Value::Float(lhs.as_f64() * rhs.as_f64())
+            }
+        }
+        // Division is the one operator where the mode alone decides: an
+        // integer formula truncates even when a literal happens to be
+        // fractional, and a float formula never truncates.
+        BinaryOp::Div => {
+            if mode == EvalMode::Integer {
+                let divisor = rhs.as_i64();
+                if divisor == 0 {
+                    return Err(EvalError::DivisionByZero);
+                }
+                Value::Int(lhs.as_i64().wrapping_div(divisor))
+            } else {
+                let divisor = rhs.as_f64();
+                if divisor == 0.0 {
+                    return Err(EvalError::DivisionByZero);
+                }
+                Value::Float(lhs.as_f64() / divisor)
+            }
         }
         BinaryOp::Mod => {
-            if rhs == 0.0 {
+            let divisor = rhs.as_i64();
+            if divisor == 0 {
                 return Err(EvalError::DivisionByZero);
             }
-            lhs % rhs
+            Value::Int(lhs.as_i64().wrapping_rem(divisor))
         }
-        BinaryOp::Pow => lhs.powf(rhs),
-        BinaryOp::Lt => {
-            if lhs < rhs {
-                1.0
+        BinaryOp::Pow => {
+            let result = lhs.as_f64().powf(rhs.as_f64());
+            if mode == EvalMode::Integer {
+                Value::Int(result as i64)
             } else {
-                0.0
+                Value::Float(result)
             }
         }
-        BinaryOp::Le => {
-            if lhs <= rhs {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Gt => {
-            if lhs > rhs {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Ge => {
-            if lhs >= rhs {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Eq => {
-            if (lhs - rhs).abs() < f64::EPSILON {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        BinaryOp::Ne => {
-            if (lhs - rhs).abs() >= f64::EPSILON {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        BinaryOp::Lt => compare(lhs, rhs, mode, |a, b| a < b, |a, b| a < b),
+        BinaryOp::Le => compare(lhs, rhs, mode, |a, b| a <= b, |a, b| a <= b),
+        BinaryOp::Gt => compare(lhs, rhs, mode, |a, b| a > b, |a, b| a > b),
+        BinaryOp::Ge => compare(lhs, rhs, mode, |a, b| a >= b, |a, b| a >= b),
+        BinaryOp::Eq => compare(lhs, rhs, mode, |a, b| a == b, |a, b| a == b),
+        BinaryOp::Ne => compare(lhs, rhs, mode, |a, b| a != b, |a, b| a != b),
         BinaryOp::And | BinaryOp::Or => unreachable!("handled by short-circuit"),
-        BinaryOp::BitAnd => ((lhs as i64) & (rhs as i64)) as f64,
-        BinaryOp::BitOr => ((lhs as i64) | (rhs as i64)) as f64,
-        BinaryOp::BitXor => ((lhs as i64) ^ (rhs as i64)) as f64,
-        BinaryOp::Shl => ((lhs as i64) << (rhs as u32)) as f64,
-        BinaryOp::Shr => ((lhs as i64) >> (rhs as u32)) as f64,
+        BinaryOp::BitAnd => Value::Int(lhs.as_i64() & rhs.as_i64()),
+        BinaryOp::BitOr => Value::Int(lhs.as_i64() | rhs.as_i64()),
+        BinaryOp::BitXor => Value::Int(lhs.as_i64() ^ rhs.as_i64()),
+        BinaryOp::Shl => Value::Int(lhs.as_i64().wrapping_shl(shift_amount(rhs))),
+        BinaryOp::Shr => Value::Int(lhs.as_i64().wrapping_shr(shift_amount(rhs))),
     })
 }
 
-fn eval_function(name: &str, args: &[f64]) -> Result<f64, EvalError> {
-    // Normalize function name to lowercase for matching
+/// Compare two values, exactly when both sides are integral.
+///
+/// Comparing register values through `f64` would make `0x100000000000001` and
+/// `0x100000000000000` equal; comparing them as `i64` does not.
+fn compare(
+    lhs: Value,
+    rhs: Value,
+    mode: EvalMode,
+    int_cmp: fn(i64, i64) -> bool,
+    float_cmp: fn(f64, f64) -> bool,
+) -> Value {
+    if integral(mode, lhs, rhs) {
+        Value::from_bool(int_cmp(lhs.as_i64(), rhs.as_i64()))
+    } else {
+        Value::from_bool(float_cmp(lhs.as_f64(), rhs.as_f64()))
+    }
+}
+
+fn eval_function(name: &str, args: &[Value], mode: EvalMode) -> Result<Value, EvalError> {
+    // GenApi function names are case-insensitive; vendors write both `LG` and
+    // `lg`, `SGN` and `sgn`.
     let name_lower = name.to_ascii_lowercase();
 
-    match name_lower.as_str() {
-        // Single-argument functions
-        "sin" => expect_args(name, args, 1).map(|a| a[0].sin()),
-        "cos" => expect_args(name, args, 1).map(|a| a[0].cos()),
-        "tan" => expect_args(name, args, 1).map(|a| a[0].tan()),
-        "asin" => expect_args(name, args, 1).map(|a| a[0].asin()),
-        "acos" => expect_args(name, args, 1).map(|a| a[0].acos()),
-        "atan" => expect_args(name, args, 1).map(|a| a[0].atan()),
-        "sqrt" => expect_args(name, args, 1).map(|a| a[0].sqrt()),
-        "abs" => expect_args(name, args, 1).map(|a| a[0].abs()),
-        "ceil" => expect_args(name, args, 1).map(|a| a[0].ceil()),
-        "floor" => expect_args(name, args, 1).map(|a| a[0].floor()),
-        "round" => expect_args(name, args, 1).map(|a| a[0].round()),
-        "trunc" => expect_args(name, args, 1).map(|a| a[0].trunc()),
-        "ln" => expect_args(name, args, 1).map(|a| a[0].ln()),
-        "log" => expect_args(name, args, 1).map(|a| a[0].log10()),
-        "log10" => expect_args(name, args, 1).map(|a| a[0].log10()),
-        "log2" => expect_args(name, args, 1).map(|a| a[0].log2()),
-        "exp" => expect_args(name, args, 1).map(|a| a[0].exp()),
-        "neg" => expect_args(name, args, 1).map(|a| -a[0]),
-        "sgn" | "sign" => expect_args(name, args, 1).map(|a| {
-            if a[0] > 0.0 {
-                1.0
-            } else if a[0] < 0.0 {
-                -1.0
+    // Transcendental functions always produce a float, matching the reference
+    // implementation.
+    let float_fn = |f: fn(f64) -> f64| -> Result<Value, EvalError> {
+        expect_args(name, args, 1).map(|a| Value::Float(f(a[0].as_f64())))
+    };
+    // Functions that preserve integrality when their argument is integral.
+    let rounding_fn = |f: fn(f64) -> f64| -> Result<Value, EvalError> {
+        expect_args(name, args, 1).map(|a| {
+            if mode == EvalMode::Integer || a[0].is_int() {
+                Value::Int(a[0].as_i64())
             } else {
-                0.0
+                Value::Float(f(a[0].as_f64()))
+            }
+        })
+    };
+
+    match name_lower.as_str() {
+        // --- GenApi standard functions -----------------------------------
+        "sin" => float_fn(f64::sin),
+        "cos" => float_fn(f64::cos),
+        "tan" => float_fn(f64::tan),
+        "asin" => float_fn(f64::asin),
+        "acos" => float_fn(f64::acos),
+        "atan" => float_fn(f64::atan),
+        "sqrt" => float_fn(f64::sqrt),
+        "exp" => float_fn(f64::exp),
+        "ln" => float_fn(f64::ln),
+        // `LG` is the base-10 logarithm. Omitting it made every Baumer TXG
+        // description fail at evaluation time.
+        "lg" => float_fn(f64::log10),
+        "trunc" => rounding_fn(f64::trunc),
+        "floor" => rounding_fn(f64::floor),
+        "ceil" => rounding_fn(f64::ceil),
+        "round" => rounding_fn(f64::round),
+        "abs" => expect_args(name, args, 1).map(|a| {
+            if mode == EvalMode::Integer || a[0].is_int() {
+                Value::Int(a[0].as_i64().wrapping_abs())
+            } else {
+                Value::Float(a[0].as_f64().abs())
             }
         }),
-        "e" => expect_args(name, args, 0).map(|_| std::f64::consts::E),
-        "pi" => expect_args(name, args, 0).map(|_| std::f64::consts::PI),
+        "neg" => expect_args(name, args, 1).map(|a| eval_unary(UnaryOp::Minus, a[0], mode)),
+        "sgn" | "sign" => expect_args(name, args, 1).map(|a| {
+            if mode == EvalMode::Integer || a[0].is_int() {
+                Value::Int(a[0].as_i64().signum())
+            } else {
+                let value = a[0].as_f64();
+                Value::Float(if value > 0.0 {
+                    1.0
+                } else if value < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                })
+            }
+        }),
+        // The constants are usually written bare, but the call form appears
+        // in the wild too.
+        "e" => expect_args(name, args, 0).map(|_| Value::Float(std::f64::consts::E)),
+        "pi" => expect_args(name, args, 0).map(|_| Value::Float(std::f64::consts::PI)),
 
-        // Two-argument functions
-        "atan2" => expect_args(name, args, 2).map(|a| a[0].atan2(a[1])),
-        "pow" => expect_args(name, args, 2).map(|a| a[0].powf(a[1])),
-        "min" => expect_args(name, args, 2).map(|a| a[0].min(a[1])),
-        "max" => expect_args(name, args, 2).map(|a| a[0].max(a[1])),
-        "fmod" => expect_args(name, args, 2).map(|a| a[0] % a[1]),
+        // --- Accepted extensions ------------------------------------------
+        // Not in the GenApi standard, but harmless to accept and already
+        // relied on by our own fixtures.
+        "log" | "log10" => float_fn(f64::log10),
+        "log2" => float_fn(f64::log2),
+        "atan2" => {
+            expect_args(name, args, 2).map(|a| Value::Float(a[0].as_f64().atan2(a[1].as_f64())))
+        }
+        "pow" => eval_binary(BinaryOp::Pow, args_at(name, args, 2)?[0], args[1], mode),
+        "fmod" => eval_binary(BinaryOp::Mod, args_at(name, args, 2)?[0], args[1], mode),
+        "min" => expect_args(name, args, 2).map(|a| pick(a[0], a[1], mode, true)),
+        "max" => expect_args(name, args, 2).map(|a| pick(a[0], a[1], mode, false)),
 
         _ => Err(EvalError::UnknownFunction(name.to_string())),
     }
 }
 
-fn expect_args<'a>(name: &str, args: &'a [f64], expected: usize) -> Result<&'a [f64], EvalError> {
+fn pick(lhs: Value, rhs: Value, mode: EvalMode, want_min: bool) -> Value {
+    let take_lhs = if integral(mode, lhs, rhs) {
+        (lhs.as_i64() <= rhs.as_i64()) == want_min
+    } else {
+        (lhs.as_f64() <= rhs.as_f64()) == want_min
+    };
+    if take_lhs { lhs } else { rhs }
+}
+
+fn args_at<'a>(name: &str, args: &'a [Value], expected: usize) -> Result<&'a [Value], EvalError> {
+    expect_args(name, args, expected)
+}
+
+fn expect_args<'a>(
+    name: &str,
+    args: &'a [Value],
+    expected: usize,
+) -> Result<&'a [Value], EvalError> {
     if args.len() != expected {
         Err(EvalError::ArityMismatch {
             name: name.to_string(),
@@ -350,10 +573,60 @@ fn expect_args<'a>(name: &str, args: &'a [f64], expected: usize) -> Result<&'a [
     }
 }
 
+/// Replace variable references with sub-expressions.
+///
+/// Backs the GenApi `<Constant>` and named `<Expression>` elements, which let
+/// a formula name a literal or a reusable sub-formula:
+///
+/// ```xml
+/// <IntSwissKnife Name="Example">
+///   <pVariable Name="X">X</pVariable>
+///   <Constant Name="TEN">10</Constant>
+///   <Expression Name="XPLUS2">TEN + X</Expression>
+///   <Formula>TEN * XPLUS2</Formula>
+/// </IntSwissKnife>
+/// ```
+///
+/// Substitution happens once, at build time, so evaluation stays a plain walk
+/// over the tree.
+pub fn substitute(ast: &mut AstNode, bindings: &std::collections::HashMap<String, AstNode>) {
+    match ast {
+        AstNode::Literal(_) => {}
+        AstNode::Variable(name) => {
+            if let Some(replacement) = bindings.get(name.as_str()) {
+                *ast = replacement.clone();
+            }
+        }
+        AstNode::Unary { expr, .. } => substitute(expr, bindings),
+        AstNode::Binary { left, right, .. } => {
+            substitute(left, bindings);
+            substitute(right, bindings);
+        }
+        AstNode::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            substitute(cond, bindings);
+            substitute(then_expr, bindings);
+            substitute(else_expr, bindings);
+        }
+        AstNode::FnCall { args, .. } => {
+            for arg in args {
+                substitute(arg, bindings);
+            }
+        }
+    }
+}
+
 /// Collect all variable identifiers referenced by the AST.
+///
+/// Built-in constants are reported like any other identifier; callers that
+/// validate against `<pVariable>` declarations should filter them with
+/// [`is_builtin_constant`].
 pub fn collect_identifiers(ast: &AstNode, out: &mut HashSet<String>) {
     match ast {
-        AstNode::Number(_) => {}
+        AstNode::Literal(_) => {}
         AstNode::Variable(name) => {
             out.insert(name.clone());
         }
@@ -385,7 +658,8 @@ pub fn collect_identifiers(ast: &AstNode, out: &mut HashSet<String>) {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    Number(f64),
+    Int(i64),
+    Float(f64),
     Ident(String),
     // Arithmetic
     Plus,
@@ -399,8 +673,8 @@ enum Token {
     Le,
     Gt,
     Ge,
-    EqEq,
-    Ne,
+    Eq, // `=` (and the tolerated `==`)
+    Ne, // `<>` (and the tolerated `!=`)
     // Logical
     AmpAmp,
     PipePipe,
@@ -490,6 +764,11 @@ impl<'a> Lexer<'a> {
                     self.advance_by(2);
                     Ok(Token::LtLt)
                 }
+                // `<>` is the GenApi inequality operator.
+                Some(b'>') => {
+                    self.advance_by(2);
+                    Ok(Token::Ne)
+                }
                 _ => {
                     self.advance_by(1);
                     Ok(Token::Lt)
@@ -509,13 +788,15 @@ impl<'a> Lexer<'a> {
                     Ok(Token::Gt)
                 }
             },
+            // `=` is equality. The language has no assignment, so there is
+            // nothing to disambiguate; `==` is accepted as an alias.
             b'=' => {
                 if self.peek_next() == Some(b'=') {
                     self.advance_by(2);
-                    Ok(Token::EqEq)
                 } else {
-                    Err(ParseError::new("unexpected '=' (use '==' for equality)"))
+                    self.advance_by(1);
                 }
+                Ok(Token::Eq)
             }
             b'!' => {
                 if self.peek_next() == Some(b'=') {
@@ -572,10 +853,10 @@ impl<'a> Lexer<'a> {
                 self.advance_by(1);
                 Ok(Token::Comma)
             }
-            _ => Err(ParseError::new(format!(
-                "unexpected character '{}'",
-                byte as char
-            ))),
+            _ => Err(ParseError::new(
+                format!("unexpected character '{}'", byte as char),
+                self.pos,
+            )),
         }
     }
 
@@ -602,13 +883,16 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                 }
                 if self.pos == hex_start {
-                    return Err(ParseError::new("hex literal has no digits"));
+                    return Err(ParseError::new("hex literal has no digits", start));
                 }
                 let hex_text = std::str::from_utf8(&self.input[hex_start..self.pos])
-                    .map_err(|_| ParseError::new("invalid UTF-8 in hex literal"))?;
-                let value = u64::from_str_radix(hex_text, 16)
-                    .map_err(|_| ParseError::new(format!("invalid hex literal: 0x{hex_text}")))?;
-                return Ok(Token::Number(value as f64));
+                    .map_err(|_| ParseError::new("invalid UTF-8 in hex literal", start))?;
+                let value = u64::from_str_radix(hex_text, 16).map_err(|_| {
+                    ParseError::new(format!("invalid hex literal: 0x{hex_text}"), start)
+                })?;
+                // Masks such as 0xFFFFFFFFFFFFFFFF wrap to their two's
+                // complement, as they do in the reference implementation.
+                return Ok(Token::Int(value as i64));
             }
         }
 
@@ -627,26 +911,39 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                 }
                 b'e' | b'E' if !seen_exp && seen_digit => {
-                    seen_exp = true;
-                    self.pos += 1;
-                    // Optional sign after exponent
-                    if let Some(b'+' | b'-') = self.peek() {
-                        self.pos += 1;
+                    // `1e3` is scientific notation, but `1 e` would be a
+                    // literal followed by the constant E. Only treat it as an
+                    // exponent when a digit or sign follows.
+                    match self.peek_next() {
+                        Some(b'0'..=b'9' | b'+' | b'-') => {
+                            seen_exp = true;
+                            self.pos += 1;
+                            if let Some(b'+' | b'-') = self.peek() {
+                                self.pos += 1;
+                            }
+                        }
+                        _ => break,
                     }
                 }
                 _ => break,
             }
         }
         if !seen_digit {
-            return Err(ParseError::new("invalid number literal"));
+            return Err(ParseError::new("invalid number literal", start));
         }
         let slice = &self.input[start..self.pos];
-        let text =
-            std::str::from_utf8(slice).map_err(|_| ParseError::new("invalid UTF-8 in number"))?;
+        let text = std::str::from_utf8(slice)
+            .map_err(|_| ParseError::new("invalid UTF-8 in number", start))?;
+        if !seen_dot
+            && !seen_exp
+            && let Ok(value) = text.parse::<i64>()
+        {
+            return Ok(Token::Int(value));
+        }
         let value = text
             .parse::<f64>()
-            .map_err(|_| ParseError::new(format!("failed to parse number: {text}")))?;
-        Ok(Token::Number(value))
+            .map_err(|_| ParseError::new(format!("failed to parse number: {text}"), start))?;
+        Ok(Token::Float(value))
     }
 
     fn lex_ident(&mut self) -> Result<Token, ParseError> {
@@ -661,43 +958,59 @@ impl<'a> Lexer<'a> {
         }
         let slice = &self.input[start..self.pos];
         let text = std::str::from_utf8(slice)
-            .map_err(|_| ParseError::new("invalid UTF-8 in identifier"))?;
+            .map_err(|_| ParseError::new("invalid UTF-8 in identifier", start))?;
         Ok(Token::Ident(text.to_string()))
     }
 }
 
 // ============================================================================
-// Parser - Operator Precedence (lowest to highest):
-// 1. Ternary: ?:
-// 2. Logical OR: ||
-// 3. Logical AND: &&
-// 4. Bitwise OR: |
-// 5. Bitwise XOR: ^
-// 6. Bitwise AND: &
-// 7. Equality: == !=
-// 8. Comparison: < <= > >=
-// 9. Shift: << >>
-// 10. Additive: + -
-// 11. Multiplicative: * / %
-// 12. Power: **
-// 13. Unary: + - ! ~
-// 14. Primary: numbers, identifiers, function calls, (expr)
+// Parser
+//
+// Precedence, loosest to tightest. This chain mirrors the priority column of
+// aravis' `arv_evaluator_token_infos` table, which is itself the GenApi
+// specification's table:
+//
+//  1. Ternary:        ?:      (right-associative)
+//  2. Logical OR:     ||
+//  3. Logical AND:    &&
+//  4. Bitwise OR:     |
+//  5. Bitwise XOR:    ^
+//  6. Bitwise AND:    &
+//  7. Equality:       =  <>
+//  8. Comparison:     <  <=  >  >=
+//  9. Shift:          << >>
+// 10. Additive:       +  -
+// 11. Multiplicative: *  /  %
+// 12. Power:          **      (right-associative)
+// 13. Unary:          +  -  !  ~
+// 14. Primary:        numbers, identifiers, function calls, (expr)
+//
+// Note that equality binds *looser* than comparison, so `A < B = C` parses as
+// `(A < B) = C`. That is what the standard says, and vendors rely on it.
 // ============================================================================
 
 struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: Token,
+    /// Offset of the start of the lookahead token, for error reporting.
+    pos: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Result<Self, ParseError> {
         let mut lexer = Lexer::new(input);
         let lookahead = lexer.next_token()?;
-        Ok(Parser { lexer, lookahead })
+        let pos = lexer.pos;
+        Ok(Parser {
+            lexer,
+            lookahead,
+            pos,
+        })
     }
 
     fn advance(&mut self) -> Result<(), ParseError> {
         self.lookahead = self.lexer.next_token()?;
+        self.pos = self.lexer.pos;
         Ok(())
     }
 
@@ -708,7 +1021,10 @@ impl<'a> Parser<'a> {
             self.advance()?;
             let then_expr = self.parse_ternary()?;
             if !matches!(self.lookahead, Token::Colon) {
-                return Err(ParseError::new("expected ':' in ternary expression"));
+                return Err(ParseError::new(
+                    "expected ':' in ternary expression",
+                    self.pos,
+                ));
             }
             self.advance()?;
             let else_expr = self.parse_ternary()?;
@@ -802,7 +1118,7 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_comparison()?;
         loop {
             let op = match &self.lookahead {
-                Token::EqEq => BinaryOp::Eq,
+                Token::Eq => BinaryOp::Eq,
                 Token::Ne => BinaryOp::Ne,
                 _ => break,
             };
@@ -918,49 +1234,31 @@ impl<'a> Parser<'a> {
 
     // Level 13: Unary
     fn parse_unary(&mut self) -> Result<AstNode, ParseError> {
-        match &self.lookahead {
-            Token::Plus => {
-                self.advance()?;
-                let expr = self.parse_unary()?;
-                Ok(AstNode::Unary {
-                    op: UnaryOp::Plus,
-                    expr: Box::new(expr),
-                })
-            }
-            Token::Minus => {
-                self.advance()?;
-                let expr = self.parse_unary()?;
-                Ok(AstNode::Unary {
-                    op: UnaryOp::Minus,
-                    expr: Box::new(expr),
-                })
-            }
-            Token::Bang => {
-                self.advance()?;
-                let expr = self.parse_unary()?;
-                Ok(AstNode::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(expr),
-                })
-            }
-            Token::Tilde => {
-                self.advance()?;
-                let expr = self.parse_unary()?;
-                Ok(AstNode::Unary {
-                    op: UnaryOp::BitNot,
-                    expr: Box::new(expr),
-                })
-            }
-            _ => self.parse_primary(),
-        }
+        let op = match &self.lookahead {
+            Token::Plus => UnaryOp::Plus,
+            Token::Minus => UnaryOp::Minus,
+            Token::Bang => UnaryOp::Not,
+            Token::Tilde => UnaryOp::BitNot,
+            _ => return self.parse_primary(),
+        };
+        self.advance()?;
+        let expr = self.parse_unary()?;
+        Ok(AstNode::Unary {
+            op,
+            expr: Box::new(expr),
+        })
     }
 
     // Level 14: Primary
     fn parse_primary(&mut self) -> Result<AstNode, ParseError> {
         match self.lookahead.clone() {
-            Token::Number(value) => {
+            Token::Int(value) => {
                 self.advance()?;
-                Ok(AstNode::Number(value))
+                Ok(AstNode::Literal(Value::Int(value)))
+            }
+            Token::Float(value) => {
+                self.advance()?;
+                Ok(AstNode::Literal(Value::Float(value)))
             }
             Token::Ident(name) => {
                 self.advance()?;
@@ -976,7 +1274,10 @@ impl<'a> Parser<'a> {
                         }
                     }
                     if !matches!(self.lookahead, Token::RParen) {
-                        return Err(ParseError::new("expected ')' after function arguments"));
+                        return Err(ParseError::new(
+                            "expected ')' after function arguments",
+                            self.pos,
+                        ));
                     }
                     self.advance()?;
                     Ok(AstNode::FnCall { name, args })
@@ -988,13 +1289,16 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 let expr = self.parse_ternary()?;
                 if !matches!(self.lookahead, Token::RParen) {
-                    return Err(ParseError::new("missing closing ')'"));
+                    return Err(ParseError::new("missing closing ')'", self.pos));
                 }
                 self.advance()?;
                 Ok(expr)
             }
-            Token::End => Err(ParseError::new("unexpected end of expression")),
-            other => Err(ParseError::new(format!("unexpected token {other:?}"))),
+            Token::End => Err(ParseError::new("unexpected end of expression", self.pos)),
+            other => Err(ParseError::new(
+                format!("unexpected token {other:?}"),
+                self.pos,
+            )),
         }
     }
 }
@@ -1003,7 +1307,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
-    fn eval_expr(expr: &str, vars: &[(&str, f64)]) -> f64 {
+    fn eval_with(expr: &str, vars: &[(&str, Value)], mode: EvalMode) -> Value {
         let ast = parse_expression(expr).expect("parse failed");
         let mut resolver = |name: &str| {
             vars.iter()
@@ -1011,7 +1315,20 @@ mod tests {
                 .map(|(_, v)| *v)
                 .ok_or_else(|| EvalError::UnknownVariable(name.to_string()))
         };
-        evaluate(&ast, &mut resolver).expect("eval failed")
+        evaluate(&ast, &mut resolver, mode).expect("eval failed")
+    }
+
+    /// Evaluate in float mode with float variables (the `SwissKnife` case).
+    fn eval_expr(expr: &str, vars: &[(&str, f64)]) -> f64 {
+        let bound: Vec<(&str, Value)> = vars.iter().map(|(n, v)| (*n, Value::Float(*v))).collect();
+        eval_with(expr, &bound, EvalMode::Float).as_f64()
+    }
+
+    /// Evaluate in integer mode with integer variables (the `IntSwissKnife`
+    /// case).
+    fn eval_int(expr: &str, vars: &[(&str, i64)]) -> i64 {
+        let bound: Vec<(&str, Value)> = vars.iter().map(|(n, v)| (*n, Value::Int(*v))).collect();
+        eval_with(expr, &bound, EvalMode::Integer).as_i64()
     }
 
     #[test]
@@ -1026,9 +1343,48 @@ mod tests {
         assert_eq!(eval_expr("5 > 10", &[]), 0.0);
         assert_eq!(eval_expr("5 <= 5", &[]), 1.0);
         assert_eq!(eval_expr("5 >= 6", &[]), 0.0);
-        assert_eq!(eval_expr("5 == 5", &[]), 1.0);
-        assert_eq!(eval_expr("5 != 5", &[]), 0.0);
         assert_eq!(eval_expr("A < B", &[("A", 3.0), ("B", 5.0)]), 1.0);
+    }
+
+    /// `=` is the GenApi equality operator. Rejecting it made 27 of the 30
+    /// documents in the vendor corpus unopenable (issue #35).
+    #[test]
+    fn single_equals_is_equality() {
+        assert_eq!(eval_int("5 = 5", &[]), 1);
+        assert_eq!(eval_int("5 = 6", &[]), 0);
+        // The formula from the reporter's Hikrobot MV-CS050-10GC.
+        assert_eq!(
+            eval_int("(TEMPCTRLMODE = 1) ? 1 : 0", &[("TEMPCTRLMODE", 1)]),
+            1
+        );
+        assert_eq!(
+            eval_int("(TEMPCTRLMODE = 1) ? 1 : 0", &[("TEMPCTRLMODE", 0)]),
+            0
+        );
+        // `==` stays accepted.
+        assert_eq!(eval_int("5 == 5", &[]), 1);
+    }
+
+    /// `<>` is the GenApi inequality operator.
+    #[test]
+    fn angle_brackets_are_inequality() {
+        assert_eq!(eval_int("5 <> 6", &[]), 1);
+        assert_eq!(eval_int("5 <> 5", &[]), 0);
+        assert_eq!(eval_int("(DS <> 0) ? 1 : 0", &[("DS", 3)]), 1);
+        // Still distinct from shift and comparison.
+        assert_eq!(eval_int("1 << 3", &[]), 8);
+        assert_eq!(eval_int("(1 < 3) = 1", &[]), 1);
+        // `!=` stays accepted.
+        assert_eq!(eval_int("5 != 5", &[]), 0);
+    }
+
+    #[test]
+    fn equality_binds_looser_than_comparison() {
+        // `A < B = C` is `(A < B) = C`, not `A < (B = C)`.
+        assert_eq!(eval_int("1 < 3 = 1", &[]), 1);
+        assert_eq!(eval_int("3 < 1 = 0", &[]), 1);
+        // And bitwise AND binds looser than equality.
+        assert_eq!(eval_int("1 & 1 = 1", &[]), 1);
     }
 
     #[test]
@@ -1064,6 +1420,43 @@ mod tests {
         assert_eq!(eval_expr("5 ^ 3", &[]), 6.0); // 101 ^ 011 = 110
         assert_eq!(eval_expr("1 << 3", &[]), 8.0);
         assert_eq!(eval_expr("8 >> 2", &[]), 2.0);
+        assert_eq!(eval_int("~0", &[]), -1);
+    }
+
+    /// A 64-bit register split across two 32-bit halves is the canonical
+    /// reason integer formulas cannot go through `f64`: the low bits of the
+    /// result are not representable.
+    #[test]
+    fn wide_shifts_stay_exact() {
+        assert_eq!(
+            eval_int(
+                "(HIGH << 32) | LOW",
+                &[("HIGH", 0x1234_5678), ("LOW", 0x9ABC_DEF1)]
+            ),
+            0x1234_5678_9ABC_DEF1
+        );
+        // MAC address composition, as used by GevMACAddrHigh/Low.
+        assert_eq!(
+            eval_int(
+                "( ( HI & 0x0000FFFF ) << 32 ) | LO",
+                &[("HI", 0x205C), ("LO", 0x208F_8000)]
+            ),
+            0x205C_208F_8000
+        );
+        // A shift wide enough to overflow must not panic in a debug build.
+        assert_eq!(eval_int("V << 63", &[("V", 3)]), i64::MIN);
+        assert_eq!(eval_int("V << 64", &[("V", 3)]), 3);
+    }
+
+    /// Integer formulas truncate on division; float formulas do not.
+    #[test]
+    fn division_follows_the_mode() {
+        assert_eq!(eval_int("7 / 2", &[]), 3);
+        assert_eq!(eval_int("(IDX / 2) * 4", &[("IDX", 3)]), 4);
+        assert!((eval_expr("7 / 2", &[]) - 3.5).abs() < 1e-9);
+        // Reported by the Hikrobot: an offset table that only lands on the
+        // right register because the division truncates.
+        assert_eq!(eval_int("OFFSET * 4 / 2", &[("OFFSET", 3)]), 6);
     }
 
     #[test]
@@ -1081,6 +1474,8 @@ mod tests {
             ),
             512.0 * 512.0 * 8.0 / 8.0
         );
+        // Lowercase hex digits, as Hikrobot writes them.
+        assert_eq!(eval_int("PF = 0x0110000c", &[("PF", 0x0110000C)]), 1);
     }
 
     #[test]
@@ -1110,6 +1505,29 @@ mod tests {
         assert!((eval_expr("sgn(0)", &[]) - 0.0).abs() < 1e-6);
     }
 
+    /// `LG` is base-10 log. Baumer TXG descriptions use it for a dB scale.
+    #[test]
+    fn genapi_standard_functions() {
+        assert!((eval_expr("LG(1000)", &[]) - 3.0).abs() < 1e-9);
+        assert!((eval_expr("(20 * (LG(TO/1024)))", &[("TO", 10240.0)]) - 20.0).abs() < 1e-9);
+        assert!((eval_expr("LN(1)", &[]) - 0.0).abs() < 1e-9);
+        assert!((eval_expr("TRUNC(3.9)", &[]) - 3.0).abs() < 1e-9);
+        assert!((eval_expr("NEG(4)", &[]) + 4.0).abs() < 1e-9);
+        // Names are case-insensitive.
+        assert!((eval_expr("Sqrt(9)", &[]) - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn builtin_constants() {
+        assert!((eval_expr("PI", &[]) - std::f64::consts::PI).abs() < 1e-12);
+        assert!((eval_expr("E", &[]) - std::f64::consts::E).abs() < 1e-12);
+        assert!((eval_expr("2 * PI", &[]) - std::f64::consts::TAU).abs() < 1e-12);
+        // A declared variable shadows the constant.
+        assert_eq!(eval_expr("E", &[("E", 7.0)]), 7.0);
+        assert!(is_builtin_constant("pi"));
+        assert!(!is_builtin_constant("EXPMODE"));
+    }
+
     #[test]
     fn scientific_notation() {
         assert!((eval_expr("1e3", &[]) - 1000.0).abs() < 1e-6);
@@ -1121,11 +1539,11 @@ mod tests {
     fn division_by_zero_error() {
         let ast = parse_expression("A / B").expect("parse");
         let mut vars = |name: &str| match name {
-            "A" => Ok(5.0),
-            "B" => Ok(0.0),
+            "A" => Ok(Value::Float(5.0)),
+            "B" => Ok(Value::Float(0.0)),
             _ => Err(EvalError::UnknownVariable(name.to_string())),
         };
-        let err = evaluate(&ast, &mut vars).expect_err("division by zero");
+        let err = evaluate(&ast, &mut vars, EvalMode::Float).expect_err("division by zero");
         assert!(matches!(err, EvalError::DivisionByZero));
     }
 
@@ -1140,6 +1558,36 @@ mod tests {
             eval_expr(expr, &[("RawValue", -10.0), ("TickFreq", 1000.0)]),
             0.0
         );
+    }
+
+    /// A representative selection of the shapes seen across the vendor corpus
+    /// and in the reporter's Hikrobot dump: multi-line formulas, chained
+    /// ternaries, `=`/`<>` mixed with bitwise masks.
+    #[test]
+    fn vendor_formula_shapes_parse() {
+        let formulas = [
+            "( ( PINPRES = 1 ) && ( MODE = 0 ) && (SEL <> 2) ) ? 1 : 0",
+            "((CTRL_REG & 0x03000000)=0x03000000)?1:0",
+            "((CTRL_REG | 0xFDFFFFFF)=0xFFFFFFFF)?0:1",
+            "ADDROFFSET = 0 ? 0 : ADDROFFSET * 0x80",
+            "(FEAT<32)?((GEVOPT>>FEAT)&0x1):((FEAT<64)?((IPOPT>>(FEAT-32))&0x1) : ((FEAT=66)?SCCB:0))",
+            "(   ((TM = 0) && (LINE1 = 1)) \n || ((TL = 1) && (REVERSE = 0)) \n || (DS <> 0)) ? 1 : 0",
+            "((TYPE = 0x011a) || (TYPE = 0x011b)) ? (0.4232 * DKELVIN - 334.83) : (DKELVIN /100)",
+            "(SHUTTERMODE = 0) && (ROLLING = 1)",
+            "INDEX = 0",
+            "( MAX % UNIT ) ? ( MAX - (  MAX) % UNIT  ) : ( MAX)",
+        ];
+        for formula in formulas {
+            parse_expression(formula)
+                .unwrap_or_else(|err| panic!("failed to parse {formula:?}: {err}"));
+        }
+    }
+
+    #[test]
+    fn parse_error_reports_offset() {
+        let err = parse_expression("A + ").expect_err("incomplete expression");
+        assert!(err.offset() > 0, "offset should point past the operator");
+        assert!(err.to_string().contains("at offset"));
     }
 
     #[test]

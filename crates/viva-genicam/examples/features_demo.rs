@@ -71,7 +71,7 @@ fn run_mock() -> Result<(), Box<dyn Error>> {
     "#;
 
     let model = viva_genapi_xml::parse(XML)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let transport = MockIo::with_registers(&[
         (0x100, vec![0, 0, 4, 0]),
         (0x200, vec![0, 0, 0xC3, 0x50]),
@@ -138,7 +138,7 @@ fn run_real() -> Result<(), Box<dyn Error>> {
         }
     }))?;
     let model = viva_genapi_xml::parse(&xml)?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = rt.handle().clone();
     let device = match std::sync::Arc::try_unwrap(device) {
         Ok(mutex) => mutex.into_inner(),

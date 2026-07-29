@@ -106,7 +106,7 @@ pub async fn open_camera(device: &DeviceInfo) -> Result<Camera<GigeRegisterIo>> 
         )?));
     let xml = fetch_xml(control.clone()).await?;
     let model = viva_genapi_xml::parse(&xml).context("parse GenApi XML")?;
-    let nodemap = NodeMap::from(model);
+    let nodemap = NodeMap::try_from_xml(model)?;
     let handle = Handle::current();
     let device = Arc::try_unwrap(control)
         .map_err(|_| anyhow!("control connection still in use"))?
