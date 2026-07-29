@@ -57,41 +57,6 @@ both transports, and a conformance corpus of 35 real vendor GenApi XML
 descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
 Photonic Science, Prosilica, Sony, SVS, TIS).
 
-**The honest limitation:** almost none of this has been exercised against
-physical hardware. The maintainer has no GigE Vision or USB3 Vision cameras.
-Fake cameras only reproduce the behaviour we already thought of, so they
-confirm that our assumptions are self-consistent — not that they are right.
-Every camera-specific bug found so far was found by a user, not by us.
-
-That has a visible track record. Three reports, three real defects:
-
-| Report | Cause | Outcome |
-|---|---|---|
-| [#45](https://github.com/VitalyVorobyev/viva-genicam/issues/45) FLIR Blackfly S | XML entity unescaping over CDATA; then the `=` equality operator | Fixed; the reporter's XML is now a permanent test fixture |
-| [#35](https://github.com/VitalyVorobyev/viva-genicam/issues/35) Hikrobot MV-CS050-10GC | Register addressing and the formula language, ten defects in one audit | Fixed; the reporter's XML is in the corpus, and the audit became [ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) |
-| [#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57) JAI FS-3200T on Windows | Link-local addresses dropped; MAC parsed two bytes off | Fixed; the reporter supplied protocol evidence and a patch |
-
-In each case one vendor construct made a camera impossible to open, and in
-each case the fix generalised well beyond the camera that reported it.
-
-**So: if your camera does not work, that is a bug worth reporting, and we
-want the report.** Cameras deviate from the standard, contradict their own
-documentation, and behave inconsistently across firmware revisions — working
-with the hardware that exists, rather than the hardware the specification
-describes, is the goal rather than a compromise. The most useful thing you
-can attach is your camera's GenApi XML: it becomes a permanent regression
-fixture, which is how this class of bug stops recurring for everyone with
-that model. See the
-[issue templates](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose).
-
-**Known gaps**, tracked in [docs/backlog.md](docs/backlog.md) and
-[docs/roadmap.md](docs/roadmap.md):
-
-- GVSP packet resend is implemented at the protocol layer but not wired into the receive path
-- The GVCP/GVSP layer is mid-audit. `ACTION` and `EVENT` are fixed, but chunk delivery still is not: the leader rejects the Image Extended Chunk payload type, and the chunk trailer layout matches our own fake rather than the specification
-- Several GenApi features are parsed but not yet honoured (`pInvalidator`, `Cachable`, dynamic `pMin`/`pMax`)
-- No feature-matrix or MSRV enforcement in CI
-
 ## Workspace layout
 
 ```
