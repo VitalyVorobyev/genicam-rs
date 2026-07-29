@@ -986,16 +986,7 @@ pub fn open_u3v_device<T: u3v::usb::UsbTransfer + 'static>(
 fn build_nodemap(xml: &str) -> Result<NodeMap, GenicamError> {
     let model =
         viva_genapi_xml::parse(xml).map_err(|e| GenicamError::parse(format!("GenApi XML: {e}")))?;
-    let xml_skipped = model.skipped.len();
-    for skipped in &model.skipped {
-        debug!(
-            tag = %skipped.tag,
-            node = skipped.name.as_deref().unwrap_or("<unnamed>"),
-            error = %skipped.error,
-            "GenApi XML node not parsed"
-        );
-    }
-
+    // The nodemap absorbs the XML layer's losses, so one list covers both.
     let nodemap = NodeMap::try_from_xml(model)
         .map_err(|e| GenicamError::parse(format!("GenApi model: {e}")))?;
     for skipped in nodemap.skipped() {
@@ -1003,17 +994,15 @@ fn build_nodemap(xml: &str) -> Result<NodeMap, GenicamError> {
             kind = %skipped.tag,
             node = skipped.name.as_deref().unwrap_or("<unnamed>"),
             error = %skipped.error,
-            "GenApi node not built"
+            "GenApi node unavailable"
         );
     }
 
-    let total = xml_skipped + nodemap.skipped().len();
-    if total > 0 {
+    if !nodemap.skipped().is_empty() {
         warn!(
-            unparsed = xml_skipped,
-            unbuilt = nodemap.skipped().len(),
+            unavailable = nodemap.skipped().len(),
             features = nodemap.node_names().count(),
-            "some camera features are unavailable; enable debug logging for the list \
+            "some camera features are unavailable; run `viva-camctl report` for the list \
              and please report them at https://github.com/VitalyVorobyev/viva-genicam/issues"
         );
     }

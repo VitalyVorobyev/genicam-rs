@@ -245,6 +245,62 @@ mod tests {
         NodeMap::try_from_xml(model).expect("build nodemap")
     }
 
+    /// A node type we do not implement must reach the nodemap's skip list.
+    ///
+    /// Two separate holes used to swallow this. The XML parser dropped an
+    /// unlisted tag at `skip_element` without recording it, and the nodemap
+    /// then discarded whatever the XML layer *had* recorded — so a consumer
+    /// holding a nodemap could not tell a feature we cannot read from one the
+    /// camera does not have.
+    #[test]
+    fn an_unsupported_node_type_is_visible_in_the_nodemap() {
+        const WITH_REGISTER: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">
+                <Integer Name="Width">
+                    <Address>0x100</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                </Integer>
+                <Register Name="LUTBlock">
+                    <Address>0x2000</Address>
+                    <Length>512</Length>
+                    <AccessMode>RW</AccessMode>
+                </Register>
+            </RegisterDescription>
+        "#;
+        let model = viva_genapi_xml::parse(WITH_REGISTER).expect("parse");
+        assert_eq!(model.skipped.len(), 1, "XML layer records the unknown tag");
+
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[(0x100, vec![0, 0, 0, 7])]);
+        assert_eq!(nodemap.get_integer("Width", &io).expect("read Width"), 7);
+
+        let skipped = nodemap.skipped();
+        assert_eq!(skipped.len(), 1, "and the nodemap carries it forward");
+        assert_eq!(skipped[0].tag, "Register");
+        assert_eq!(skipped[0].name.as_deref(), Some("LUTBlock"));
+    }
+
+    /// Structural elements are not features and must not be reported as lost.
+    #[test]
+    fn elements_without_a_name_are_not_reported_as_skipped() {
+        const WITH_PORT: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">
+                <Port Name="Device"/>
+                <Group Comment="Standard">
+                    <Integer Name="Width">
+                        <Address>0x100</Address>
+                        <Length>4</Length>
+                        <AccessMode>RW</AccessMode>
+                    </Integer>
+                </Group>
+            </RegisterDescription>
+        "#;
+        let model = viva_genapi_xml::parse(WITH_PORT).expect("parse");
+        assert!(model.skipped.is_empty(), "{:?}", model.skipped);
+        assert_eq!(model.nodes.len(), 1);
+    }
+
     fn build_indirect_nodemap() -> NodeMap {
         let model = viva_genapi_xml::parse(INDIRECT_FIXTURE).expect("parse indirect fixture");
         NodeMap::try_from_xml(model).expect("build nodemap")

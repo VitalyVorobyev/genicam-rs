@@ -858,6 +858,32 @@ fn is_node_tag(tag: &[u8]) -> bool {
     )
 }
 
+/// Record an element this parser has no node type for, or `None` if it is not
+/// a node at all.
+///
+/// A node declaration is told from a structural element by its `Name`
+/// attribute, which the GenApi schema requires on every node and on nothing
+/// else at this level. Without this, an unlisted tag fell through to
+/// `skip_element` and vanished — no log line, no [`XmlModel::skipped`] entry,
+/// nothing for a corpus test to trip over. `<Register>`, 56 declarations
+/// across 14 corpus documents, disappeared exactly this way.
+fn unknown_node(tag: &[u8], start: &BytesStart<'_>) -> Result<Option<SkippedNode>, XmlError> {
+    let Some(name) = attribute_value(start, b"Name")? else {
+        return Ok(None);
+    };
+    let tag = String::from_utf8_lossy(tag).into_owned();
+    tracing::warn!(
+        tag = %tag,
+        node = %name,
+        "skipping node of an unsupported type"
+    );
+    Ok(Some(SkippedNode {
+        error: format!("unsupported node type <{tag}>"),
+        tag,
+        name: Some(name),
+    }))
+}
+
 /// Dispatch a node element to its parser. `start` must be the element's start
 /// event and `reader` must be positioned just after it.
 fn parse_node(
@@ -978,8 +1004,12 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                         }
                     }
                 }
-                _ => {
+                tag => {
+                    let unknown = unknown_node(tag, e)?;
                     skip_element(&mut reader, e.name().as_ref())?;
+                    if let Some(record) = unknown {
+                        skipped.push(record);
+                    }
                 }
             },
             Ok(Event::Empty(ref e)) => match e.name().as_ref() {
@@ -994,7 +1024,14 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                     let node = parse_category_empty(e)?;
                     nodes.push(node);
                 }
-                _ => {}
+                // Same transport-level abstraction the Start arm skips; four
+                // corpus documents declare it as `<Port Name="Device"/>`.
+                b"Port" => {}
+                tag => {
+                    if let Some(record) = unknown_node(tag, e)? {
+                        skipped.push(record);
+                    }
+                }
             },
             Ok(Event::Eof) => break,
             Err(err) => return Err(XmlError::Xml(err.to_string())),

@@ -76,7 +76,12 @@ pub async fn select_device(
     }
 }
 
-async fn fetch_xml(control: Arc<Mutex<GigeDevice>>) -> Result<String> {
+/// Fetch a camera's GenApi XML, stopping before anything is made of it.
+///
+/// Deliberately separate from [`open_camera`]: the cameras whose XML we most
+/// want are the ones whose XML we cannot yet parse, so the dump must not
+/// depend on parsing succeeding.
+pub async fn fetch_xml(control: Arc<Mutex<GigeDevice>>) -> Result<String> {
     viva_genapi_xml::fetch_and_load_xml({
         move |address, length| {
             let control = Arc::clone(&control);
@@ -110,11 +115,16 @@ pub async fn open_camera(device: &DeviceInfo) -> Result<Camera<GigeRegisterIo>> 
     Ok(Camera::new(transport, nodemap))
 }
 
-pub async fn open_stream_device(device: &DeviceInfo) -> Result<GigeDevice> {
+/// Open the GVCP control channel and stop there.
+///
+/// Streaming, IP configuration and the XML dump all start here; none of them
+/// needs a nodemap, and one of them exists precisely because building a
+/// nodemap can fail.
+pub async fn open_control(device: &DeviceInfo) -> Result<GigeDevice> {
     let addr = SocketAddr::new(IpAddr::V4(device.ip), GVCP_PORT);
     GigeDevice::open(addr)
         .await
-        .with_context(|| format!("open GVCP stream control at {}", device.ip))
+        .with_context(|| format!("connect GVCP control channel at {}", device.ip))
 }
 
 pub fn resolve_iface(ip: Option<Ipv4Addr>) -> Result<Option<Iface>> {

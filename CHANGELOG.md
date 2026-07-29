@@ -7,8 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`viva-camctl report` — one command that produces a bug report.** The
+  maintainer has no cameras, so every camera-specific defect fixed so far was
+  diagnosed from an artifact the reporter assembled by hand. This collects all
+  of them in one pass: the network interfaces *as the library sees them* (an
+  interface we cannot enumerate is invisible to discovery no matter what the OS
+  reports — that was #57), the discovery reply, 24 bootstrap registers with
+  decoded values, the GenApi XML, and every feature the camera has that we
+  could not build. Each section records either its findings or why it has none,
+  so a camera that cannot be opened still produces a report — that camera being
+  the one worth reporting. Output is plain text in one file, because that is
+  what an issue tracker accepts as an attachment.
+- **`viva-camctl xml` — dump a camera's GenApi XML.** The fetch existed but was
+  reachable only through the nodemap path, which is precisely the step that
+  fails on the cameras whose XML we most need. The reporter of #45 was told
+  camctl could do this; it could not, so their BFS-PGE-31S4C-C description is
+  still missing and four other models stood in for it. This command parses
+  nothing.
+- `Iface::list` and `Iface::all_ipv4` expose the library's own view of the
+  host's interfaces, including every IPv4 on a multi-homed NIC.
+
 ### Fixed
 
+- **A node type we do not implement now says so** (GA-02). `is_node_tag` gated
+  the parser's isolation path, so a tag not on its list fell through to
+  `skip_element` and vanished — no log line, no `XmlModel::skipped` entry, and
+  nothing for the corpus tests to trip over. `<Register>`, 56 declarations
+  across 14 corpus documents, disappeared exactly this way. An element is now
+  taken for a node declaration if it carries a `Name`, which the GenApi schema
+  requires on every node and on nothing else at that level.
+- **`NodeMap` no longer discards the XML layer's losses.** `try_from_xml` built
+  its skip list from scratch and dropped `XmlModel::skipped` on the floor, so
+  any consumer holding a nodemap — camctl, Python, Studio — could not tell a
+  feature we failed to parse from one the camera does not have. The two lists
+  now travel together.
+- **Two concurrent `EventSocket::recv` callers could strand an event.** Both
+  could observe an empty pending queue, after which one would decode a
+  multi-event datagram, queue the remainder and return; the other was already
+  committed to `recv_from` and never rechecked, so it blocked on a device that
+  had finished speaking while its events sat in the queue. Found by codex
+  review on #68.
+- **The fake camera tracked event notification globally.** `EventNotification`
+  is selected by `EventSelector`, so enabling two events writes one address
+  twice — and a single stored word let the second write silently disable the
+  first. State is now per event id. Found by codex review on #68.
 - **Action commands were indistinguishable from register reads** (#61).
   `ACTION_CMD` was sent as opcode 0x0080 — which is `READREG_CMD`. A camera
   receiving one saw a register read with a 24-byte payload, so an action either
@@ -64,6 +108,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fake camera answers the mandatory bootstrap block.** `Version`,
+  `DeviceMode`, the MAC registers, the IP configuration and the channel counts
+  all read as zero before, so a register dump taken from the fake looked
+  nothing like one taken from a camera. The MAC in the registers is now
+  asserted against the MAC in the Discovery ACK — two copies of one fact
+  drifting apart is how #57 happened.
+- **The issue templates ask for artifacts GitHub will actually accept.** The
+  camera template asked for a `.xml` attachment, which GitHub rejects, and put
+  `render: shell` on the field where it told reporters to attach a file, which
+  disables uploads (DOC-12, DOC-13 — both found by codex review on #58). It now
+  asks for the `viva-camctl report` bundle.
 - **ADR-0018 and ADR-0019 no longer treat aravis as an authority.** ADR-0018
   said to verify against "the reference implementation" and named `../aravis`
   the tiebreaker for formula semantics; ADR-0019 called aravis and Wireshark

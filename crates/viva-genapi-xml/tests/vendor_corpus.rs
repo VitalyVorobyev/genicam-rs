@@ -38,6 +38,20 @@ const EXPECTED_SKIPS: &[(&str, &str)] = &[
     ("Baumer_HXG20.xml", "ChunkImageLength"),
 ];
 
+/// Node *types* we have not implemented, expected to be skipped everywhere.
+///
+/// Distinct from [`EXPECTED_SKIPS`], which allows one named declaration we
+/// cannot parse. An entry here says the tag itself is unimplemented, so every
+/// declaration of it is a known gap rather than a regression. A tag *not*
+/// listed here still fails the test — which is the whole point of recording
+/// unknown tags in the first place.
+const EXPECTED_SKIP_TAGS: &[&str] = &[
+    // GA-09: `<Register>`, the raw-byte base register type — 56 declarations
+    // across 14 corpus documents. Silently dropped until GA-02 made unknown
+    // tags visible.
+    "Register",
+];
+
 fn corpus_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VIVA_GENICAM_XML_CORPUS") {
         return PathBuf::from(dir);
@@ -48,10 +62,11 @@ fn corpus_dir() -> PathBuf {
         .join(DEFAULT_CORPUS)
 }
 
-fn is_expected_skip(document: &str, node: Option<&str>) -> bool {
-    EXPECTED_SKIPS
-        .iter()
-        .any(|(doc, name)| *doc == document && Some(*name) == node)
+fn is_expected_skip(document: &str, tag: &str, node: Option<&str>) -> bool {
+    EXPECTED_SKIP_TAGS.contains(&tag)
+        || EXPECTED_SKIPS
+            .iter()
+            .any(|(doc, name)| *doc == document && Some(*name) == node)
 }
 
 #[test]
@@ -99,7 +114,9 @@ fn vendor_xml_corpus_parses() {
                 let unexpected: Vec<_> = model
                     .skipped
                     .iter()
-                    .filter(|skipped| !is_expected_skip(&document, skipped.name.as_deref()))
+                    .filter(|skipped| {
+                        !is_expected_skip(&document, &skipped.tag, skipped.name.as_deref())
+                    })
                     .collect();
                 if unexpected.is_empty() {
                     println!(

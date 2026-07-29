@@ -161,6 +161,12 @@ cargo run -p viva-genicam --example demo_fake_camera
 # Discover GigE Vision cameras
 cargo run -p viva-camctl -- list
 
+# Collect a diagnostic bundle to attach to a bug report
+cargo run -p viva-camctl -- report --ip 192.168.0.10 --out viva-report.txt
+
+# Dump the camera's GenApi XML (parses nothing, so it works on a camera we cannot open)
+cargo run -p viva-camctl -- xml --ip 192.168.0.10 --out camera.xml
+
 # Read a feature
 cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
 

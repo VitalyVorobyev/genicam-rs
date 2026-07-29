@@ -12,9 +12,16 @@ body:
         to reproduce against.
 
         So the attachments below are not bureaucracy: they are the only way we
-        can help. **The GenApi XML dump is the single most useful one.** It
-        also becomes a permanent regression fixture, so the bug you hit cannot
-        come back.
+        can help. One command produces almost all of them:
+
+        ```
+        viva-camctl report --ip <CAMERA-IP> --out viva-report.txt
+        ```
+
+        It works even when the camera cannot be opened — that case is exactly
+        what it is for — and it includes the camera's GenApi XML, which
+        becomes a permanent regression fixture so the bug you hit cannot come
+        back.
 
   - type: input
     id: camera
@@ -68,48 +75,38 @@ body:
       required: true
 
   - type: textarea
-    id: trace
+    id: report
     attributes:
-      label: Debug log
-      description: >-
-        Re-run with `RUST_LOG=debug` (or `trace` if debug is not enough) and
-        attach the output as a file. Warnings about skipped nodes and register
-        addressing are exactly what we need.
-      render: shell
+      label: Diagnostic report
+      description: |
+        **The most useful artifact.** Drag `viva-report.txt` into this field:
+
+        ```
+        viva-camctl report --ip <CAMERA-IP> --out viva-report.txt
+        ```
+
+        It collects the interfaces the library can see, the discovery reply,
+        the bootstrap registers, the GenApi XML, and every feature we could
+        not build — and keeps going when a step fails, so a camera that will
+        not open still produces one.
+
+        Attach it as `.txt`; GitHub rejects `.xml` and `.log` attachments.
+
+        The GenApi XML inside is your camera vendor's copyright, so only
+        attach it if you are comfortable doing so — `--no-xml` leaves it out,
+        and the report is welcome either way.
     validations:
       required: false
 
   - type: textarea
-    id: xml
+    id: trace
     attributes:
-      label: GenApi XML
-      description: |
-        **The most useful artifact.** Attach it as a `.xml` file rather than
-        pasting — these run to several megabytes.
-
-        Python:
-
-        ```python
-        import viva_genicam as vg
-        cam = vg.connect_gige(vg.discover()[0])
-        with open("camera.xml", "w") as f:
-            f.write(cam.xml)      # raw XML, as fetched from the camera
-        ```
-
-        Rust:
-
-        ```rust
-        let (camera, xml) = viva_genicam::connect_gige_with_xml(&device).await?;
-        std::fs::write("camera.xml", &xml)?;
-        ```
-
-        Both need the connect to succeed. **If the connect itself is what
-        fails, skip this** — say so and the traceback alone is enough, and we
-        will point you at a way to fetch the XML without building a nodemap.
-
-        The file is your camera vendor's copyright, so only attach it if you
-        are comfortable doing so. It helps enormously, but the report is
-        welcome without it.
+      label: Debug log
+      description: >-
+        If the report does not explain it, re-run with `RUST_LOG=debug` (or
+        `trace`) and attach the output — rename it to `.txt` first, GitHub
+        rejects `.log`. Warnings about skipped nodes and register addressing
+        are exactly what we need. Pasting is fine too if it is short.
     validations:
       required: false
 
@@ -120,8 +117,9 @@ body:
       description: >-
         Camera IP and host NIC IP, how they are connected (direct, switch, PoE
         switch), and whether either uses DHCP, a static address or link-local
-        (169.254.x.x). `ip a` on Linux, `ipconfig /all` on Windows,
-        `ifconfig` on macOS.
+        (169.254.x.x). Paste `ip a` on Linux, `ipconfig /all` on Windows or
+        `ifconfig` on macOS — the report already lists what *we* can see, and
+        the difference between the two is often the bug.
       render: shell
     validations:
       required: false

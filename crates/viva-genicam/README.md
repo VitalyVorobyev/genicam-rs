@@ -14,7 +14,7 @@ This crate is under active development and is not yet suitable for production
 use. It is pre-1.0 and the API changes between releases.
 
 The protocols are implemented against the EMVA specifications and covered by
-278 automated tests, in-process fake cameras, and a corpus of 35 real vendor
+292 automated tests, in-process fake cameras, and a corpus of 35 real vendor
 GenApi XML descriptions — but **almost none of it has been exercised against
 physical hardware**, because the maintainer has none. Fake cameras only
 reproduce the behaviour we already thought of. Every camera-specific bug found

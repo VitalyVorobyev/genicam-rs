@@ -46,7 +46,7 @@ pub async fn run(args: StreamArgs) -> Result<()> {
     let mut camera = common::open_camera(&device)
         .await
         .context("open camera for stream")?;
-    let mut stream_device = common::open_stream_device(&device)
+    let mut stream_device = common::open_control(&device)
         .await
         .context("open control channel for stream configuration")?;
 

@@ -141,7 +141,17 @@ green; the `Vendor XML Corpus` workflow runs it weekly and on demand.
 Point `VIVA_GENICAM_XML_CORPUS` at another directory to check XML dumped
 from your own hardware. **When a user reports a camera we cannot open,
 ask for their XML and add it to the corpus** -- that is how this class of
-bug stops recurring.
+bug stops recurring. Ask for it by pointing them at the command rather
+than at a code snippet:
+
+```bash
+viva-camctl report --ip <CAMERA-IP> --out viva-report.txt   # everything
+viva-camctl xml    --ip <CAMERA-IP> --out camera.xml        # just the XML
+```
+
+Both stop before the nodemap, so they work on a camera we cannot open --
+which is the only camera anyone reports. The snippet given in #45 needed
+a successful connect and had to be retracted.
 
 A node we cannot handle no longer fails the document. The XML layer drops
 it into `XmlModel::skipped`; the GenApi layer drops it into

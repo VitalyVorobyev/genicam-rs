@@ -134,7 +134,11 @@ impl NodeMap {
     pub fn try_from_xml(model: XmlModel) -> Result<Self, GenApiError> {
         let mut nodes = HashMap::new();
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
-        let mut skipped = Vec::new();
+        // Losses from the XML layer travel with the ones from this layer. A
+        // consumer holding a NodeMap has no access to the XmlModel it was
+        // built from, so leaving them behind would make a feature the parser
+        // could not read indistinguishable from one the camera does not have.
+        let mut skipped = model.skipped;
         for decl in model.nodes {
             let tag = decl.kind().to_string();
             let name = Some(decl.name().to_string());
@@ -174,11 +178,12 @@ impl NodeMap {
         })
     }
 
-    /// Declarations that could not be turned into runtime nodes.
+    /// Declarations this camera has that we do not expose.
     ///
-    /// Empty for a document we fully understand. Anything listed here is a
-    /// feature this camera has and we do not expose — worth logging, and worth
-    /// reporting as a bug.
+    /// Covers both losses: a node the XML parser could not read, and one it
+    /// read but that could not be turned into a runtime node. Empty for a
+    /// document we fully understand; anything listed here is worth reporting
+    /// as a bug. `viva-camctl report` prints it.
     pub fn skipped(&self) -> &[SkippedNode] {
         &self.skipped
     }

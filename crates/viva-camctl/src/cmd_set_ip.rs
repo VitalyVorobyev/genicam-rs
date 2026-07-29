@@ -57,7 +57,7 @@ pub async fn run(
         })?;
 
         info!(ip = %device.ip, "found device, opening control connection");
-        let mut control = common::open_stream_device(device).await?;
+        let mut control = common::open_control(device).await?;
         control.claim_control().await.context("claim CCP")?;
 
         control

@@ -10,10 +10,12 @@ use viva_camctl::cmd_chunks;
 use viva_camctl::cmd_events;
 use viva_camctl::cmd_get;
 use viva_camctl::cmd_list;
+use viva_camctl::cmd_report::{self, ReportArgs};
 use viva_camctl::cmd_set;
 use viva_camctl::cmd_set_ip;
 use viva_camctl::cmd_stream::{self, StreamArgs};
 use viva_camctl::cmd_usb;
+use viva_camctl::cmd_xml::{self, XmlArgs};
 
 #[derive(Parser, Debug)]
 #[command(name = "viva-camctl", version, about = "GenICam CLI")]
@@ -48,6 +50,40 @@ enum Cmd {
         index: Option<usize>,
         #[arg(long)]
         name: String,
+    },
+    /// Dump the camera's GenApi XML (no parsing, so a document we cannot
+    /// read still comes out)
+    Xml {
+        #[arg(long)]
+        ip: Option<Ipv4Addr>,
+        #[arg(long)]
+        index: Option<usize>,
+        #[arg(long)]
+        iface: Option<Ipv4Addr>,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Collect a diagnostic bundle to attach to a bug report
+    Report {
+        #[arg(long)]
+        ip: Option<Ipv4Addr>,
+        #[arg(long)]
+        index: Option<usize>,
+        #[arg(long)]
+        iface: Option<Ipv4Addr>,
+        /// Write the bundle here. `.txt` because GitHub rejects `.xml`
+        /// attachments.
+        #[arg(long, default_value = "viva-report.txt")]
+        out: PathBuf,
+        /// Print to stdout instead of writing a file
+        #[arg(long, conflicts_with = "out")]
+        stdout: bool,
+        #[arg(long, default_value_t = 1000)]
+        timeout_ms: u64,
+        /// Leave the GenApi XML out of the bundle
+        #[arg(long)]
+        no_xml: bool,
     },
     /// Write a feature via GenApi NodeMap
     Set {
@@ -210,6 +246,39 @@ async fn main() -> Result<()> {
             cmd_list::run(timeout_ms, iface, json).await?
         }
         Cmd::Get { ip, index, name } => cmd_get::run(ip, index, name, iface, json).await?,
+        Cmd::Xml {
+            ip,
+            index,
+            iface: cmd_iface,
+            out,
+        } => {
+            let args = XmlArgs {
+                ip,
+                index,
+                iface: cmd_iface.or(iface),
+                out,
+            };
+            cmd_xml::run(args).await?
+        }
+        Cmd::Report {
+            ip,
+            index,
+            iface: cmd_iface,
+            out,
+            stdout,
+            timeout_ms,
+            no_xml,
+        } => {
+            let args = ReportArgs {
+                ip,
+                index,
+                iface: cmd_iface.or(iface),
+                out: (!stdout).then_some(out),
+                timeout_ms,
+                no_xml,
+            };
+            cmd_report::run(args).await?
+        }
         Cmd::Set {
             ip,
             index,

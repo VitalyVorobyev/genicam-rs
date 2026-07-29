@@ -66,7 +66,11 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: "Output with `RUST_LOG=debug`, and the full error or traceback."
+      description: >-
+        Output with `RUST_LOG=debug`, and the full error or traceback. Paste
+        it here — GitHub does not accept file uploads in this field. For
+        anything too long to paste, attach it to a follow-up comment as
+        `.txt`.
       render: shell
     validations:
       required: false

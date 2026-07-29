@@ -3,7 +3,7 @@
 This guide gets you from checkout to discovering cameras in minutes.
 
 ## Prerequisites
-- **Rust**: MSRV 1.75+ (toolchain pinned via `rust-toolchain.toml`).
+- **Rust**: 1.88 or newer (edition 2024).
 - **OS**: Windows, Linux, or macOS.
 - **Network** (GigE Vision):
   - Allow **UDP broadcast** on the NIC you’ll use for discovery.
@@ -28,7 +28,8 @@ You can try discovery in two ways—either via the high‑level `viva-genicam` c
 ### Option A: Example (genicam crate)
 
 ```bash
-# List cameras via GVCP broadcast\ n cargo run -p viva-genicam --example list_cameras
+# List cameras via GVCP broadcast
+cargo run -p viva-genicam --example list_cameras
 ```
 
 ### Option B: CLI (viva-camctl)
@@ -47,9 +48,23 @@ cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
 # Set a feature value
 cargo run -p viva-camctl -- set --ip 192.168.0.10 --name ExposureTime --value 5000
 
-# Fetch minimal XML metadata via control path (example)
-cargo run -p viva-genicam --example get_set_feature
+# Dump the camera's GenApi XML
+cargo run -p viva-camctl -- xml --ip 192.168.0.10 --out camera.xml
 ```
+
+## When something does not work
+
+```bash
+# Collect everything a bug report needs, in one file
+cargo run -p viva-camctl -- report --ip 192.168.0.10 --out viva-report.txt
+```
+
+The report lists the network interfaces the library can see, the camera's
+reply to discovery, its bootstrap registers, its GenApi XML, and any feature
+the camera has that this library could not build. Neither `report` nor `xml`
+needs the camera to open successfully — that is what they are for — so both
+still produce output when nothing else does. Attach the file to an
+[issue](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose).
 
 ## Streaming (early GVSP)
 
