@@ -79,7 +79,7 @@ full audit and the policy that came out of it.
 - The vendor corpus test now has a second stage in `viva-genapi` that builds a
   `NodeMap` from each document and evaluates every node in it. Parsing was only
   ever half the job — every defect above lived above the parser, where the old
-  test could not see it. All 30 documents now pass: 21 784 nodes.
+  test could not see it. All 30 documents now pass: 21 785 nodes.
 - The in-tree fake camera's XML uses conformant GenICam spelling (`=`, `&lt;&gt;`,
   no `<Output>`), and exercises a summed `<Address>` + `<pIndex>` stream-channel
   register and a `<pAddress>`-addressed `<StructReg>` end to end.

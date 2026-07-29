@@ -74,7 +74,7 @@ say so in a comment, rather than inventing a rule.
 
 ### Positive
 
-- All 30 corpus documents now build a nodemap and evaluate: 21 784 nodes,
+- All 30 corpus documents now build a nodemap and evaluate: 21 785 nodes,
   up from 3 documents that got that far.
 - The conformance gate sits at the layer where these bugs live. Any future
   approximation in the formula engine, the address model or the numeric
