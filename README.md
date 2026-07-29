@@ -18,7 +18,6 @@
 > against simulators and 35 real vendor XML descriptions, but barely tested
 > against physical cameras -- we have none. We are working towards production
 > readiness one reported camera at a time, and **reports are genuinely welcome**.
-> See [Project status](#project-status--not-production-ready).
 
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
@@ -36,68 +35,6 @@
 - **Time & chunks** -- map device timestamps to host time; parse chunk data (timestamp, exposure, gain)
 - **Service bridge** -- expose cameras over [Zenoh](https://zenoh.io/) for Viva Studio (the desktop GUI in `studio/`)
 - **No hardware required** -- built-in fake cameras (`viva-fake-gige`, `viva-fake-u3v`) for testing and demos
-
-## Project status — not production-ready
-
-**Read this before depending on the project.** viva-genicam is under active
-development and is not yet suitable for production use. It is pre-1.0, the
-API changes between releases, and the odds that an arbitrary camera works
-first time are not yet good enough to build a product on.
-
-We intend to get it there. What follows is where it actually stands.
-
-**What is implemented:**
-
-- GigE Vision — discovery, control, streaming, events, actions, chunks, IP configuration
-- USB3 Vision — discovery, control, streaming, service bridge, CLI
-- GenApi — Tier-1 and Tier-2 nodes, `pValue` delegation, the GenICam formula language, the register address model
-
-**What that is backed by:** 292 automated tests, in-process fake cameras for
-both transports, and a conformance corpus of 35 real vendor GenApi XML
-descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey,
-Photonic Science, Prosilica, Sony, SVS, TIS).
-
-**The honest limitation:** almost none of this has been exercised against
-physical hardware. The maintainer has no GigE Vision or USB3 Vision cameras.
-Fake cameras only reproduce the behaviour we already thought of, so they
-confirm that our assumptions are self-consistent — not that they are right.
-Every camera-specific bug found so far was found by a user, not by us.
-
-That has a visible track record. Three reports, three real defects:
-
-| Report | Cause | Outcome |
-|---|---|---|
-| [#45](https://github.com/VitalyVorobyev/viva-genicam/issues/45) FLIR Blackfly S | XML entity unescaping over CDATA; then the `=` equality operator | Fixed; the reporter's XML is now a permanent test fixture |
-| [#35](https://github.com/VitalyVorobyev/viva-genicam/issues/35) Hikrobot MV-CS050-10GC | Register addressing and the formula language, ten defects in one audit | Fixed; the reporter's XML is in the corpus, and the audit became [ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) |
-| [#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57) JAI FS-3200T on Windows | Link-local addresses dropped; MAC parsed two bytes off | Fixed; the reporter supplied protocol evidence and a patch |
-
-In each case one vendor construct made a camera impossible to open, and in
-each case the fix generalised well beyond the camera that reported it.
-
-**So: if your camera does not work, that is a bug worth reporting, and we
-want the report.** Cameras deviate from the standard, contradict their own
-documentation, and behave inconsistently across firmware revisions — working
-with the hardware that exists, rather than the hardware the specification
-describes, is the goal rather than a compromise. The most useful thing you
-can attach is the output of one command:
-
-```bash
-viva-camctl report --ip <CAMERA-IP> --out viva-report.txt
-```
-
-It works even when the camera cannot be opened — that case is what it is for —
-and it includes your camera's GenApi XML, which becomes a permanent regression
-fixture, which is how this class of bug stops recurring for everyone with that
-model. See the
-[issue templates](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose).
-
-**Known gaps**, tracked in [docs/backlog.md](docs/backlog.md) and
-[docs/roadmap.md](docs/roadmap.md):
-
-- GVSP packet resend is implemented at the protocol layer but not wired into the receive path
-- The GVCP/GVSP layer is mid-audit. `ACTION` and `EVENT` are fixed, but chunk delivery still is not: the leader rejects the Image Extended Chunk payload type, and the chunk trailer layout matches our own fake rather than the specification
-- Several GenApi features are parsed but not yet honoured (`pInvalidator`, `Cachable`, dynamic `pMin`/`pMax`)
-- No feature-matrix or MSRV enforcement in CI
 
 ## Workspace layout
 
