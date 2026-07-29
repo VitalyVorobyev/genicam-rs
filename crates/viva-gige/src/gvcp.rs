@@ -35,6 +35,13 @@ pub mod consts {
     pub const PACKET_RESEND_COMMAND: u16 = 0x0040;
     /// Opcode of the packet resend acknowledgement.
     pub const PACKET_RESEND_ACK: u16 = 0x0041;
+    /// Opcode of the PENDING_ACK acknowledgement (GigE Vision 1.2, section 18.5).
+    ///
+    /// A device that cannot complete a command within the controller's timeout
+    /// answers with this instead of the real acknowledgement, asking for more
+    /// time. It is not a GenCP opcode — the U3V side of GenCP signals the same
+    /// condition with status `0x8006` — so it is handled in the GVCP layer.
+    pub const PENDING_ACK: u16 = 0x0089;
 
     /// Current IP configuration flags register.
     ///
@@ -76,6 +83,17 @@ pub mod consts {
     pub const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
     /// Maximum number of automatic retries for a control transaction.
     pub const MAX_RETRIES: usize = 4;
+    /// Maximum number of consecutive PENDING_ACKs honoured for one command.
+    ///
+    /// A device is free to keep asking for more time; this bounds a
+    /// misbehaving one that never finishes.
+    pub const MAX_PENDING_ACKS: usize = 100;
+    /// Ceiling on the extension a single PENDING_ACK may request.
+    ///
+    /// The field is 16-bit milliseconds, so the wire maximum is ~65 s. Cap it
+    /// well below that: an honest device asks for tens or hundreds of
+    /// milliseconds, and this keeps a garbage value from hanging the caller.
+    pub const MAX_PENDING_ACK_WAIT: Duration = Duration::from_secs(10);
     /// Base delay used for retry backoff.
     pub const RETRY_BASE_DELAY: Duration = Duration::from_millis(20);
     /// Upper bound for the random jitter added to the retry delay (inclusive).
@@ -636,6 +654,52 @@ fn parse_string(bytes: &[u8]) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Outcome of waiting for one acknowledgement.
+///
+/// Mirrors the three cases the caller already distinguishes — a datagram, a
+/// socket error, and a deadline — so that PENDING_ACK handling can be factored
+/// out without changing the retry policy around it.
+enum AckRecv {
+    Received(usize),
+    Io(std::io::Error),
+    TimedOut,
+}
+
+/// Decode a GVCP PENDING_ACK, returning the request id it refers to and the
+/// extra time the device is asking for.
+///
+/// Returns `None` for anything that is not a PENDING_ACK, so the caller can
+/// hand the datagram to the normal GenCP decoder.
+///
+/// Layout per GigE Vision 1.2 section 18.5: the 8-byte GVCP acknowledgement
+/// header, then two reserved bytes and a 16-bit `time_to_completion` in
+/// milliseconds.
+///
+/// This diverges deliberately from aravis, whose
+/// `arv_gvcp_packet_get_pending_ack_timeout` reads all four payload bytes as a
+/// big-endian `u32`. The two agree whenever the reserved field is zero, which
+/// is what the specification requires of the device; reading the `u16` the
+/// specification actually defines is the safer of the two, because a device
+/// that leaves junk in the reserved field cannot then talk us into a wait
+/// three orders of magnitude too long. Callers clamp the result regardless.
+fn parse_pending_ack(buf: &[u8]) -> Option<(u16, Duration)> {
+    if buf.len() < viva_gencp::HEADER_SIZE {
+        return None;
+    }
+    if u16::from_be_bytes([buf[2], buf[3]]) != consts::PENDING_ACK {
+        return None;
+    }
+    let request_id = u16::from_be_bytes([buf[6], buf[7]]);
+    let payload = &buf[viva_gencp::HEADER_SIZE..];
+    // A truncated PENDING_ACK is still an unambiguous request for more time;
+    // grant the default rather than discarding it and resending the command.
+    let millis = match payload {
+        [_, _, hi, lo, ..] => u16::from_be_bytes([*hi, *lo]),
+        _ => return Some((request_id, consts::CONTROL_TIMEOUT)),
+    };
+    Some((request_id, Duration::from_millis(u64::from(millis))))
+}
+
 /// GVCP device handle.
 pub struct GigeDevice {
     socket: UdpSocket,
@@ -751,8 +815,8 @@ impl GigeDevice {
                     + consts::GENCP_MAX_BLOCK
                     + consts::GENCP_WRITE_OVERHEAD
             ];
-            match time::timeout(consts::CONTROL_TIMEOUT, self.socket.recv(&mut buf)).await {
-                Ok(Ok(len)) => {
+            match self.recv_absorbing_pending(&mut buf, request_id).await {
+                AckRecv::Received(len) => {
                     trace!(request_id, bytes = len, attempt, "received GenCP ack");
                     let ack = decode_ack(&buf[..len])?;
                     if ack.header.request_id != request_id {
@@ -785,7 +849,7 @@ impl GigeDevice {
                         other => return Err(GigeError::Status(other)),
                     }
                 }
-                Ok(Err(err)) => {
+                AckRecv::Io(err) => {
                     if attempt >= consts::MAX_RETRIES {
                         return Err(err.into());
                     }
@@ -793,7 +857,7 @@ impl GigeDevice {
                     self.backoff(attempt).await;
                     payload = BytesMut::from(&payload_bytes[..]);
                 }
-                Err(_) => {
+                AckRecv::TimedOut => {
                     if attempt >= consts::MAX_RETRIES {
                         return Err(GigeError::Timeout);
                     }
@@ -801,6 +865,55 @@ impl GigeDevice {
                     self.backoff(attempt).await;
                     payload = BytesMut::from(&payload_bytes[..]);
                 }
+            }
+        }
+    }
+
+    /// Receive one acknowledgement, granting the device the extra time it asks
+    /// for via PENDING_ACK.
+    ///
+    /// A PENDING_ACK is not a failure and must not be retried: the command is
+    /// still executing on the device, so resending it risks running it twice —
+    /// which for a `WriteMem` to flash is exactly the operation you least want
+    /// duplicated. The GigE Vision specification instead has the controller
+    /// extend its own deadline by the time the device requests and keep
+    /// waiting on the same request id.
+    async fn recv_absorbing_pending(&mut self, buf: &mut [u8], request_id: u16) -> AckRecv {
+        let mut wait = consts::CONTROL_TIMEOUT;
+        let mut pending_seen = 0usize;
+        loop {
+            match time::timeout(wait, self.socket.recv(buf)).await {
+                Ok(Ok(len)) => {
+                    let Some((pending_id, requested)) = parse_pending_ack(&buf[..len]) else {
+                        return AckRecv::Received(len);
+                    };
+                    if pending_id != request_id {
+                        debug!(
+                            request_id,
+                            got = pending_id,
+                            "ignoring PENDING_ACK for another request"
+                        );
+                        continue;
+                    }
+                    pending_seen += 1;
+                    if pending_seen > consts::MAX_PENDING_ACKS {
+                        warn!(
+                            request_id,
+                            pending_seen, "device kept requesting more time, giving up"
+                        );
+                        return AckRecv::TimedOut;
+                    }
+                    wait = requested.clamp(consts::CONTROL_TIMEOUT, consts::MAX_PENDING_ACK_WAIT);
+                    debug!(
+                        request_id,
+                        requested_ms = requested.as_millis() as u64,
+                        waiting_ms = wait.as_millis() as u64,
+                        pending_seen,
+                        "device requested more time (PENDING_ACK)"
+                    );
+                }
+                Ok(Err(err)) => return AckRecv::Io(err),
+                Err(_) => return AckRecv::TimedOut,
             }
         }
     }
@@ -1133,6 +1246,15 @@ impl GigeDevice {
                 let command = cursor.get_u16();
                 let length = cursor.get_u16();
                 let ack_request_id = cursor.get_u16();
+                if command == consts::PENDING_ACK {
+                    // Legal, but not worth waiting for: by the time the device
+                    // finished, the frame this resend belongs to would already
+                    // have been completed or dropped. Report it accurately
+                    // instead of as an unexpected opcode.
+                    return Err(GigeError::Protocol(
+                        "device requested more time for a packet resend".into(),
+                    ));
+                }
                 if command != consts::PACKET_RESEND_ACK {
                     return Err(GigeError::Protocol("unexpected resend ack opcode".into()));
                 }
@@ -1244,6 +1366,119 @@ mod tests {
         assert!(parse_discovery_ack(&ack(0, 0x0081, 0x0100), 0x0100).is_none());
         assert!(parse_discovery_ack(&ack(0x8002, consts::DISCOVERY_ACK, 0x0100), 0x0100).is_none());
         assert!(parse_discovery_ack(&[0u8; 4], 0x0100).is_none());
+    }
+
+    /// A PENDING_ACK written out from the specification's field table:
+    /// the 8-byte acknowledgement header, two reserved bytes, then a 16-bit
+    /// `time_to_completion` in milliseconds.
+    fn golden_pending_ack(request_id: u16, millis: u16) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u16.to_be_bytes()); // status: success
+        buf.extend_from_slice(&consts::PENDING_ACK.to_be_bytes()); // 0x0089
+        buf.extend_from_slice(&4u16.to_be_bytes()); // payload length
+        buf.extend_from_slice(&request_id.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        buf.extend_from_slice(&millis.to_be_bytes()); // time to completion
+        buf
+    }
+
+    #[test]
+    fn pending_ack_matches_spec_offsets() {
+        let (id, wait) = parse_pending_ack(&golden_pending_ack(0x1234, 750)).expect("pending ack");
+        assert_eq!(id, 0x1234);
+        assert_eq!(wait, Duration::from_millis(750));
+
+        // The time is the u16 at payload offset 2, not a u32 over the whole
+        // payload. The two readings agree only while the reserved field is
+        // zero; a device that leaves junk there would ask aravis for
+        // 0xDEAD_02EE ms — around 41 days — where we read 750.
+        let mut junk = golden_pending_ack(0x1234, 750);
+        junk[8..10].copy_from_slice(&0xDEADu16.to_be_bytes());
+        assert_eq!(
+            parse_pending_ack(&junk).expect("pending ack").1.as_millis(),
+            750
+        );
+    }
+
+    #[test]
+    fn pending_ack_is_distinguished_from_real_acks() {
+        // A genuine READREG ack must not be mistaken for a request for time,
+        // or every register read would hang until the retry budget ran out.
+        let mut readreg = Vec::new();
+        readreg.extend_from_slice(&0u16.to_be_bytes());
+        readreg.extend_from_slice(&0x0081u16.to_be_bytes());
+        readreg.extend_from_slice(&4u16.to_be_bytes());
+        readreg.extend_from_slice(&0x1234u16.to_be_bytes());
+        readreg.extend_from_slice(&0u32.to_be_bytes());
+        assert!(parse_pending_ack(&readreg).is_none());
+        assert!(parse_pending_ack(&[0u8; 4]).is_none());
+
+        // A device that truncates the payload is still asking for time.
+        let truncated = &golden_pending_ack(0x1234, 750)[..viva_gencp::HEADER_SIZE];
+        let (id, wait) = parse_pending_ack(truncated).expect("truncated pending ack");
+        assert_eq!(id, 0x1234);
+        assert_eq!(wait, consts::CONTROL_TIMEOUT);
+    }
+
+    /// A minimal GVCP device that answers `pending` PENDING_ACKs before the
+    /// real acknowledgement, counting how many commands it was actually sent.
+    ///
+    /// The count is the point: a controller that treats PENDING_ACK as a
+    /// failure and retries would execute the command more than once.
+    async fn pending_ack_device(
+        pending: usize,
+        wait_ms: u16,
+    ) -> (SocketAddr, tokio::task::JoinHandle<usize>) {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let addr = sock.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            let mut commands = 0usize;
+            let (len, peer) = sock.recv_from(&mut buf).await.expect("recv");
+            commands += 1;
+            let request_id = u16::from_be_bytes([buf[6], buf[7]]);
+            debug_assert!(len >= viva_gencp::HEADER_SIZE);
+            for _ in 0..pending {
+                let ack = golden_pending_ack(request_id, wait_ms);
+                sock.send_to(&ack, peer).await.expect("send pending");
+            }
+            // The real READREG ack: one 4-byte register value.
+            let mut ack = Vec::new();
+            ack.extend_from_slice(&0u16.to_be_bytes());
+            ack.extend_from_slice(&0x0081u16.to_be_bytes());
+            ack.extend_from_slice(&4u16.to_be_bytes());
+            ack.extend_from_slice(&request_id.to_be_bytes());
+            ack.extend_from_slice(&0xCAFEBABEu32.to_be_bytes());
+            sock.send_to(&ack, peer).await.expect("send ack");
+            // Drain any retry the controller wrongly sent, so the count is
+            // observable rather than lost in the socket buffer.
+            let drain = time::timeout(Duration::from_millis(200), sock.recv_from(&mut buf)).await;
+            if drain.is_ok() {
+                commands += 1;
+            }
+            commands
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn pending_ack_extends_the_deadline_without_resending() {
+        let (addr, server) = pending_ack_device(1, 300).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let value = device.read_register(0x0a00).await.expect("read register");
+        assert_eq!(value, 0xCAFEBABE);
+        assert_eq!(server.await.expect("join"), 1, "command must not be resent");
+    }
+
+    #[tokio::test]
+    async fn repeated_pending_acks_are_all_honoured() {
+        // A flash write can take several rounds. Each one restarts the clock;
+        // the command is still sent exactly once.
+        let (addr, server) = pending_ack_device(3, 200).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let value = device.read_register(0x0a00).await.expect("read register");
+        assert_eq!(value, 0xCAFEBABE);
+        assert_eq!(server.await.expect("join"), 1, "command must not be resent");
     }
 
     #[test]
