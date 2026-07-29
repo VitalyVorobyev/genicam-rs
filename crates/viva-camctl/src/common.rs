@@ -57,12 +57,7 @@ pub async fn select_device(
             if let Some(found) = devices.drain(..).find(|dev| dev.ip == ip) {
                 return Ok(found);
             }
-            Ok(DeviceInfo {
-                ip,
-                mac: [0; 6],
-                manufacturer: None,
-                model: None,
-            })
+            Ok(DeviceInfo::from_ip(ip))
         }
         (None, Some(idx)) => {
             let devices = discover_devices(timeout, iface_ip).await?;

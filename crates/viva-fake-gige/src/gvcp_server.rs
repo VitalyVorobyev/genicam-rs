@@ -30,6 +30,20 @@ const WRITEREG_ACK: u16 = 0x0083;
 const READMEM_ACK: u16 = 0x0085;
 const WRITEMEM_ACK: u16 = 0x0087;
 
+/// MAC address the fake camera reports. Public so tests can assert the exact
+/// bytes rather than merely that a MAC is present (ADR-0019).
+pub const FAKE_MAC: [u8; 6] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+/// Manufacturer name reported in the Discovery ACK.
+pub const FAKE_MANUFACTURER: &str = "viva-genicam";
+/// Model name reported in the Discovery ACK.
+pub const FAKE_MODEL: &str = "FakeGigE";
+/// Device version reported in the Discovery ACK.
+pub const FAKE_VERSION: &str = "1.0.0";
+/// Serial number reported in the Discovery ACK.
+pub const FAKE_SERIAL: &str = "FAKE-001";
+/// User-defined name reported in the Discovery ACK.
+pub const FAKE_USER_NAME: &str = "FakeCamera";
+
 /// Status code for success.
 const STATUS_SUCCESS: u16 = 0x0000;
 /// GigE Vision `GEV_STATUS_INVALID_PARAMETER`.
@@ -125,48 +139,54 @@ fn build_discovery_ack(request_id: u16, ip: std::net::Ipv4Addr) -> Vec<u8> {
     buf.put_u16(payload_len);
     buf.put_u16(request_id);
 
-    // Discovery payload (248 bytes):
-    buf.put_u16(2); // Spec major version
-    buf.put_u16(0); // Spec minor version
-    buf.put_u32(0); // Device mode
-    buf.put_u32(0); // Reserved
+    // Discovery payload (248 bytes). Offsets below are payload-relative and
+    // come from the specification's field table, NOT from what our own parser
+    // happens to read — see ADR-0019. This layout previously placed the MAC at
+    // offset 12 because `parse_discovery_payload` read it there; both were
+    // wrong, and agreeing with each other is what hid it (#57).
+    buf.put_u16(2); // 0   Spec major version
+    buf.put_u16(0); // 2   Spec minor version
+    buf.put_u32(0); // 4   Device mode
 
-    // MAC address (6 bytes): fake MAC DE:AD:BE:EF:CA:FE
-    buf.put_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]);
+    // 8   Reserved: the padding half of the MAC-high register, 2 bytes only.
+    buf.put_slice(&[0u8; 2]);
 
-    buf.put_u32(0x0000_0007); // Supported IP config (DHCP + persistent + LLA)
-    buf.put_u32(0x0000_0005); // Current IP config
+    // 10  MAC address (6 bytes): fake MAC DE:AD:BE:EF:CA:FE
+    buf.put_slice(&FAKE_MAC);
 
-    // 10 bytes reserved
-    buf.put_slice(&[0u8; 10]);
+    buf.put_u32(0x0000_0007); // 16  Supported IP config (DHCP + persistent + LLA)
+    buf.put_u32(0x0000_0005); // 20  Current IP config
 
-    // Current IP address
+    // 24  Reserved (12 bytes)
+    buf.put_slice(&[0u8; 12]);
+
+    // 36  Current IP address
     buf.put_slice(&ip.octets());
 
-    // 12 bytes reserved
+    // 40  Reserved (12 bytes)
     buf.put_slice(&[0u8; 12]);
 
-    // Subnet mask (255.255.255.0)
+    // 52  Subnet mask (255.255.255.0)
     buf.put_slice(&[255, 255, 255, 0]);
 
-    // 12 bytes reserved
+    // 56  Reserved (12 bytes)
     buf.put_slice(&[0u8; 12]);
 
-    // Gateway
+    // 68  Gateway
     buf.put_slice(&[0, 0, 0, 0]);
 
     // Manufacturer name (32 bytes)
-    put_fixed_string(&mut buf, "viva-genicam", 32);
+    put_fixed_string(&mut buf, FAKE_MANUFACTURER, 32); // 72
     // Model name (32 bytes)
-    put_fixed_string(&mut buf, "FakeGigE", 32);
+    put_fixed_string(&mut buf, FAKE_MODEL, 32); // 104
     // Device version (32 bytes)
-    put_fixed_string(&mut buf, "1.0.0", 32);
+    put_fixed_string(&mut buf, FAKE_VERSION, 32); // 136
     // Manufacturer specific info (48 bytes)
-    put_fixed_string(&mut buf, "Fake camera for testing", 48);
+    put_fixed_string(&mut buf, "Fake camera for testing", 48); // 168
     // Serial number (16 bytes)
-    put_fixed_string(&mut buf, "FAKE-001", 16);
+    put_fixed_string(&mut buf, FAKE_SERIAL, 16); // 216
     // User defined name (16 bytes)
-    put_fixed_string(&mut buf, "FakeCamera", 16);
+    put_fixed_string(&mut buf, FAKE_USER_NAME, 16); // 232
 
     buf.to_vec()
 }
@@ -338,7 +358,7 @@ async fn handle_forceip(
     }
 
     let target_mac = &payload[2..8];
-    let fake_mac: [u8; 6] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+    let fake_mac: [u8; 6] = FAKE_MAC;
     if target_mac != fake_mac {
         debug!(
             target = ?target_mac,

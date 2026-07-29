@@ -142,14 +142,12 @@ impl DeviceBackend for EmbeddedBackend {
         };
 
         let gige_info = viva_genicam::gige::DeviceInfo {
-            ip,
-            mac: [0; 6],
             model: if model.is_empty() {
                 None
             } else {
                 Some(model.clone())
             },
-            manufacturer: None,
+            ..viva_genicam::gige::DeviceInfo::from_ip(ip)
         };
 
         info!(device_id, "Connecting to GigE camera (embedded mode)");
@@ -585,18 +583,29 @@ impl DeviceBackend for EmbeddedBackend {
 
 async fn discover_gige_devices() -> Vec<DeviceInfo> {
     let timeout = Duration::from_secs(1);
-    match viva_genicam::gige::discover_all(timeout).await {
+    // `discover` rather than `discover_all`: the latter probes loopback, which
+    // on Windows can raise WSAECONNRESET and used to abort the whole scan,
+    // leaving the UI on "No device" with a real camera on the wire (#57).
+    // `discover_all` remains for the fake-camera tests that need loopback.
+    match viva_genicam::gige::discover(timeout).await {
         Ok(devices) => devices
             .into_iter()
-            .map(|d| DeviceInfo {
-                id: d.ip.to_string(),
-                name: d.model.clone().unwrap_or_else(|| d.ip.to_string()),
-                model: d.model.unwrap_or_default(),
-                serial: format!(
-                    "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                    d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]
-                ),
-                transport: "gige".to_string(),
+            .map(|d| {
+                // Prefer the device's own serial number; fall back to the MAC
+                // only when the camera does not report one.
+                let serial = d.serial.clone().unwrap_or_else(|| d.mac_string());
+                let name = d
+                    .user_name
+                    .clone()
+                    .or_else(|| d.model.clone())
+                    .unwrap_or_else(|| d.ip.to_string());
+                DeviceInfo {
+                    id: d.ip.to_string(),
+                    name,
+                    model: d.model.unwrap_or_default(),
+                    serial,
+                    transport: "gige".to_string(),
+                }
             })
             .collect(),
         Err(e) => {

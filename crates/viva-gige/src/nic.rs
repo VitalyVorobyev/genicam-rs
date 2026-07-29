@@ -17,7 +17,7 @@ use bytes::BytesMut;
 use if_addrs::IfAddr;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
-use tracing::info;
+use tracing::{debug, info};
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use tracing::warn;
@@ -73,8 +73,10 @@ fn iface_name_to_index(name: &str) -> io::Result<u32> {
 /// Resolve an interface index from its name on Windows.
 #[cfg(target_os = "windows")]
 fn iface_name_to_index(name: &str) -> io::Result<u32> {
-    // On Windows, interface indices are not easily resolved by name via libc.
-    // Fall back to iterating if_addrs to find a matching interface.
+    // Last resort only: `Iface::resolve` prefers `if_addrs`'s `index`, which
+    // on Windows comes from the adapter's real `IfIndex`. This positional
+    // fallback runs only when the OS reported index 0 ("unknown"), and its
+    // result is a guess rather than a kernel interface index.
     for (idx, iface) in if_addrs::get_if_addrs()?.iter().enumerate() {
         if iface.name == name {
             return Ok((idx + 1) as u32);
@@ -97,7 +99,35 @@ pub struct Iface {
 
 impl Iface {
     /// Resolve an interface from the operating system by its name.
+    ///
+    /// When the interface carries several IPv4 addresses the first one is
+    /// used; [`Iface::from_ipv4`] preserves the address that was asked for.
     pub fn from_system(name: &str) -> io::Result<Self> {
+        Self::resolve(name, None)
+    }
+
+    /// Resolve an interface by one of its IPv4 addresses.
+    ///
+    /// The resulting [`Iface`] reports `addr` itself, not whichever address
+    /// the OS happens to list last for that interface. A multi-homed NIC —
+    /// a stale DHCP lease alongside a link-local address, say — would
+    /// otherwise resolve to a different address than the caller selected
+    /// and bind the socket to the wrong one (#57).
+    pub fn from_ipv4(addr: Ipv4Addr) -> io::Result<Self> {
+        for iface in if_addrs::get_if_addrs()? {
+            if let IfAddr::V4(v4) = iface.addr
+                && v4.ip == addr
+            {
+                return Self::resolve(&iface.name, Some(addr));
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no interface with IPv4 {addr}"),
+        ))
+    }
+
+    fn resolve(name: &str, preferred: Option<Ipv4Addr>) -> io::Result<Self> {
         if name.is_empty() || name.len() > IFACE_NAME_MAX {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -105,18 +135,44 @@ impl Iface {
             ));
         }
 
-        let index = iface_name_to_index(name)?;
-
-        let mut ipv4 = None;
+        let mut ipv4: Option<Ipv4Addr> = None;
         let mut ipv6 = None;
+        // `if_addrs` reports the kernel's own interface index where the
+        // platform exposes it, which is what multicast joins need.
+        let mut index: Option<u32> = None;
+        let mut found = false;
         for iface in if_addrs::get_if_addrs()? {
             if iface.name != name {
                 continue;
             }
+            found = true;
+            index = index.or(iface.index);
             match iface.addr {
-                IfAddr::V4(v4) => ipv4 = Some(v4.ip),
-                IfAddr::V6(v6) => ipv6 = Some(v6.ip),
+                IfAddr::V4(v4) => {
+                    // Take the requested address if we see it, otherwise the
+                    // first one, and never let a later address displace it.
+                    if Some(v4.ip) == preferred || ipv4.is_none() {
+                        ipv4 = Some(v4.ip);
+                    }
+                }
+                IfAddr::V6(v6) => {
+                    if ipv6.is_none() {
+                        ipv6 = Some(v6.ip);
+                    }
+                }
             }
+        }
+
+        // An interface with no address at all is still resolvable by name.
+        let index = match index {
+            Some(index) => index,
+            None => iface_name_to_index(name)?,
+        };
+        if !found && ipv4.is_none() && ipv6.is_none() {
+            // `iface_name_to_index` already errors for an unknown name on
+            // every platform, so reaching here means the name is valid but
+            // unaddressed.
+            debug!(name, "interface has no assigned IP address");
         }
 
         Ok(Self {
@@ -125,21 +181,6 @@ impl Iface {
             ipv4,
             ipv6,
         })
-    }
-
-    /// Resolve an interface by its primary IPv4 address.
-    pub fn from_ipv4(addr: Ipv4Addr) -> io::Result<Self> {
-        for iface in if_addrs::get_if_addrs()? {
-            if let IfAddr::V4(v4) = iface.addr
-                && v4.ip == addr
-            {
-                return Self::from_system(&iface.name);
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no interface with IPv4 {addr}"),
-        ))
     }
 
     /// Interface name as provided by the operating system (e.g. `eth0`).

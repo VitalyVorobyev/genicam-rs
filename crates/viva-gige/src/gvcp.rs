@@ -198,10 +198,33 @@ pub struct DeviceInfo {
     pub mac: [u8; 6],
     pub model: Option<String>,
     pub manufacturer: Option<String>,
+    /// Device version string (Discovery ACK offset 136).
+    pub version: Option<String>,
+    /// Serial number as printed on the device (Discovery ACK offset 216).
+    pub serial: Option<String>,
+    /// User-programmable device name (Discovery ACK offset 232).
+    pub user_name: Option<String>,
 }
 
 impl DeviceInfo {
-    fn mac_string(&self) -> String {
+    /// A minimal record for a device addressed directly by IP.
+    ///
+    /// Used when the caller names a camera by address and there is no
+    /// Discovery ACK to populate the identity fields.
+    pub fn from_ip(ip: Ipv4Addr) -> Self {
+        Self {
+            ip,
+            mac: [0; 6],
+            model: None,
+            manufacturer: None,
+            version: None,
+            serial: None,
+            user_name: None,
+        }
+    }
+
+    /// Format the MAC address as `AA:BB:CC:DD:EE:FF`.
+    pub fn mac_string(&self) -> String {
         self.mac
             .iter()
             .map(|byte| format!("{byte:02X}"))
@@ -367,13 +390,24 @@ async fn discover_impl(
         let interface_name = name.clone();
         join_set.spawn(async move {
             let local_addr = SocketAddr::new(IpAddr::V4(v4.ip), 0);
-            let socket = UdpSocket::bind(local_addr).await?;
+            let socket = match UdpSocket::bind(local_addr).await {
+                Ok(socket) => socket,
+                Err(err) => {
+                    warn!(%interface_name, local = %v4.ip, error = %err,
+                          "skipping interface: bind failed");
+                    return Vec::new();
+                }
+            };
             // On loopback, broadcast is not supported on some platforms (macOS).
             // Send unicast discovery directly to the local address instead.
             let destination = if v4.ip.is_loopback() {
                 SocketAddr::new(IpAddr::V4(v4.ip), consts::PORT)
             } else {
-                socket.set_broadcast(true)?;
+                if let Err(err) = socket.set_broadcast(true) {
+                    warn!(%interface_name, local = %v4.ip, error = %err,
+                          "skipping interface: SO_BROADCAST failed");
+                    return Vec::new();
+                }
                 let broadcast = v4.broadcast.unwrap_or(Ipv4Addr::BROADCAST);
                 SocketAddr::new(IpAddr::V4(broadcast), consts::PORT)
             };
@@ -387,7 +421,11 @@ async fn discover_impl(
             let packet = header.encode(&[]);
             info!(%interface_name, local = %v4.ip, dest = %destination, "sending GVCP discovery");
             trace!(%interface_name, bytes = packet.len(), "GVCP discovery payload size");
-            socket.send_to(&packet, destination).await?;
+            if let Err(err) = socket.send_to(&packet, destination).await {
+                warn!(%interface_name, dest = %destination, error = %err,
+                      "skipping interface: discovery send failed");
+                return Vec::new();
+            }
 
             let mut responses = Vec::new();
             let mut buffer = vec![0u8; consts::DISCOVERY_BUFFER];
@@ -397,26 +435,43 @@ async fn discover_impl(
                 tokio::select! {
                     _ = &mut timer => break,
                     recv = socket.recv_from(&mut buffer) => {
-                        let (len, src) = recv?;
+                        // A receive error must not discard the cameras we have
+                        // already found on this interface. Windows in particular
+                        // reports WSAECONNRESET (10054) here when an earlier
+                        // broadcast drew an ICMP port-unreachable (#57).
+                        let (len, src) = match recv {
+                            Ok(v) => v,
+                            Err(err) => {
+                                debug!(%interface_name, error = %err,
+                                       "discovery receive failed; keeping results so far");
+                                break;
+                            }
+                        };
                         info!(%interface_name, %src, "received GVCP response");
                         trace!(%interface_name, bytes = len, "GVCP response length");
-                        if let Some(info) = parse_discovery_ack(&buffer[..len], request_id)? {
+                        if let Some(info) = parse_discovery_ack(&buffer[..len], request_id) {
                             trace!(ip = %info.ip, mac = %info.mac_string(), "parsed discovery ack");
                             responses.push(info);
                         }
                     }
                 }
             }
-            Ok::<_, GigeError>(responses)
+            responses
         });
     }
 
+    // One interface failing must never fail the whole call: a host commonly has
+    // a down NIC, a Hyper-V switch, or a VPN adapter alongside the one the
+    // camera is on.
     let mut seen = HashMap::new();
     while let Some(res) = join_set.join_next().await {
-        let devices =
-            res.map_err(|e| GigeError::Protocol(format!("discovery task failed: {e}")))??;
-        for dev in devices {
-            seen.entry((dev.ip, dev.mac)).or_insert(dev);
+        match res {
+            Ok(devices) => {
+                for dev in devices {
+                    seen.entry((dev.ip, dev.mac)).or_insert(dev);
+                }
+            }
+            Err(err) => warn!(error = %err, "discovery task failed"),
         }
     }
 
@@ -425,9 +480,16 @@ async fn discover_impl(
     Ok(devices)
 }
 
-fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Result<Option<DeviceInfo>, GigeError> {
+/// Decode one datagram received on the discovery socket.
+///
+/// Returns `None` — never an error — for anything that is not a usable
+/// Discovery ACK for us. The socket is bound to an ephemeral port on a
+/// broadcast network, so unrelated GVCP traffic is expected; treating it as
+/// fatal would discard the cameras already found on this interface (#57).
+fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Option<DeviceInfo> {
     if buf.len() < viva_gencp::HEADER_SIZE {
-        return Err(GigeError::Protocol("GVCP ack too short".into()));
+        trace!(len = buf.len(), "ignoring short GVCP datagram");
+        return None;
     }
     let mut header = buf;
     let status = header.get_u16();
@@ -435,54 +497,75 @@ fn parse_discovery_ack(buf: &[u8], expected_request: u16) -> Result<Option<Devic
     let length = header.get_u16() as usize;
     let request_id = header.get_u16();
     if request_id != expected_request {
-        return Ok(None);
+        return None;
     }
     if command != consts::DISCOVERY_ACK {
-        return Err(GigeError::Protocol(format!(
-            "unexpected discovery opcode {command:#06x}"
-        )));
+        debug!(
+            opcode = format_args!("{command:#06x}"),
+            "ignoring non-discovery GVCP ack"
+        );
+        return None;
     }
     if status != 0 {
-        return Err(GigeError::Protocol(format!(
-            "discovery returned status {status:#06x}"
-        )));
+        debug!(
+            status = format_args!("{status:#06x}"),
+            "discovery ack reported a non-zero status"
+        );
+        return None;
     }
     if buf.len() < viva_gencp::HEADER_SIZE + length {
-        return Err(GigeError::Protocol("discovery payload truncated".into()));
+        debug!(
+            declared = length,
+            actual = buf.len() - viva_gencp::HEADER_SIZE,
+            "ignoring truncated discovery payload"
+        );
+        return None;
     }
     let payload = &buf[viva_gencp::HEADER_SIZE..viva_gencp::HEADER_SIZE + length];
-    let info = parse_discovery_payload(payload)?;
-    Ok(Some(info))
+    match parse_discovery_payload(payload) {
+        Ok(info) => Some(info),
+        Err(err) => {
+            debug!(error = %err, "ignoring unparsable discovery payload");
+            None
+        }
+    }
 }
 
 /// Parse a GigE Vision Discovery ACK payload (248 bytes).
 ///
-/// Field layout per GigE Vision specification (table 7-4):
+/// The payload mirrors the device's bootstrap register block, so the MAC is
+/// split across `DeviceMACAddressHigh` (0x08, whose low half holds the top two
+/// octets) and `DeviceMACAddressLow` (0x0C) — six contiguous bytes at offset
+/// **10**, not 12. Cross-checked against Wireshark's `dissect_discovery_ack()`,
+/// which reads the MAC from `offset + 10` and the IP, manufacturer and model
+/// from 36, 72 and 104. Reported in #57 against a JAI FS-3200T-10GE-NNC, whose
+/// `00:0C:DF:06:5B:2F` was read as `DF:06:5B:2F:C0:00`.
 ///
 /// | Offset | Size | Field                        |
 /// |--------|------|------------------------------|
 /// |      0 |    2 | Spec version major           |
 /// |      2 |    2 | Spec version minor           |
 /// |      4 |    4 | Device mode                  |
-/// |      8 |    4 | Reserved                     |
-/// |     12 |    2 | MAC address high             |
-/// |     14 |    4 | MAC address low              |
-/// |     18 |    4 | Supported IP config          |
-/// |     22 |    4 | Current IP config            |
-/// |     26 |   10 | Reserved                     |
+/// |      8 |    2 | Reserved (MAC-high padding)  |
+/// |     10 |    6 | MAC address                  |
+/// |     16 |    4 | Supported IP config          |
+/// |     20 |    4 | Current IP config            |
+/// |     24 |   12 | Reserved                     |
 /// |     36 |    4 | Current IP address           |
 /// |     40 |   12 | Reserved                     |
 /// |     52 |    4 | Current subnet mask          |
 /// |     56 |   12 | Reserved                     |
 /// |     68 |    4 | Default gateway              |
 /// |     72 |   32 | Manufacturer name            |
-/// |    106 |   32 | Model name                   |
-/// |    138 |   32 | Device version               |
-/// |    170 |   48 | Manufacturer specific info   |
-/// |    218 |   16 | Serial number                |
-/// |    234 |   16 | User defined name            |
+/// |    104 |   32 | Model name                   |
+/// |    136 |   32 | Device version               |
+/// |    168 |   48 | Manufacturer specific info   |
+/// |    216 |   16 | Serial number                |
+/// |    232 |   16 | User defined name            |
 fn parse_discovery_payload(payload: &[u8]) -> Result<DeviceInfo, GigeError> {
-    // Minimum size to reach past the current IP field.
+    // Minimum size to reach past the current IP field. Everything after it is
+    // read leniently: a short-but-valid ACK should still yield a usable device
+    // rather than failing discovery on that interface.
     if payload.len() < 40 {
         return Err(GigeError::Protocol("discovery payload too small".into()));
     }
@@ -490,47 +573,60 @@ fn parse_discovery_payload(payload: &[u8]) -> Result<DeviceInfo, GigeError> {
     let _spec_major = cursor.get_u16(); // 0
     let _spec_minor = cursor.get_u16(); // 2
     let _device_mode = cursor.get_u32(); // 4
-    let _reserved = cursor.get_u32(); // 8
 
-    // MAC: 2 bytes high + 4 bytes low = 6 bytes at offset 12.
+    // Only the two padding bytes of the MAC-high register precede the address.
+    cursor.advance(2); // 8..10
+
+    // MAC: 2 bytes from the high register + 4 from the low register.
     let mut mac = [0u8; 6];
-    cursor.copy_to_slice(&mut mac); // 12..18
+    cursor.copy_to_slice(&mut mac); // 10..16
 
-    let _supported_ip_config = cursor.get_u32(); // 18
-    let _current_ip_config = cursor.get_u32(); // 22
+    let _supported_ip_config = cursor.get_u32(); // 16
+    let _current_ip_config = cursor.get_u32(); // 20
 
-    // 10 bytes reserved before current IP.
-    cursor.advance(10); // 26..36
+    // 12 bytes reserved before current IP.
+    cursor.advance(12); // 24..36
     let ip = Ipv4Addr::from(cursor.get_u32()); // 36
 
-    // 12 bytes reserved before subnet.
-    cursor.advance(12); // 40..52
-    let _subnet = cursor.get_u32(); // 52
+    // Everything past the IP is optional, so every step from here on has to
+    // tolerate the payload ending. Subnet and gateway are not retained.
+    skip(&mut cursor, 12 + 4); // 40..52 reserved, 52 subnet
+    skip(&mut cursor, 12 + 4); // 56..68 reserved, 68 gateway
 
-    // 12 bytes reserved before gateway.
-    cursor.advance(12); // 56..68
-    let _gateway = cursor.get_u32(); // 68
-
-    // String fields.
-    let manufacturer = read_fixed_string(&mut cursor, 32)?; // 72
-    let model = read_fixed_string(&mut cursor, 32)?; // 104
-    // Remaining fields (version, info, serial, user name) are optional.
+    // String fields. All optional: a device that truncates the payload still
+    // gives us an addressable camera.
+    let manufacturer = read_fixed_string(&mut cursor, 32); // 72
+    let model = read_fixed_string(&mut cursor, 32); // 104
+    let version = read_fixed_string(&mut cursor, 32); // 136
+    skip(&mut cursor, 48); // 168 manufacturer-specific info
+    let serial = read_fixed_string(&mut cursor, 16); // 216
+    let user_name = read_fixed_string(&mut cursor, 16); // 232
 
     Ok(DeviceInfo {
         ip,
         mac,
         manufacturer,
         model,
+        version,
+        serial,
+        user_name,
     })
 }
 
-fn read_fixed_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Option<String>, GigeError> {
+/// Read a NUL-padded fixed-width string, or `None` if the payload ends early.
+fn read_fixed_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Option<String> {
     if cursor.remaining() < len {
-        return Err(GigeError::Protocol("discovery string truncated".into()));
+        return None;
     }
     let mut buf = vec![0u8; len];
     cursor.copy_to_slice(&mut buf);
-    Ok(parse_string(&buf))
+    parse_string(&buf)
+}
+
+/// Advance past a field, stopping at the end of a truncated payload.
+fn skip(cursor: &mut Cursor<&[u8]>, len: usize) {
+    let n = len.min(cursor.remaining());
+    cursor.advance(n);
 }
 
 fn parse_string(bytes: &[u8]) -> Option<String> {
@@ -1060,6 +1156,95 @@ impl GigeDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Discovery ACK payload written out from the specification's field
+    /// table, with a distinct recognisable value in every field.
+    ///
+    /// Built here rather than by round-tripping our own encoder: the point of
+    /// this fixture is to disagree with the parser if the parser is wrong. See
+    /// [ADR-0019]. The offsets are corroborated by Wireshark's
+    /// `dissect_discovery_ack()`, which reads the MAC from `offset + 10` and
+    /// the IP, manufacturer and model from 36, 72 and 104.
+    ///
+    /// [ADR-0019]: https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/adrs/adr0019-transport-conformance-and-spec-derived-fakes.md
+    fn golden_discovery_payload() -> Vec<u8> {
+        let mut p = vec![0u8; 248];
+        p[0..2].copy_from_slice(&2u16.to_be_bytes()); // spec major
+        p[2..4].copy_from_slice(&1u16.to_be_bytes()); // spec minor
+        p[4..8].copy_from_slice(&0u32.to_be_bytes()); // device mode
+        // 8..10 is the padding half of the MAC-high register.
+        p[10..16].copy_from_slice(&[0x00, 0x0C, 0xDF, 0x06, 0x5B, 0x2F]); // MAC
+        p[16..20].copy_from_slice(&7u32.to_be_bytes()); // supported IP config
+        p[20..24].copy_from_slice(&5u32.to_be_bytes()); // current IP config
+        p[36..40].copy_from_slice(&[169, 254, 78, 62]); // current IP
+        p[52..56].copy_from_slice(&[255, 255, 0, 0]); // subnet
+        p[68..72].copy_from_slice(&[0, 0, 0, 0]); // gateway
+        let put =
+            |p: &mut [u8], at: usize, s: &str| p[at..at + s.len()].copy_from_slice(s.as_bytes());
+        put(&mut p, 72, "JAI Corporation"); // manufacturer
+        put(&mut p, 104, "FS-3200T-10GE-NNC"); // model
+        put(&mut p, 136, "1.2.3"); // device version
+        put(&mut p, 168, "mfr-specific"); // manufacturer info
+        put(&mut p, 216, "SN-12345"); // serial
+        put(&mut p, 232, "left-camera"); // user-defined name
+        p
+    }
+
+    #[test]
+    fn discovery_payload_matches_spec_offsets() {
+        let info = parse_discovery_payload(&golden_discovery_payload()).expect("parse");
+
+        // The MAC begins at offset 10. Reading it at 12 — as we did before
+        // #57 — yields DF:06:5B:2F:00:07, silently folding two bytes of
+        // SupportedIPConfiguration into the address.
+        assert_eq!(info.mac, [0x00, 0x0C, 0xDF, 0x06, 0x5B, 0x2F]);
+        assert_eq!(info.mac_string(), "00:0C:DF:06:5B:2F");
+        assert_eq!(info.ip, Ipv4Addr::new(169, 254, 78, 62));
+        assert_eq!(info.manufacturer.as_deref(), Some("JAI Corporation"));
+        assert_eq!(info.model.as_deref(), Some("FS-3200T-10GE-NNC"));
+        assert_eq!(info.version.as_deref(), Some("1.2.3"));
+        assert_eq!(info.serial.as_deref(), Some("SN-12345"));
+        assert_eq!(info.user_name.as_deref(), Some("left-camera"));
+    }
+
+    #[test]
+    fn discovery_payload_tolerates_truncation() {
+        // A device that stops after the IP field still yields an addressable
+        // camera rather than failing discovery on that interface.
+        let short = golden_discovery_payload()[..40].to_vec();
+        let info = parse_discovery_payload(&short).expect("short payload should parse");
+        assert_eq!(info.ip, Ipv4Addr::new(169, 254, 78, 62));
+        assert_eq!(info.mac, [0x00, 0x0C, 0xDF, 0x06, 0x5B, 0x2F]);
+        assert_eq!(info.manufacturer, None);
+        assert_eq!(info.serial, None);
+
+        // Below the IP field there is nothing usable.
+        assert!(parse_discovery_payload(&[0u8; 12]).is_err());
+    }
+
+    #[test]
+    fn discovery_ack_ignores_foreign_traffic() {
+        let payload = golden_discovery_payload();
+        let ack = |status: u16, command: u16, request_id: u16| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&status.to_be_bytes());
+            buf.extend_from_slice(&command.to_be_bytes());
+            buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            buf.extend_from_slice(&request_id.to_be_bytes());
+            buf.extend_from_slice(&payload);
+            buf
+        };
+
+        // The real thing.
+        assert!(parse_discovery_ack(&ack(0, consts::DISCOVERY_ACK, 0x0100), 0x0100).is_some());
+        // Someone else's request id, a READREG ack that landed on our socket,
+        // an error status, and a runt datagram must all be ignored rather than
+        // failing discovery for every camera on the interface (#57).
+        assert!(parse_discovery_ack(&ack(0, consts::DISCOVERY_ACK, 0x0999), 0x0100).is_none());
+        assert!(parse_discovery_ack(&ack(0, 0x0081, 0x0100), 0x0100).is_none());
+        assert!(parse_discovery_ack(&ack(0x8002, consts::DISCOVERY_ACK, 0x0100), 0x0100).is_none());
+        assert!(parse_discovery_ack(&[0u8; 4], 0x0100).is_none());
+    }
 
     #[test]
     fn request_header_roundtrip() {
