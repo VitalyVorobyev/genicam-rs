@@ -858,6 +858,67 @@ mod tests {
         );
     }
 
+    /// Signedness comes from `<Sign>` alone — `<Min>` says nothing about it.
+    ///
+    /// `<Min>` is optional and defaults to `i64::MIN`, and **no** `<IntReg>` or
+    /// `<MaskedIntReg>` in the entire vendor corpus declares one: all 9 779 of
+    /// them omit it. Inferring "signed" from a negative minimum therefore fires
+    /// on every register-backed integer on every real camera — which is exactly
+    /// the case `<Sign>` exists to decide. Note the registers here carry no
+    /// `<Min>`, which is the shape real documents actually use.
+    #[test]
+    fn sign_does_not_depend_on_min() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <IntReg Name="GevCurrentIPAddress">
+                    <Address>0x1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Sign>Unsigned</Sign>
+                </IntReg>
+                <IntReg Name="DeviceTemperatureRaw">
+                    <Address>0x1004</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Sign>Signed</Sign>
+                </IntReg>
+                <IntReg Name="ImplicitlyUnsigned">
+                    <Address>0x1008</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                </IntReg>
+            </RegisterDescription>
+        "#;
+
+        let model = viva_genapi_xml::parse(XML).expect("parse");
+        let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
+        let io = MockIo::with_registers(&[
+            (0x1000, vec![0xC0, 0xA8, 0x01, 0xA0]),
+            (0x1004, vec![0xFF, 0xFF, 0xFF, 0xFB]),
+            (0x1008, vec![0xFF, 0xFF, 0xFF, 0xFF]),
+        ]);
+
+        assert_eq!(
+            nodemap
+                .get_integer("GevCurrentIPAddress", &io)
+                .expect("read address"),
+            0xC0A8_01A0
+        );
+        assert_eq!(
+            nodemap
+                .get_integer("DeviceTemperatureRaw", &io)
+                .expect("read temperature"),
+            -5
+        );
+        // No `<Sign>` at all: GenICam's default is unsigned.
+        assert_eq!(
+            nodemap
+                .get_integer("ImplicitlyUnsigned", &io)
+                .expect("read default-signed register"),
+            0xFFFF_FFFFu32 as i64
+        );
+    }
+
     /// A `<StructReg>` bit reads as 1, not -1.
     ///
     /// Entries used to declare the full `i64` range, which looked like a

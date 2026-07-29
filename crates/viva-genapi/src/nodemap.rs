@@ -1874,15 +1874,19 @@ fn build_node(
 
 /// Effective signedness of an integer node's payload.
 ///
-/// `<Sign>` is authoritative when present. GenICam's default is unsigned, but
-/// a negative `<Min>` cannot be represented in an unsigned field: a document
-/// declaring one has told us the register is signed without using the element.
+/// `<Sign>` is the only signal. `<Min>` says nothing about it: it constrains
+/// the *feature* value, while `<Sign>` describes the *register payload*
+/// encoding, and the two live on different nodes when a feature delegates
+/// through `<pValue>`.
+///
+/// Inferring "signed" from a negative `<Min>` looks reasonable and is
+/// unsalvageable in practice. `<Min>` is optional and defaults to `i64::MIN`,
+/// which is negative — and across the whole vendor corpus **not one** of the
+/// 4 300 `<IntReg>` or 5 479 `<MaskedIntReg>` nodes declares it. The
+/// inference therefore fires on every register-backed integer on every real
+/// camera, which is precisely the case `<Sign>` exists to decide.
 fn integer_sign(node: &IntegerNode) -> Sign {
-    if node.sign.is_signed() || node.min < 0 {
-        Sign::Signed
-    } else {
-        Sign::Unsigned
-    }
+    node.sign
 }
 
 /// Resolve a formula's `<Constant>` and named `<Expression>` declarations into
