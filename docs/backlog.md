@@ -19,10 +19,10 @@ number — so priority can be argued from data rather than from intuition
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| REL-01 | Fix GigE discovery on Windows APIPA networks ([#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57)) | P0 | M | planned | Eight defects, see the table below |
-| REL-02 | Tag and publish 0.3.0 (`v0.3.0`, `py-v0.3.0`) — [#59](https://github.com/VitalyVorobyev/viva-genicam/issues/59) | P0 | S | blocked | Blocked on REL-01. All six version touchpoints already done on `main`; crates.io/PyPI still serve 0.2.8, so #35 and #45 are blocked on a tag, not on code |
+| REL-01 | Fix GigE discovery on Windows APIPA networks ([#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57)) | P0 | M | done | All eight defects below fixed. **Unverified against hardware** — needs the reporter's JAI FS-3200T on an APIPA link before REL-02 |
+| REL-02 | Tag and publish 0.3.0 (`v0.3.0`, `py-v0.3.0`) — [#59](https://github.com/VitalyVorobyev/viva-genicam/issues/59) | P0 | S | blocked | Blocked on hardware confirmation of REL-01, then a maintainer go-ahead. All six version touchpoints already done on `main`; crates.io/PyPI still serve 0.2.8, so #35 and #45 are blocked on a tag, not on code |
 | REL-03 | Ask #35, #45, #57 to retest against 0.3.0 | P0 | S | blocked | Blocked on REL-02. #57's reporter has JAI APIPA hardware and should confirm REL-01 before the tag |
-| REL-04 | `.github/ISSUE_TEMPLATE/` asking for the artifacts that resolved #35/#45/#57 | P0 | S | planned | Model, OS, install source + version, `RUST_LOG=debug` trace, raw GenApi XML. The Python XML snippet given in #45 was wrong and had to be retracted — the template carries the correct one |
+| REL-04 | `.github/ISSUE_TEMPLATE/` asking for the artifacts that resolved #35/#45/#57 | P0 | S | done | Model, OS, install source + version, `RUST_LOG=debug` trace, raw GenApi XML. The Python XML snippet given in #45 was wrong and had to be retracted — the template carries the correct one |
 
 **REL-01 detail.** Reported in #57 (1–4), found alongside them (5–8):
 
@@ -47,7 +47,7 @@ The GVCP/GVSP audit ADR-0018 never reached. Opcodes cross-checked against
 | TC-01 | Handle `PENDING_ACK` (0x0089) — [#60](https://github.com/VitalyVorobyev/viva-genicam/issues/60) | P0 | M | planned | `OpCode::from_ack` (`crates/viva-gencp/src/lib.rs:62-70`) knows only the four GenCP acks, so a pending-ack yields `UnknownOpcode` → hard failure. `transact_with_retry` does not retry on decode failure (`gvcp.rs:661`). Cameras use this for flash writes and mode changes |
 | TC-02 | `ACTION_COMMAND` collides with `READREG` — [#61](https://github.com/VitalyVorobyev/viva-genicam/issues/61) | P0 | S | planned | `crates/viva-gige/src/action.rs:19-21` defines 0x0080/0x0081; `viva-gencp/src/lib.rs:39` uses 0x0080 for `ReadRegister`. Two commands cannot share an opcode |
 | TC-03 | Event-channel opcode is not a GVCP opcode — [#62](https://github.com/VitalyVorobyev/viva-genicam/issues/62) | P0 | M | planned | `crates/viva-gige/src/message.rs:20` keys on 0x000D and rejects everything else; GVCP events are 0x00C0–0x00C3. No EVENT_ACK is ever sent back to the device |
-| TC-04 | Spec-derived golden-byte fixtures for the fakes — [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63) | P0 | M | planned | The structural fix. Third occurrence of fake-and-client sharing one wrong assumption (SCPS overhead, unaligned READMEM, #57's MAC). Assert the fake's wire bytes against literal spec-derived arrays, independently of the client parser |
+| TC-04 | Spec-derived golden-byte fixtures for the fakes — [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63) | P0 | M | in-progress | Done for the Discovery ACK (REL-01); GVSP leader/payload/trailer and the GenCP ack header still to do. The structural fix. Third occurrence of fake-and-client sharing one wrong assumption (SCPS overhead, unaligned READMEM, #57's MAC). Assert the fake's wire bytes against literal spec-derived arrays, independently of the client parser |
 | TC-05 | Accept the payload types cameras actually send | P1 | M | planned | `parse_leader` rejects everything but 0x01 (`crates/viva-gige/src/gvsp.rs:255-283`), so Image Extended Chunk (0x4001) — the normal chunk delivery mechanism — never opens a frame. Packet format 0x04 (single-packet block) is likewise `Unsupported` |
 | TC-06 | Chunk trailer layout is self-consistent, not conformant | P1 | M | planned | `parse_chunks` decodes front-to-back big-endian (`gvsp.rs:112-143`) while `crates/viva-genicam/src/chunks.rs:114-142` reads values little-endian. Real cameras append backward-scanned `[data][id][len]` tuples. The fake emits our layout, so the round trip proves nothing |
 | TC-07 | Implement ACTION and EVENT in `viva-fake-gige` | P1 | M | planned | Neither is implemented by the fake, so TC-02 and TC-03 have no test vehicle |
@@ -66,7 +66,7 @@ offers no supported way to produce one.
 | DX-01 | `viva-camctl xml` — dump raw GenApi XML without building a nodemap | P0 | S | planned | #45's reporter was told camctl could already do this. It cannot. `fetch_xml` exists at `crates/viva-camctl/src/common.rs:84` but is only reachable via the nodemap path at `:107-109` — which is what fails on the cameras we most need the XML from |
 | DX-02 | `viva-camctl report` — one-command diagnostic bundle | P1 | M | planned | Discovery ACK raw bytes, bootstrap registers, XML, skipped nodes, versions, OS/NIC inventory. What we ask for by hand in every issue thread |
 | DX-03 | Surface `NodeMap::skipped()` beyond a log line | P1 | M | planned | Consumed today only by `viva-genicam/src/lib.rs:986-1021` and the corpus test; not reachable from camctl, Python or Studio |
-| DX-04 | Report discovery fields we currently discard | P1 | S | planned | Serial number and user-defined name (REL-01 #7). Users identify cameras by the label on the case, not by MAC |
+| DX-04 | Report discovery fields we currently discard | P1 | S | done | Serial number and user-defined name (REL-01 #7). Users identify cameras by the label on the case, not by MAC |
 
 ## SR — Streaming reliability (roadmap Phase 3)
 
@@ -84,26 +84,26 @@ offers no supported way to produce one.
 
 ## GA — GenApi conformance, round 2 (roadmap Phase 4)
 
-Supersedes the previous `XML` section. Corpus counts are from the 30 documents
+Supersedes the previous `XML` section. Corpus counts are from the 31 documents
 fetched by `scripts/fetch-xml-corpus.sh`, reproducible with a tag frequency
 count over `fixtures/vendor-xml/*.xml`.
 
 | ID | Task | Priority | Size | Status | Notes |
 |----|------|----------|------|--------|-------|
-| GA-01 | Parse and honour `pInvalidator` | P0 | L | planned | **11 795 occurrences in 27 of 30 documents** — the largest unparsed element in the corpus by an order of magnitude. Invalidation currently fires only on writes made through the NodeMap |
-| GA-02 | Record unknown node tags instead of dropping them | P0 | S | planned | `is_node_tag` (`crates/viva-genapi-xml/src/lib.rs:839-859`) gates the isolation path, so an unlisted tag falls to `_ => skip_element` at `:981` and never reaches `XmlModel::skipped`. `<Register>` (35 uses, 9 docs) vanishes this way. A hole in the guarantee CLAUDE.md states, and one `EXPECTED_SKIPS` can never catch |
-| GA-03 | `<pSelected>` is parsed with the direction inverted | P1 | M | planned | 1 012 occurrences in 26 docs. The standard puts it on the *selector* naming the *selected* feature (`fixtures/vendor-xml/Basler_acA1600_20gm.xml:213`); `crates/viva-genapi-xml/src/parsers/mod.rs:116-131` treats the text as this node's selector, registering invalidation edges backwards |
-| GA-04 | Activate `pMin`/`pMax` | P1 | M | planned | 885 / 583 occurrences, 30 / 29 docs. Parsed (Integer only), stored on `IntegerNode`, registered as dependencies (`nodemap.rs:1489-1494`) — and never read. Range checks use the static limits at `nodemap.rs:271-273`, so a dynamic limit is silently ignored |
-| GA-05 | Honour `Cachable` and `PollingTime` | P1 | L | planned | 2 221 / 27 docs and 211 / 23 docs, both unparsed. Every readable node is cached until a dependency is written |
-| GA-06 | Enforce `pIsLocked` in the setters | P1 | S | planned | 966 occurrences, 26 docs. Parsed and consulted by `effective_access_mode` (`nodemap.rs:580-603`) but not by `set_integer`/`set_float`/`set_enum`/`set_bool`, which only check the static access mode |
-| GA-07 | Honour `<Slope>` on Converter min/max propagation | P1 | S | planned | Was "Unconfirmed, P2" (old XML-05). Confirmed: **437 occurrences in 24 of 30 documents**. A decreasing converter inverts min and max; we propagate neither |
-| GA-08 | Parse `ImposedAccessMode` | P1 | S | planned | 1 382 occurrences, 23 docs, unparsed |
-| GA-09 | Support the `<Register>` node type | P2 | M | planned | 35 occurrences, 9 docs. Depends on GA-02 to become visible in the first place |
-| GA-10 | Parse `pInc` | P2 | S | planned | 175 occurrences, 20 docs. Static `Inc` is honoured; the dynamic form is not |
-| GA-11 | Corpus test evaluates against zeros | P1 | M | planned | The `viva-genapi` stage uses `NullIo`, which returns zeros (`crates/viva-genapi/src/io.rs:18-28`). "30 documents, 21 785 nodes evaluated" proves nothing panics, not that any value is right |
-| GA-12 | GenApi chunk adapter | P2 | L | planned | Replaces the hardcoded 4-entry table at `crates/viva-genicam/src/chunks.rs:114-142`. `ChunkID` appears 89 times in 9 docs and is ignored; `RegisterIo` has no port abstraction to address a chunk port with |
+| GA-01 | Parse and honour `pInvalidator` | P0 | L | planned | **12 796 occurrences in 28 of 31 documents** — the largest unparsed element in the corpus by an order of magnitude. Invalidation currently fires only on writes made through the NodeMap |
+| GA-02 | Record unknown node tags instead of dropping them | P0 | S | planned | `is_node_tag` (`crates/viva-genapi-xml/src/lib.rs:839-859`) gates the isolation path, so an unlisted tag falls to `_ => skip_element` at `:981` and never reaches `XmlModel::skipped`. `<Register>` (46 uses, 10 docs) vanishes this way. A hole in the guarantee CLAUDE.md states, and one `EXPECTED_SKIPS` can never catch |
+| GA-03 | `<pSelected>` is parsed with the direction inverted | P1 | M | planned | 1 152 occurrences in 27 docs. The standard puts it on the *selector* naming the *selected* feature (`fixtures/vendor-xml/Basler_acA1600_20gm.xml:213`); `crates/viva-genapi-xml/src/parsers/mod.rs:116-131` treats the text as this node's selector, registering invalidation edges backwards |
+| GA-04 | Activate `pMin`/`pMax` | P1 | M | planned | 987 / 670 occurrences, 31 / 30 docs. Parsed (Integer only), stored on `IntegerNode`, registered as dependencies (`nodemap.rs:1489-1494`) — and never read. Range checks use the static limits at `nodemap.rs:271-273`, so a dynamic limit is silently ignored |
+| GA-05 | Honour `Cachable` and `PollingTime` | P1 | L | planned | 2 257 / 28 docs and 236 / 24 docs, both unparsed. Every readable node is cached until a dependency is written |
+| GA-06 | Enforce `pIsLocked` in the setters | P1 | S | planned | 1 133 occurrences, 27 docs. Parsed and consulted by `effective_access_mode` (`nodemap.rs:580-603`) but not by `set_integer`/`set_float`/`set_enum`/`set_bool`, which only check the static access mode |
+| GA-07 | Honour `<Slope>` on Converter min/max propagation | P1 | S | planned | Was "Unconfirmed, P2" (old XML-05). Confirmed: **489 occurrences in 25 of 31 documents**. A decreasing converter inverts min and max; we propagate neither |
+| GA-08 | Parse `ImposedAccessMode` | P1 | S | planned | 1 754 occurrences, 24 docs, unparsed |
+| GA-09 | Support the `<Register>` node type | P2 | M | planned | 46 occurrences, 10 docs. Depends on GA-02 to become visible in the first place |
+| GA-10 | Parse `pInc` | P2 | S | planned | 235 occurrences, 21 docs. Static `Inc` is honoured; the dynamic form is not |
+| GA-11 | Corpus test evaluates against zeros | P1 | M | planned | The `viva-genapi` stage uses `NullIo`, which returns zeros (`crates/viva-genapi/src/io.rs:18-28`). "31 documents, 25 017 nodes evaluated" proves nothing panics, not that any value is right |
+| GA-12 | GenApi chunk adapter | P2 | L | planned | Replaces the hardcoded 4-entry table at `crates/viva-genicam/src/chunks.rs:114-142`. `ChunkID` appears 104 times in 10 docs and is ignored; `RegisterIo` has no port abstraction to address a chunk port with |
 | GA-13 | Support negative `<Address>` (chunk-relative offsets) | P2 | M | planned | Confirmed: `Baumer_HXG20` `ChunkImageLength`; the sole `EXPECTED_SKIPS` entry in both corpus tests. Needs a signed `AddressTerm::Fixed` plus a chunk base |
-| GA-14 | `Streamable` — no persistence/save-load feature exists | P2 | L | planned | 1 405 occurrences, 13 docs. Feature-set save/restore is a standard GenApi capability we do not offer |
+| GA-14 | `Streamable` — no persistence/save-load feature exists | P2 | L | planned | 1 666 occurrences, 14 docs. Feature-set save/restore is a standard GenApi capability we do not offer |
 | GA-15 | Fall back to lossy decoding for non-UTF-8 GenApi XML | P2 | S | planned | Unconfirmed. `fetch.rs` `String::from_utf8` is strict, so an ISO-8859-1 document fails the connect outright |
 | GA-16 | Accept uppercase `0X` hex prefix in `parse_u64`/`parse_i64` | P2 | S | planned | Unconfirmed. Hex digits are already case-insensitive, only the prefix is not. No corpus document uses it |
 | GA-17 | Inline `<IntSwissKnife>` as a register address term | P2 | M | planned | Unconfirmed: no corpus document nests one inside a register, but the schema allows it. Today `skip_element` drops the term silently |
@@ -167,6 +167,8 @@ which is why they are not all P2.
 | DOC-08 | Stale cross-references | P2 | S | planned | `docs/design.md:16,121` still call 0.3.0 the consolidation release (now 0.4.0); `docs/studio/zenoh-api.md:22` shows `api_version: 1` while `API_VERSION = 2`; `studio/apps/viva-studio-tauri/src-tauri/src/backend/embedded.rs:619` cites `docs/handoffs/`, which does not exist; `.claude/skills/release/SKILL.md` lists five version touchpoints where CLAUDE.md lists six |
 | DOC-09 | `studio/README.md` is stale throughout | P2 | M | planned | Still "GenICam Studio"; references `AGENTS.md`, `crates/genicam_xml_model` and `crates/*_wasm` (actual: `viva_xml_model`, `viva_streamer`, no wasm crate); says live device connection is "stubbed" while `backend/embedded.rs` implements it in 859 lines |
 | DOC-10 | Add missing `description` to viva-service-u3v and viva-fake-u3v Cargo.toml | P2 | S | planned | |
+| DOC-12 | Issue template asks for a `.xml` attachment, which GitHub rejects | P1 | S | planned | Found by codex review on #58. GitHub does not accept `.xml` as an issue attachment, so `camera-not-working.yml` blocks the artifact it calls the most useful one. Ask for `.txt` or a ZIP |
+| DOC-13 | `render:` on a textarea blocks file attachments in issue forms | P2 | S | planned | Found by codex review on #58. The debug-log field uses `render: shell`, and GitHub Issue Forms do not allow uploads in a rendered textarea — so "attach the output as a file" cannot be followed. Drop `render` or ask for pasted text |
 | DOC-11 | Python `frame.ts_host` is silently wrong for GigE | P1 | S | planned | `build_gige_stream` always passes `Some(time_sync)` (`crates/viva-pygenicam/src/stream.rs:96-99`), but `time_calibrate` is not exposed and `TimeSync::to_host_time` with no origin returns `SystemTime::now()` (`crates/viva-gige/src/time.rs:308-312`). Always wall-clock, never device-mapped — worse than `None`, because it looks like data. Fix the behaviour or the docs, not neither |
 
 ## ST — Studio
@@ -184,6 +186,7 @@ which is why they are not all P2.
 | ST-11 | Recording export to TIFF stack / uncompressed AVI | P2 | M | planned | M12; interop with ImageJ, MATLAB |
 | ST-12 | Auto-update via Tauri v2 updater plugin | P2 | M | planned | M12 |
 | ST-13 | Studio performance benchmarks in CI | P2 | M | planned | M12; fail on >10% regression |
+| ST-15 | `src-tauri` is outside every fmt/clippy gate | P2 | S | planned | It is excluded from the studio workspace (built via `cargo tauri`), and `studio-ci.yml` runs `cargo fmt --all --check` on the workspace — so the Tauri backend is ungated. `cargo fmt --check` there currently reports 15 diffs |
 | ST-14 | Embedded backend has no U3V discovery | P2 | M | planned | `backend/embedded.rs:122-123` reads only the GigE cache despite `u3v-usb` being enabled |
 | ST-04 | Refresh stale studio docs | — | S | done | Done by the monorepo import |
 | ST-05 | Delete stale package-lock.json | — | S | done | Done by the monorepo import |

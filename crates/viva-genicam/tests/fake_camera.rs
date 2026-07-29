@@ -86,10 +86,91 @@ async fn test_discovery_finds_fake_camera() {
         .iter()
         .find(|d| d.ip.is_loopback())
         .expect("no loopback device found");
-    assert!(
-        fake.model.is_some() || fake.manufacturer.is_some(),
-        "expected device identity fields"
+
+    // Assert the values, not merely that some field is populated. The previous
+    // `model.is_some() || manufacturer.is_some()` disjunction passed happily
+    // while the MAC was being read two bytes off (#57), and would have passed
+    // with every string field empty. Per ADR-0019, identity assertions check
+    // exactly what the fake was configured to report.
+    assert_eq!(fake.mac, viva_fake_gige::FAKE_MAC, "MAC address mismatch");
+    assert_eq!(
+        fake.manufacturer.as_deref(),
+        Some(viva_fake_gige::FAKE_MANUFACTURER)
     );
+    assert_eq!(fake.model.as_deref(), Some(viva_fake_gige::FAKE_MODEL));
+    assert_eq!(fake.version.as_deref(), Some(viva_fake_gige::FAKE_VERSION));
+    assert_eq!(fake.serial.as_deref(), Some(viva_fake_gige::FAKE_SERIAL));
+    assert_eq!(
+        fake.user_name.as_deref(),
+        Some(viva_fake_gige::FAKE_USER_NAME)
+    );
+}
+
+/// Check the fake's Discovery ACK **bytes** against the specification's field
+/// table, without going through `parse_discovery_payload`.
+///
+/// This is the ADR-0019 rule in practice. Routing the fake's output through our
+/// own parser only proves the two agree with each other — which they did for
+/// three separate wire bugs (the SCPS overhead, unaligned READMEM, and the MAC
+/// offset in #57), each time while both disagreed with the standard.
+#[tokio::test]
+async fn test_fake_discovery_ack_matches_spec_layout() {
+    use tokio::net::UdpSocket;
+
+    let _cam = common::TestCamera::start().await;
+
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let request_id: u16 = 0x0142;
+
+    // GVCP command: 0x42 key, flags, opcode, length, request id.
+    let mut cmd = Vec::new();
+    cmd.push(0x42);
+    cmd.push(0x11); // ACK_REQUIRED | BROADCAST
+    cmd.extend_from_slice(&0x0002u16.to_be_bytes()); // DISCOVERY_CMD
+    cmd.extend_from_slice(&0u16.to_be_bytes()); // no payload
+    cmd.extend_from_slice(&request_id.to_be_bytes());
+    socket
+        .send_to(&cmd, ("127.0.0.1", gige::GVCP_PORT))
+        .await
+        .expect("send discovery");
+
+    let mut buf = vec![0u8; 1024];
+    let (len, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut buf))
+        .await
+        .expect("timed out waiting for discovery ack")
+        .expect("recv");
+
+    // 8-byte GVCP ack header.
+    assert!(len >= 8 + 248, "ack shorter than a 248-byte payload: {len}");
+    assert_eq!(u16::from_be_bytes([buf[0], buf[1]]), 0x0000, "status");
+    assert_eq!(
+        u16::from_be_bytes([buf[2], buf[3]]),
+        0x0003,
+        "DISCOVERY_ACK"
+    );
+    assert_eq!(u16::from_be_bytes([buf[4], buf[5]]), 248, "payload length");
+    assert_eq!(u16::from_be_bytes([buf[6], buf[7]]), request_id);
+
+    let p = &buf[8..8 + 248];
+    let text = |at: usize, n: usize| {
+        let field = &p[at..at + n];
+        let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+        String::from_utf8_lossy(&field[..end]).to_string()
+    };
+
+    // Offsets from the specification's field table, corroborated by
+    // Wireshark's dissect_discovery_ack().
+    assert_eq!(&p[10..16], &viva_fake_gige::FAKE_MAC, "MAC at offset 10");
+    assert_eq!(&p[36..40], &[127, 0, 0, 1], "current IP at offset 36");
+    assert_eq!(text(72, 32), viva_fake_gige::FAKE_MANUFACTURER, "offset 72");
+    assert_eq!(text(104, 32), viva_fake_gige::FAKE_MODEL, "offset 104");
+    assert_eq!(text(136, 32), viva_fake_gige::FAKE_VERSION, "offset 136");
+    assert_eq!(text(216, 16), viva_fake_gige::FAKE_SERIAL, "offset 216");
+    assert_eq!(text(232, 16), viva_fake_gige::FAKE_USER_NAME, "offset 232");
+
+    // Bytes 8..10 are the padding half of the MAC-high register. If a future
+    // change reintroduces the old 4-byte skip, the MAC slides here.
+    assert_eq!(&p[8..10], &[0, 0], "reserved MAC-high padding at offset 8");
 }
 
 #[tokio::test]

@@ -29,6 +29,10 @@
 //! ```
 
 mod gvcp_server;
+
+pub use gvcp_server::{
+    FAKE_MAC, FAKE_MANUFACTURER, FAKE_MODEL, FAKE_SERIAL, FAKE_USER_NAME, FAKE_VERSION,
+};
 mod gvsp_sender;
 pub mod registers;
 

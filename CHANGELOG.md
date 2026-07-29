@@ -23,6 +23,36 @@ full audit and the policy that came out of it.
 
 ### Fixed
 
+- **GigE discovery works on Windows APIPA networks** (#57). A camera and host
+  both on IPv4 link-local addresses (`169.254.0.0/16`) were undiscoverable: the
+  `if-addrs` `link-local` feature was off, and that crate drops `169.254.x.x`
+  on Windows without it. Reported against a JAI FS-3200T-10GE-NNC.
+- **The Discovery ACK MAC address is read from the right offset** (#57). It
+  begins at payload offset 10, not 12; the last two bytes of the reported
+  address were actually the first two of `SupportedIPConfiguration`. A camera
+  at `00:0C:DF:06:5B:2F` was reported as `DF:06:5B:2F:C0:00`. The fake camera
+  emitted the same shifted layout, so producer and consumer agreed with each
+  other while both disagreed with the standard — the third occurrence of that
+  pattern, and the reason for
+  [ADR-0019](docs/adrs/adr0019-transport-conformance-and-spec-derived-fakes.md).
+- **One failing interface no longer aborts the whole discovery** (#57). A bind
+  failure, an `SO_BROADCAST` rejection, a send error or a receive error on one
+  NIC now logs and continues, keeping the cameras already found. Unrelated GVCP
+  traffic arriving on the discovery socket — a foreign request id, a `READREG`
+  ack, an error status, a runt datagram — is ignored rather than failing the
+  call. On Windows a loopback probe could raise `WSAECONNRESET` and discard a
+  perfectly good camera found on the wired NIC.
+- **`Iface::from_ipv4` reports the address that was asked for.** It resolved
+  the interface by name and then kept whichever IPv4 the OS listed last, so a
+  multi-homed NIC — a stale DHCP lease alongside a link-local address — could
+  bind to a different address than the caller selected.
+- **The interface index is the kernel's, not a guess.** `Iface` now takes the
+  index from `if_addrs`, which on Windows reports the adapter's real `IfIndex`.
+  The previous Windows path returned the enumeration position + 1, which feeds
+  multicast joins.
+- **A truncated Discovery ACK no longer panics.** Reading past the end of a
+  short payload hit `advance out of bounds`; every field after the IP address
+  is now optional.
 - **`=` and `<>` are the GenICam equality operators.** We required the C
   spellings `==` / `!=` and rejected `=` outright with "use `==` for equality".
   27 of 30 corpus documents contain at least one formula we therefore refused —
@@ -79,13 +109,20 @@ full audit and the policy that came out of it.
 - The vendor corpus test now has a second stage in `viva-genapi` that builds a
   `NodeMap` from each document and evaluates every node in it. Parsing was only
   ever half the job — every defect above lived above the parser, where the old
-  test could not see it. All 30 documents now pass: 21 785 nodes.
+  test could not see it. All 31 documents now pass: 25 017 nodes.
 - The in-tree fake camera's XML uses conformant GenICam spelling (`=`, `&lt;&gt;`,
   no `<Output>`), and exercises a summed `<Address>` + `<pIndex>` stream-channel
   register and a `<pAddress>`-addressed `<StructReg>` end to end.
 
 ### Breaking
 
+- `gige::DeviceInfo` gains `version`, `serial` and `user_name`, all parsed from
+  the Discovery ACK (offsets 136, 216 and 232) and previously discarded. Use
+  `DeviceInfo::from_ip` to build a record for a camera addressed directly by IP.
+  Viva Studio now shows the camera's own serial number instead of its MAC.
+- Reported MAC addresses shift by two bytes relative to 0.2.x — the old value
+  was wrong. Anything keyed on it (a saved device list, a config file) needs
+  updating.
 - `Addressing::Fixed` and `Addressing::Indirect` are replaced by
   `Addressing::Sum { terms, len }` with the new `AddressTerm` and `IndexOffset`
   types. `Addressing::fixed()`, `byte_len()` and `referenced_nodes()` are
