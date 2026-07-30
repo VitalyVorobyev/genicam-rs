@@ -1,205 +1,139 @@
-# `viva-gencp` — Transport‑agnostic GenICam Control Primitives
+# `viva-gencp` — GenCP message primitives
 
-`viva-gencp` provides **transport‑agnostic control messages** and helpers for GenICam device access. It captures the common semantics used by GigE Vision (GVCP control channel), USB3 Vision, and other transports: *read/write registers and memory blocks, status codes, request‑ack correlation, and binary utilities (bitfields, masks).*
+`viva-gencp` is the smallest crate in the stack: one `lib.rs` that encodes and
+decodes **GenCP control messages** and nothing else. No sockets, no retries, no
+async, no device state.
 
-> Why a separate crate? It lets higher layers (`viva-genapi`, `viva-genapi-xml`, and the public `viva-genicam` façade) encode control operations **once**, while each transport crate (e.g., `viva-gige`) focuses on socket/I/O details.
-
----
-
-## Mental model
-
-- **Request → Acknowledge**: Every operation has a request (with a unique `req_id`) and a matching acknowledge with a `status` and optional payload.
-- **Operations** (core set):
-  - `ReadReg { addr, width }` (8/16/32) and `WriteReg { addr, value }`
-  - `ReadMem { addr, len }` and `WriteMem { addr, bytes }`
-- **Status mapping**: Acknowledge carries a transport‑neutral `Status` (e.g., `Success`, `AccessDenied`, `BadAddress`, `Timeout`, `Busy`).
-- **Segmentation**: Large memory operations may be split across multiple requests based on the transport’s MTU/limit. `viva-gencp` can calculate safe chunk sizes; the transport sends the chunks.
+That is the point. GigE Vision carries GenCP over UDP (GVCP) and USB3 Vision
+carries it over bulk endpoints; the message layout, the opcodes and the status
+codes are the same in both. Keeping them in a transport-free crate means the
+two transports share one definition rather than two that drift.
 
 ---
 
-## Quick API tour (typical shapes)
+## What is actually in it
 
-> **Note:** Names below mirror the crate’s intent. If your local API differs slightly, the concepts—and the surrounding examples—still apply.
+| Item | Purpose |
+|---|---|
+| `OpCode` | `ReadRegister`, `WriteRegister`, `ReadMem`, `WriteMem` |
+| `StatusCode` | Transport-neutral status, with `Unknown(u16)` for anything not in the table |
+| `CommandHeader` / `AckHeader` | The 8-byte headers |
+| `GenCpCmd` / `GenCpAck` | Header plus payload |
+| `encode_cmd` / `decode_ack` | The two functions you call |
+| `GenCpError` | Decode failures |
+| `HEADER_SIZE`, `PENDING_ACK_COMMAND` | `8` and `0x0805` |
 
-```rust
-use viva_gencp::{Request, Reply, Status};
-
-// Build a request
-let req = Request::read_reg_u32(0x0010_0200);
-
-// ... send with a transport adapter (e.g., viva-gige) → get raw bytes ...
-
-// Parse reply
-let reply = Reply::from_bytes(&buf)?;
-match reply.status() {
-    Status::Success => {
-        let v = reply.as_u32()?;
-        println!("value=0x{v:08X}");
-    }
-    s => anyhow::bail!("device replied with {s:?}"),
-}
-````
-
-High‑level helpers (bit update):
-
-```rust
-use viva_gencp::bitops::{set_bits32, mask32};
-
-// Read‑modify‑write: set bit 7 at address 0x...200
-let v = read_u32(adapter, 0x0010_0200).await?;
-let v2 = set_bits32(v, mask32(7..=7), true);
-write_u32(adapter, 0x0010_0200, v2).await?;
-```
+`OpCode::command_code()` gives the wire value (`0x0080`, `0x0082`, `0x0084`,
+`0x0086`); `StatusCode::from_raw` / `to_raw` convert the status field.
 
 ---
 
-## Requests & replies
+## Request → acknowledge
 
-### Requests
+Every command carries a **request id**, and the acknowledgement echoes it. The
+transport is responsible for matching them and for discarding stale acks — a
+late reply to a timed-out request must not be accepted as the answer to the
+next one.
 
-A `Request` contains:
-
-* **Operation**: `ReadReg/WriteReg/ReadMem/WriteMem`
-* **Address/Length**: 64‑bit addresses supported in the type system; transport may restrict to 32‑bit
-* **Width** (for `ReadReg/WriteReg`): 8/16/32
-* **ReqId**: incrementing counter used to match the reply
-
-`viva-gencp` ensures **alignment** (e.g., 16‑bit/32‑bit register widths) and **payload sizing** (e.g., memory read length > 0).
-
-### Replies
-
-A `Reply` provides:
-
-* `status(): Status`
-* `payload(): &[u8]` (for reads)
-* Typed accessors: `as_u8()`, `as_u16()`, `as_u32()`, `as_block()`
-
-### Status codes
-
-`Status` is a transport‑neutral enum, e.g.:
-
-* `Success`
-* `NotImplemented` / `InvalidCommand`
-* `BadAddress` / `BadValue`
-* `AccessDenied` / `Locked`
-* `Busy` / `Timeout`
-* `ChecksumError` / `ProtocolError`
-
-The transport adapter maps wire‑specific codes (GVCP/U3V/etc.) to this enum.
+Callers do not usually touch this crate. `GigeDevice` and `U3vDevice` build the
+commands, and `NodeMap` sits above those, so an application reads
+`ExposureTime` and the register transactions happen underneath.
 
 ---
 
-## Endianness, alignment, and masking
+## Status codes
 
-* **Wire endianness** is handled inside `viva-gencp`. Public typed accessors return host‑endian values.
-* **Alignment**: register widths must match the address alignment (8→any, 16→2‑byte aligned, 32→4‑byte aligned). Helpers assert this early.
-* **Bitfields**: `bitops` offers small utilities to extract/update bit ranges without manual shifts/masks.
+The table matters more than it looks, because a status is often the only thing
+a user sees when something fails.
 
-```rust
-use viva_gencp::bitops::{extract_bits32, mask32};
-let flags = extract_bits32(0b1011_0001, mask32(4..=7)); // → 0b1011
-```
+| Code | Meaning | Retry? |
+|---|---|---|
+| `Success` | Completed | — |
+| `NotImplemented` | Device does not implement this command | No |
+| `InvalidParameter` | Parameter invalid or out of range | No |
+| `InvalidAddress` | No such address on the device | No |
+| `WriteProtect` | Register is read-only | No — permanent |
+| `BadAlignment` | Access not aligned as the transport requires | No |
+| `AccessDenied` | Refused *this* write: a GenApi lock, or control privilege not held | Only after fixing the cause |
+| `Busy` | Device busy | **Yes** — the only one worth retrying |
+| `GenericError` | Device reported an error with nothing more specific | — |
+| `Unknown(u16)` | Not in this table, or transport-specific; carries the raw value |  |
+
+Two of these were decoded wrongly until 0.3.1. `0x8004` was reported as
+`DeviceBusy` and `0x8005` as a generic error, and `0x8006` had no name at all —
+so a FLIR camera refusing a register write told the reporter of
+[#45](https://github.com/VitalyVorobyev/viva-genicam/issues/45) only
+`io error: device reported status Unknown(32774)`. Two codes were mislabelled
+and a third was unnameable; the table above is the corrected one.
+
+The distinction between `WriteProtect` and `AccessDenied` is worth keeping in
+mind when debugging: the first means the register never accepts writes, the
+second means it would but not right now.
+
+### Pending acknowledge
+
+GenCP lets a device say "still working" rather than answering immediately. It
+signals that with a **command id** — `PENDING_ACK_COMMAND`, `0x0805` — not with
+a status code. Reading it as a status is a mistake this codebase made and
+corrected: it meant a device denying access got retried a hundred times and
+then reported as a pending-ack failure, while a genuine pending ack was never
+recognised.
 
 ---
 
-## Chunking large memory operations
+## Using it directly
 
-Transports cap a single message size (e.g., by MTU). Use the provided splitter to iterate safe chunks:
+You would only do this for diagnostics or a vendor escape hatch. The shape:
 
-```rust
-use viva_gencp::chunk::ChunkPlan;
+```rust,ignore
+use viva_gencp::{StatusCode, decode_ack, encode_cmd};
 
-let plan = ChunkPlan::for_read(/*addr*/ 0x4000_0000, /*len*/ 64 * 1024,
-                               /*max_payload*/ 1400, /*align*/ 4)?;
-for step in plan {
-    // step.addr(), step.len()
-    // build Request::read_mem(step.addr(), step.len()) and send
+let bytes = encode_cmd(&cmd);       // -> Bytes, ready for the transport
+// ... the transport sends `bytes` and receives `buf` ...
+let ack = decode_ack(&buf)?;        // -> GenCpAck
+
+// `AckHeader::status` is already a decoded `StatusCode`; `from_raw`/`to_raw`
+// are there for transports that need the wire value.
+match ack.header.status {
+    StatusCode::Success => { /* ack.payload */ }
+    StatusCode::Busy => { /* the one status worth retrying */ }
+    other => return Err(other.into()),
 }
 ```
 
-Recommendations:
+`ack.header.request_id` is what the transport matches against the request it
+sent, and `OpCode::ack_code()` (`command_code() + 1`) is the opcode it should
+have come back with.
 
-* Keep payload under IP fragmentation thresholds (e.g., ≤ 1400 bytes for standard MTU).
-* Honour device alignment rules; some devices require 4‑byte granularity for memory access.
-
----
-
-## Timeouts & retries
-
-`viva-gencp` defines **semantic** timeouts (command vs. memory) as hints. The **transport** enforces socket receive timeouts, retry counts, and backoff. For UDP‑based transports (GigE), retries are essential; for USB3, link‑level reliability reduces the need.
+For anything above raw diagnostics, prefer the layers that already do this
+correctly: `viva_gige::GigeDevice::{read_register, write_register, read_mem,
+write_mem}`, or `Camera::{get, set}` above them.
 
 ---
 
-## Integrating with transports
+## Endianness and alignment
 
-Transports implement a minimal trait so `viva-gencp` can *send/receive* bytes:
-
-```rust
-pub trait ControlTransport {
-    type Error;
-    fn next_req_id(&mut self) -> u16;
-    async fn send_request(&mut self, req: Request) -> Result<(), Self::Error>;
-    async fn recv_reply(&mut self, expect_req_id: u16) -> Result<Reply, Self::Error>;
-}
-```
-
-`viva-gige` implements this over GVCP sockets; `viva-u3v` uses USB3 bulk endpoints. Higher layers (`viva-genapi`) depend only on this trait to perform feature `get/set`.
+GenCP is big-endian on the wire; `encode_cmd` and `decode_ack` handle that, and
+the structs hold host-order values. Register widths must match the address
+alignment, and devices do return `BadAlignment` when they do not — which is why
+that status has a name of its own rather than being folded into
+`InvalidParameter`.
 
 ---
 
-## Working with GenApi (selectors & SwissKnife)
+## Testing
 
-* **Selectors**: When a feature is selector‑dependent, the NodeMap temporarily sets the selector node(s), performs the underlying register op(s) via `viva-gencp`, then restores state as needed.
-* **SwissKnife**: Expression nodes *evaluate* by reading inputs (which may be registers or other nodes), computing the result in host code, and returning the computed value to callers.
-
-This means end‑users usually call `get("ExposureTime")`; the NodeMap and `viva-gencp` handle all required register transactions.
-
----
-
-## Examples
-
-### Read a 32‑bit register
-
-```rust
-let v = viva_gencp::helpers::read_u32(&mut adapter, 0x0010_0200).await?;
-```
-
-### Write a 32‑bit register
-
-```rust
-viva_gencp::helpers::write_u32(&mut adapter, 0x0010_0200, 0x0000_0001).await?;
-```
-
-### Read a memory block safely
-
-```rust
-let bytes = viva_gencp::helpers::read_block(&mut adapter, 0x4000_0000, 8192).await?;
-```
-
-### Modify a bitfield (read‑modify‑write)
-
-```rust
-use viva_gencp::bitops::{mask32, set_bits32};
-let v = viva_gencp::helpers::read_u32(&mut adapter, REG_CTRL).await?;
-let v2 = set_bits32(v, mask32(3..=5), true); // set bits 3..5
-viva_gencp::helpers::write_u32(&mut adapter, REG_CTRL, v2).await?;
-```
+Encode/decode is exactly the kind of code that should be tested against the
+**specification**, not against the parser. Fixtures derived from the parser
+assert that the code agrees with itself: on the pending-ack bug above, the
+fake and the client shared one wrong assumption and the test asserted it back.
+See [ADR-0018](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/adrs/adr0018-genapi-conformance-over-convenience.md)
+and backlog TC-04.
 
 ---
 
-## Testing tips
+## See also
 
-* **Unit tests** for encode/decode, status mapping, and bitops.
-* **Golden packets**: store a few known request/ack byte arrays and assert round‑trips.
-* **Fuzzing**: run `arbitrary`/`proptest` on `Reply::from_bytes` to harden parsers.
-* **Transport mocks**: a simple in‑memory adapter that echoes canned replies makes NodeMap tests deterministic.
-
----
-
-## Gotchas & best practices
-
-* Always **match `req_id`** in replies; do not accept stale acks.
-* Use **bounded chunk sizes** to avoid IP fragmentation on UDP transports.
-* Respect **alignment**; some devices NAK misaligned access.
-* Keep **timeouts** conservative; some devices do heavy work on first access (e.g., on‑the‑fly XML assembly).
-* Prefer **feature‑level APIs** (NodeMap) in apps; use raw `viva-gencp` only for diagnostics and vendor escape hatches.
+- [`viva-gige`](viva-gige.md) — GenCP over GVCP, plus GVSP streaming
+- [`viva-genapi`](viva-genapi.md) — the NodeMap that turns feature names into
+  these messages
