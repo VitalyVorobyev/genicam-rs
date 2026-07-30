@@ -2,7 +2,7 @@
 
 Shared wire protocol types for GenICam camera services over [Zenoh](https://zenoh.io/).
 
-This crate defines the data contract between a camera service (`viva-service`) and its clients (e.g. [genicam-studio](https://github.com/VitalyVorobyev/genicam-studio)). It has **no Zenoh dependency** -- it is a pure data contract built on `serde`.
+This crate defines the data contract between a camera service (`viva-service`) and its clients -- Viva Studio, the desktop app in [`studio/`](https://github.com/VitalyVorobyev/viva-genicam/tree/main/studio), is the reference consumer. It has **no Zenoh dependency** -- it is a pure data contract built on `serde`.
 
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.

@@ -143,4 +143,11 @@ GenicamError                      # base class
 └── UnsupportedPixelFormatError
 ```
 
-All raised by the camera / frame APIs inherit from `GenicamError`, so one `except vg.GenicamError:` catches every bindings-level failure.
+Everything the bindings raise deliberately inherits from `GenicamError`, so one
+`except vg.GenicamError:` covers it.
+
+It does **not** cover a `pyo3_runtime.PanicException`, which is what you get if
+a `Camera`, `Frame` or `FrameStream` is used from a thread other than the one
+that created it (they are pyo3 `unsendable` types), or if the Rust layer panics.
+`PanicException` subclasses `BaseException`, so `except Exception:` misses it
+too — see [Control & introspection](control.md#error-model).

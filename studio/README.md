@@ -2,266 +2,208 @@
   <img src="assets/viva-studio-logo-and-text_opt.svg" alt="viva genicam" width="360">
 </p>
 
-# GenICam Studio
+# Viva Studio
 
-GenICam Studio is an early-stage toolkit for parsing GenICam XML and exploring the resulting feature model in a UI (browser or desktop).
+Viva Studio is the desktop application for GenICam cameras: browse a camera's
+feature tree, change settings, and watch the live image. It is a React 19 + Tauri
+v2 app that lives in this repository as a **second Cargo workspace** under
+`studio/`, so the published library crates stay free of GUI and Node toolchain
+concerns.
 
-This repository is **pre-alpha** and under active development. We try to keep the public Rust APIs and the `UiGraph` JSON contract stable by default, but things may change as coverage expands. See `AGENTS.md` for the working agreement (invariants, boundaries, and Definition of Done).
+> **Experimental.** Studio works — it discovers cameras, reads and writes
+> features, and streams live frames. But it is the least-exercised part of this
+> repository: it has no hardware in CI, and the only hardware reports it has are
+> from a single camera model. Treat what it displays as unconfirmed until you
+> have seen it agree with your camera. Bug reports are very welcome.
 
-## Status (pre-alpha)
+The working agreement for contributors is in [`CLAUDE.md`](CLAUDE.md); the Zenoh
+wire contract is in [`../docs/studio/zenoh-api.md`](../docs/studio/zenoh-api.md).
 
-What works today:
+---
 
-- Parse a subset of GenICam XML into a small `UiGraph` model (Rust + WASM).
-- Browse categories + features, search, and inspect/edit draft values in offline mode.
-- Preserve unknown nodes and surface them as `Unknown` with `RawNode` debug data.
+## What works today
 
-What is intentionally not implemented yet:
+- **Live cameras.** Discovery, connect, feature read/write, and GVSP streaming,
+  either through the embedded backend (`viva-genicam` linked directly into the
+  Tauri app) or over Zenoh from `viva-service`.
+- **Feature browser.** Category tree, search, typed editors, live values, and
+  access-mode handling — a read-only or locked feature is presented as such.
+- **Offline XML browsing.** Open a GenApi XML file with no camera attached and
+  explore the same tree.
+- **Unknown-node visibility.** Unrecognised XML tags become `Unknown` nodes with
+  their `RawNode` debug data preserved, rather than disappearing.
 
-- Live device connection (applying values / executing commands is stubbed behind provider interfaces).
-- Full GenICam schema coverage (parsing support is expanded incrementally, fixture-first).
+## What is not there yet
 
-Near-term roadmap:
+- **USB3 Vision discovery in the embedded backend** — it reads only the GigE
+  cache, though `u3v-usb` is compiled in (backlog ST-14). The Zenoh path via
+  `viva-service-u3v` does work.
+- **Skipped-node reporting.** When the library cannot build a feature from the
+  camera's XML it records that, and Studio has no way to show it — so a missing
+  feature looks the same as one the camera does not have (backlog DX-05).
+- **Packaging.** No DMG / AppImage / MSI yet (ST-06); run it from source.
+- **Recording and playback**, **frame annotation**, **auto-update** — planned,
+  see `../docs/backlog.md`.
 
-- Expand parsing coverage while keeping `UiGraph` small and debuggable.
-- Add richer diagnostics (warnings/errors) to help users understand unsupported constructs.
-- Introduce a live provider for device-backed reads/writes (without moving parsing into the UI).
+---
 
-## What’s in this repo
-
-GenICam Studio is organized as a monorepo with a strict separation of responsibilities:
-
-- **Rust crates (`crates/`)**: parsing + normalization into a small, serializable model (`UiGraph`).
-- **WASM adapter (`crates/*_wasm`)**: thin `wasm-bindgen` wrappers so the browser can reuse the Rust parser.
-- **React UI (`ui/`)**: renders the `UiGraph` contract and provides a feature browser UX. No XML parsing here.
-- **Desktop shell (`apps/`)**: Tauri v2 app that hosts the UI and exposes native commands. No duplicated parsing.
-- **Streamer (`apps/`)**: standalone Zenoh → BMP → WebSocket bridge for Mono8 frames.
-
-## Architecture (contract-first)
+## Layout
 
 ```
-GenICam XML
-   |
-   v
-Rust: crates/genicam_xml_model (streaming parse via quick-xml)
-   |
-   v
-UiGraph (serde)  <——— this is the contract the UI consumes
-   |
-   +--> Browser: crates/genicam_xml_model_wasm  -> WebWasmProvider  -> React UI
-   |
-   +--> Desktop: apps/viva-studio-tauri      -> TauriProvider    -> React UI
+studio/
+  crates/
+    viva_xml_model/   GenICam XML -> UiGraph (the contract the UI consumes)
+    viva_streamer/    Frame -> BMP encoding + WebSocket serving
+  apps/
+    viva-studio-tauri/  The desktop app (Tauri v2 shell + Rust backend)
+    viva-ws-streamer/   Standalone Zenoh -> BMP -> WebSocket bridge
+    viva-mock-service/  Fake service for UI work without cameras
+  ui/
+    viva-studio-ui/   React 19 + Vite front end
+  tests/e2e/          End-to-end tests
 ```
+
+`apps/viva-studio-tauri/src-tauri` is **excluded** from the studio Cargo
+workspace — it is built with `cargo tauri`, not `cargo build --workspace`. It
+has its own CI job (`tauri-lint` in `.github/workflows/studio-ci.yml`); a
+`cargo clippy --workspace` in `studio/` will not touch it.
 
 Key invariants:
 
-- **Parsing lives in Rust** (native + WASM reuse the same core crate).
-- **UI depends on the JSON contract** (`UiGraph`), not on GenICam tags.
-- **Unknown nodes are preserved**: unrecognized XML tags become `Unknown` nodes and keep `RawNode` populated.
+- **Parsing lives in Rust.** The UI renders a contract, it does not read
+  GenICam tags.
+- **The UI depends on `UiGraph`**, not on the XML.
+- **Unknown nodes are preserved** rather than dropped.
 
 ## Data model: `UiGraph`
 
-`UiGraph` is the minimal model the UI needs to browse and edit features:
+The minimal model the UI needs, from `crates/viva_xml_model`:
 
-- `nodes_by_name`: map from GenICam `Name` → `UiNode`
-- `categories`: map from category name → `UiCategory` (with `features: string[]`)
-- `root_category`: name of the chosen root (prefers `"Root"` when present)
+- `nodes_by_name` — GenICam `Name` → `UiNode`
+- `categories` — category name → `UiCategory` (with `features: string[]`)
+- `root_category` — the chosen root, preferring `"Root"` when present
 
-Each `UiNode` also includes a lightweight `raw` snapshot:
+Each `UiNode` carries a `RawNode` snapshot: the original element `tag`, its
+`attributes` (always including `Name` when present) and `children_text`, with
+repeated fields such as `pFeature` joined by newlines. The TypeScript copy of
+the contract is `ui/viva-studio-ui/src/xml_model/uigraph.ts` and must stay in
+step with `crates/viva_xml_model/src/model.rs`.
 
-- `RawNode.tag`: original element tag (e.g. `"Integer"`, `"SwissKnife"`)
-- `RawNode.attributes`: element attributes (always includes `Name` when present)
-- `RawNode.children_text`: simple child text fields (preserves repeated fields like `pFeature` by joining with `\n`)
-
-The TypeScript copy of the contract lives at `ui/viva-studio-ui/src/xml_model/uigraph.ts`.
-
-## Feature Browser (current UI)
-
-The UI currently supports:
-
-- **Category tree browsing** from `UiGraph.categories`
-- **Search** by node name or display name
-- **Offline editors** for basic node kinds (draft values + validation in the UI)
-- **Unknown-node visibility** (toggle to hide/show; unknown nodes render a debug view of `RawNode`)
-- **Raw XML** and **model debug JSON** panels for quick inspection
+---
 
 ## Quickstart
 
 ### Prerequisites
 
-- Rust (stable, `rust-toolchain.toml` pins `rustfmt` + `clippy`)
-- Node.js (recommended: 20+)
-- `wasm-pack` (for browser/WASM parsing): `cargo install wasm-pack` (or `brew install wasm-pack` on macOS)
-- Tauri CLI v2 (for the desktop shell): `cargo install tauri-cli --version '^2'`
+- Rust stable
+- [Bun](https://bun.sh) for the UI
+- Tauri CLI v2: `cargo install tauri-cli --version '^2'`
 
-### 1) Run the parser tests (Rust)
-
-```sh
-cargo test
-```
-
-### 2) Run the UI in browser mode (Vite + WASM)
+### Run the desktop app
 
 ```sh
-cd ui/viva-studio-ui
-bun install
-bun run wasm:build
-bun run dev
-```
-
-Then load the sample XML fixture:
-- `crates/genicam_xml_model/fixtures/minimal.xml`
-
-### 3) Run the desktop app (Tauri v2)
-
-```sh
-cd ui/viva-studio-ui
-bun install
-```
-
-```sh
-cargo install tauri-cli --version '^2'
-cd apps/viva-studio-tauri
+cd studio/apps/viva-studio-tauri
 cargo tauri dev
 ```
 
-Notes:
-- `apps/viva-studio-tauri/src-tauri/tauri.conf.json` points Tauri to the Vite dev server at `http://localhost:5183`.
-- The Tauri dev workflow starts the UI dev server via `beforeDevCommand`.
+`beforeDevCommand` starts the Vite dev server for you; `tauri.conf.json` points
+the shell at `http://localhost:5183`.
 
-## Building (production)
-
-### Build the UI bundle
+### Run the UI alone
 
 ```sh
-cd ui/viva-studio-ui
+cd studio/ui/viva-studio-ui
 bun install
-bun run build
+bun run dev      # bun run test / bun run build
 ```
 
-### Build the desktop app
+### End-to-end with a fake camera
+
+No hardware needed. Three terminals for GigE:
 
 ```sh
-cd apps/viva-studio-tauri
-cargo tauri build
+# 1: fake camera (from the repository root)
+cargo run -p viva-fake-gige
+
+# 2: the Zenoh bridge — --zenoh-config is required on the service side
+cargo run -p viva-service -- --iface lo0 --zenoh-config studio/config/zenoh-local.json5
+# On Linux: --iface lo
+
+# 3: the app
+cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
 
-## Using as a library (Rust)
+USB3 Vision needs only two, because the service hosts its own fake:
 
-`crates/genicam_xml_model` is a regular Rust library crate and can be consumed independently:
+```sh
+cargo run -p viva-service-u3v -- --fake --zenoh-config studio/config/zenoh-local.json5
+cd studio/apps/viva-studio-tauri && cargo tauri dev
+```
+
+## Building
+
+```sh
+cd studio/ui/viva-studio-ui && bun install && bun run build
+cd ../../apps/viva-studio-tauri && cargo tauri build
+```
+
+---
+
+## Using `viva_xml_model` as a library
 
 ```rust
-use genicam_xml_model::parse_genicam_xml;
+use viva_xml_model::parse_genicam_xml;
 
 let xml = std::fs::read_to_string("camera.xml")?;
 let graph = parse_genicam_xml(&xml)?;
 println!("root category: {}", graph.root_category);
 ```
 
-## WebSocket Streamer (Zenoh → BMP → WebSocket)
+This crate is Studio's own lightweight view of a GenApi document. For a full
+NodeMap with evaluation, addressing and access predicates, use `viva-genapi`
+from the main workspace — `NullIo` makes it work offline too.
 
-The streamer is a small standalone process that:
+## WebSocket streamer
 
-- Subscribes to a Zenoh key that publishes **tightly-packed Mono8** frames (`width * height` bytes)
-- Encodes each frame as an 8‑bit BMP (grayscale palette)
-- Broadcasts the latest BMP to all WebSocket clients (latest-only, bounded memory)
-
-### Run
+`viva-ws-streamer` is a standalone process that subscribes to a Zenoh key
+carrying tightly packed **Mono8** frames (`width * height` bytes), encodes each
+as an 8-bit BMP, and broadcasts the latest one to every WebSocket client
+(latest-only, bounded memory).
 
 ```sh
-cargo run -p genicam-ws-streamer -- \
+cargo run -p viva-ws-streamer -- \
   --image-key quiss/sensors/svcA/devices/cam0/image \
-  --width 640 \
-  --height 480
+  --width 640 --height 480
 ```
 
-Optional flags:
+Options: `--bind` (default `127.0.0.1:8081`) and `--path` (default `/ws`).
 
-- `--bind 127.0.0.1:8081` (default)
-- `--path /ws` (default)
-- `--fps-limit 30` (drop frames above this rate)
-- `--zenoh-config <JSON5|FILE>` (inline JSON5 string or a config file path)
+The Tauri app does not use this binary — it embeds `viva_streamer` directly,
+which handles the camera's actual pixel format rather than assuming Mono8.
 
-### Quick test with `websocat`
+---
 
-The server sends a small JSON info message first, then binary BMP frames.
-To verify the BMP stream quickly:
+## Quality gates
+
+Run from `studio/`:
 
 ```sh
-websocat ws://127.0.0.1:8081/ws --binary | head -c 2
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-You should see `BM` once the first frame arrives.
+and, because `src-tauri` is outside that workspace:
 
-## Code map (modules + components)
+```sh
+cd apps/viva-studio-tauri/src-tauri
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+```
 
-### Rust
+plus the UI:
 
-- `crates/genicam_xml_model`
-  - `crates/genicam_xml_model/src/model.rs`: `UiGraph` + `UiNode` + `RawNode` (serde contract)
-  - `crates/genicam_xml_model/src/parser.rs`: streaming XML parser (builds the contract, preserves unknowns)
-  - `crates/genicam_xml_model/src/error.rs`: `ParseError` with context
-  - `crates/genicam_xml_model/fixtures/`: small synthetic XML fixtures + JSON snapshots
-- `crates/genicam_xml_model_wasm`
-  - `crates/genicam_xml_model_wasm/src/lib.rs`: `wasm-bindgen` wrapper that returns a JS-friendly `UiGraph`
-
-### UI (React)
-
-- Contract + providers:
-  - `ui/viva-studio-ui/src/xml_model/uigraph.ts`: TypeScript mirror of `UiGraph`
-  - `ui/viva-studio-ui/src/xml_model/provider.ts`: `WebWasmProvider` vs `TauriProvider`
-  - `ui/viva-studio-ui/src/xml_model/helpers.ts`: tiny pure helpers (labels, unknown checks)
-  - `ui/viva-studio-ui/src/xml_model/values.ts`: `NodeValue` draft value union type
-  - `ui/viva-studio-ui/src/xml_model/validate.ts`: draft value validation (offline UX)
-  - `ui/viva-studio-ui/src/state/useDraftValues.ts`: draft store + validation errors
-  - `ui/viva-studio-ui/src/tauri.ts`: environment detection + small native helpers
-- Feature Browser components:
-  - `ui/viva-studio-ui/src/components/FeatureBrowser/FeatureBrowserPage.tsx`: loads XML, owns filters, selects provider
-  - `ui/viva-studio-ui/src/components/FeatureBrowser/CategoryTree.tsx`: root category tree shell
-  - `ui/viva-studio-ui/src/components/FeatureBrowser/CategoryTreeNode.tsx`: recursive renderer (cycle-safe)
-  - `ui/viva-studio-ui/src/components/FeatureBrowser/FeaturePanel.tsx`: details + editor tabs
-  - `ui/viva-studio-ui/src/components/FeatureBrowser/editors/*`: small editors per node kind
-  - `ui/viva-studio-ui/src/styles.css`: global styles for the Feature Browser UI
-
-### Desktop (Tauri)
-
-- `apps/viva-studio-tauri/src-tauri/src/commands/xml_model.rs`: native parse + fixture commands (returns the same `ParseXmlResponse` shape as WASM)
-- `apps/viva-studio-tauri/src-tauri/src/state/model_state.rs`: stores the last loaded model to avoid re-parsing
-
-### Streamer (standalone)
-
-- `apps/genicam-ws-streamer/src/main.rs`: CLI + wiring + shutdown
-- `apps/genicam-ws-streamer/src/bmp.rs`: Mono8 BMP encoder + tests
-- `apps/genicam-ws-streamer/src/zenoh_source.rs`: Zenoh subscriber loop + FPS drop + watch channel
-- `apps/genicam-ws-streamer/src/ws.rs`: WebSocket server + fan-out
-
-## Scripts and CI
-
-- `scripts/wasm-build.sh`: builds the WASM adapter into the UI’s import location (used by CI).
-- GitHub Actions workflow: `.github/workflows/ci.yml` runs `cargo fmt`, `cargo clippy -D warnings`, `cargo test`, builds WASM, and builds the UI.
-
-## Fixtures and snapshots
-
-Fixtures live under `crates/genicam_xml_model/fixtures/` and are intentionally small and synthetic.
-
-- `minimal.xml` is a smoke fixture with at least one **unknown node** to keep preservation behavior covered.
-- `expected_minimal.json` is a pretty-printed snapshot of the serialized `UiGraph`.
-
-When you change parsing/model behavior:
-
-1. Update or add fixtures.
-2. Update the corresponding Rust tests under `crates/genicam_xml_model/tests/`.
-3. Intentionally refresh snapshot JSON (if it changed).
-
-## Contributing (guiding rules)
-
-This repo is early-stage, but aims to stay clean and contract-first:
-
-- Avoid breaking changes to public Rust APIs and the `UiGraph` JSON shape unless explicitly planned.
-- Keep parsing/normalization in Rust crates; keep the UI contract-only.
-- Preserve unknown tags as `Unknown` nodes and keep `RawNode` populated.
-- Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` for changed crates.
-
-## License
-
-MIT (see `LICENSE`).
+```sh
+cd ui/viva-studio-ui
+bun install --frozen-lockfile && bun run test -- --run && bun run build
+```

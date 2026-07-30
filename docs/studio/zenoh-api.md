@@ -24,7 +24,7 @@ opaque string without `/`).
     "name": "Sony IMX421 GigE Camera",
     "model": "SPC-3000",
     "serial": "SN12345678",
-    "api_version": 1
+    "api_version": 2
   }
   ```
 - **Rust type:** `DeviceAnnounce` in `viva-zenoh-api`

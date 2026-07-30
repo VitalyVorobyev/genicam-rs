@@ -86,7 +86,7 @@ reporting a problem, send this: see
 closure with `(address, length)` and expects bytes back, so any transport that
 can read device memory can drive it:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/fetch_xml.rs:fetch}}
 ```
 
@@ -103,7 +103,7 @@ cargo run -p viva-genicam --example fetch_xml
 `parse_into_minimal_nodes` answers the cheap questions — which schema version,
 what is at the top level, does this look broken at all:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/fetch_xml.rs:inspect}}
 ```
 

@@ -15,17 +15,30 @@ for a given task, and where to look if you want to hack on internals.
 
 ## Quick map
 
-| Crate       | Path                   | Role / responsibility                                             | Primary audience                  |
-|-------------|------------------------|--------------------------------------------------------------------|-----------------------------------|
-| `viva-gencp`    | `crates/viva-gencp`        | GenCP encode/decode + helpers for control path over GVCP         | Contributors, protocol nerds      |
-| `viva-gige`   | `crates/viva-gige`       | GigE Vision transport: GVCP (control) + GVSP (streaming)          | End-users & contributors          |
-| `viva-genapi-xml`| `crates/genapi-xml`    | Load GenICam XML from device / disk, parse into IR                | Contributors (XML / SFNC work)    |
-| `viva-genapi` | `crates/viva-genapi` | NodeMap implementation, feature access, SwissKnife, selectors     | End-users & contributors          |
-| `viva-genicam`   | `crates/genicam`       | High-level “one crate” façade combining transport + GenApi        | End-users                         |
-| `viva-camctl` | `crates/viva-camctl`     | CLI tool for discovery, configuration, streaming, benchmarks      | End-users, ops, CI scripts        |
+Every crate lives under `crates/` and is named for its directory.
 
-If you just want to **use a camera** from Rust, you’ll usually start with
-`viva-genicam` (or `viva-camctl` from the command line) and ignore the lower layers.
+| Crate | Role / responsibility | Primary audience |
+|---|---|---|
+| `viva-genicam` | High-level facade combining transport + GenApi | **End-users — start here** |
+| `viva-camctl` | CLI: discovery, features, streaming, diagnostics, IP config | End-users, ops, CI scripts |
+| `viva-pygenicam` | Python bindings (PyO3). Own workspace, own `Cargo.lock` | Python users |
+| `viva-genapi` | NodeMap, feature access, SwissKnife, selectors, access predicates | End-users & contributors |
+| `viva-genapi-xml` | Load GenICam XML from device or disk, parse into `XmlModel` | Contributors (XML / SFNC work) |
+| `viva-gige` | GigE Vision transport: GVCP control + GVSP streaming | End-users & contributors |
+| `viva-u3v` | USB3 Vision transport over libusb | End-users & contributors |
+| `viva-gencp` | GenCP message encode/decode, shared by both transports | Contributors, protocol nerds |
+| `viva-pfnc` | Pixel Format Naming Convention tables | Contributors |
+| `viva-sfnc` | Standard Feature Naming Convention constants | Contributors |
+| `viva-zenoh-api` | Wire types shared with Viva Studio (no Zenoh dependency) | Contributors |
+| `viva-service` | Zenoh bridge: GigE cameras → Viva Studio | Integrators |
+| `viva-service-u3v` | Zenoh bridge: U3V cameras → Viva Studio | Integrators |
+| `viva-fake-gige` | In-process fake GigE camera for tests and demos | Everyone |
+| `viva-fake-u3v` | In-process fake U3V camera for tests | Contributors |
+
+If you just want to **use a camera** from Rust, start with `viva-genicam` (or
+`viva-camctl` from the command line) and ignore the lower layers. Three of these
+have chapters of their own: [`viva-gige`](viva-gige.md),
+[`viva-genapi`](viva-genapi.md) and [`viva-gencp`](viva-gencp.md).
 
 ---
 
@@ -49,9 +62,9 @@ At a high level, the crates compose like this:
                  │                       │
                  └──────────┬────────────┘
                             │
-                      ┌─────▼─────┐
-                      │  genicam  │  ← public Rust API
-                      └─────┬─────┘
+                      ┌─────▼───────┐
+                      │ viva-genicam│  ← public Rust API
+                      └─────┬───────┘
                             │
                       ┌─────▼───────┐
                       │ viva-camctl   │  ← CLI on top of `viva-genicam`
@@ -60,7 +73,7 @@ At a high level, the crates compose like this:
 
 Roughly:
 * `viva-gige` knows how to talk UDP to a GigE Vision device (discovery, register
-access, image packets, resends, stats, …).
+access, image packets, stats, …).
 * `viva-gencp` provides the GenCP building blocks used on the control path.
 * `viva-genapi-xml` fetches and parses the GenApi XML that describes the device’s
 features.

@@ -59,7 +59,7 @@ A broadcast command, then replies collected for a timeout window. Each reply
 becomes a `DeviceInfo` with IP, MAC, manufacturer, model, version, serial and
 user-defined name.
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/list_cameras.rs:discover}}
 ```
 
@@ -149,7 +149,7 @@ UDP packets and reassembles frames by block ID.
 Application code builds streams through `viva-genicam`, not this crate
 directly:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/grab_gige.rs:stream}}
 ```
 

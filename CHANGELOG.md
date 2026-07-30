@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `viva-camctl` gained a library entry point (`viva_camctl::run(argv) -> u8`) so
   the binary and the console script run the same code; the binary's `main` is now
   three lines.
+- `viva-genicam` example `fetch_xml` — fetch a camera's GenApi XML through
+  `fetch_and_load_xml`, print its schema version, top-level features and the
+  nodes the parser had to skip. It is the layer below `connect_gige`, so it
+  works on a camera that cannot be opened.
 
 ### Fixed
 
@@ -39,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than the device lock, which is why `viva-service` needed
   `pause_heartbeat`/`resume_heartbeat` around reconnection; the transport-owned
   keepalive needs no such coordination and that API is gone.
+- The `get_set_feature` example never got or set a feature. Both the README and
+  the book named it as the get/set template, and it fetched XML and ended on
+  `println!("Stub: would map register ... to a GenApi feature")`. It now uses
+  `connect_gige` and `Camera::{get,set,enum_entries}` and takes
+  `--name`/`--value`.
+- `demo_fake_camera` wrapped every feature access in `spawn_blocking`, on the
+  grounds that "block_on can't nest in async". `GigeRegisterIo::{read,write}`
+  have guarded that with `block_in_place` since before the comment was written,
+  so the zero-hardware demo was teaching a wrapper nobody needs.
 
 ### Changed
 
@@ -65,6 +78,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sensitive to a multi-second stall on a loaded CI runner. Without it a fake
   camera cannot tell a working keepalive from a missing one, which is how this
   defect survived three reimplementations of the loop above it.
+- **The book documented an API that never existed, and now cannot again.**
+  Chapters showed `viva_genicam::Client::connect`, `cam.get_f64`,
+  `viva_gige::control::ControlClient`, `net::InterfaceSelector`,
+  `genicam::Context::new` and an example called `stream_basic` — so the first
+  snippet a reader copied failed to compile. The `viva-gencp` chapter was
+  invented end to end: not one of `Request`, `Reply`, `Status`, `bitops`,
+  `chunk::ChunkPlan` or `helpers::read_u32` exists. Every Rust snippet in the
+  book is now an mdBook `{{#include}}` of an anchored region in
+  `crates/viva-genicam/examples/`, which `cargo clippy --workspace
+  --all-targets` compiles, so a snippet cannot drift from the API again without
+  failing a gate. Enforced by `crates/viva-genicam/tests/book_includes.rs`
+  rather than by mdBook, which exits 0 on a missing include file and renders a
+  missing anchor as an empty code block with no diagnostic at all.
+- **Prose claims corrected against the code.** The Python docs advertised
+  chunks, events and time sync, none of which the bindings expose, and promised
+  a vendor-alias fallback in `set_exposure_time_us` that does not exist. The
+  streaming tutorial taught readers to watch the `resends` statistic, which
+  nothing in a live stream increments — `resends=0` means "not implemented",
+  not "none were needed". `GevFirstURL` is at `0x0200`, not `0x0000`.
+  `viva-camctl --json` is a top-level flag and every example placed it after the
+  subcommand, where clap rejects it. Two of `book/src/api.md`'s five rustdoc
+  links were 404s on the published site.
 
 ## [0.3.0] - 2026-07-30
 

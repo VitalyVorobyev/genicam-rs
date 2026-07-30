@@ -82,20 +82,20 @@ Start a fake camera in your test. The value `build()` returns is a guard: the
 camera answers GVCP and streams GVSP for as long as it is alive, and shuts down
 when dropped.
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/demo_fake_camera.rs:fake_camera}}
 ```
 
 Then discover it — note `discover_all`, not `discover`, because the fake lives
 on loopback:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/demo_fake_camera.rs:connect}}
 ```
 
 From there it is the ordinary API:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/demo_fake_camera.rs:read_features}}
 ```
 

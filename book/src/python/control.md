@@ -23,7 +23,14 @@ cam.set_exposure_time_us(10_000.0)
 cam.set_gain_db(6.0)
 ```
 
-These resolve the canonical SFNC name (`ExposureTime` / `Gain`) and fall back to common vendor aliases; use them when you want to be resilient to small XML differences.
+These write the canonical SFNC names `ExposureTime` and `Gain` as floats, and
+raise `GenApiError` if the camera calls them something else. They are a typed
+convenience over `set`, not a compatibility layer — there is **no** vendor-alias
+fallback here. If your camera uses a different name, pass it to `set` directly:
+
+```python
+cam.set("ExposureTimeAbs", "10000")
+```
 
 ### Error model
 
@@ -48,7 +55,17 @@ except vg.TransportError as e:
 | `MissingChunkFeatureError` | Chunk selector not present in the camera's XML |
 | `UnsupportedPixelFormatError` | No RGB conversion path for the reported pixel format |
 
-All inherit from `GenicamError` so `except vg.GenicamError:` catches everything.
+All five inherit from `GenicamError`, so `except vg.GenicamError:` catches every
+error the bindings *raise deliberately*. Two failures escape it:
+
+- Using a `Camera`, `Frame` or `FrameStream` **from a thread other than the one
+  that created it** raises `pyo3_runtime.PanicException`, which subclasses
+  `BaseException` — so even `except Exception:` misses it. These objects are
+  `unsendable`; keep each one on its own thread.
+- A panic anywhere in the Rust layer surfaces the same way.
+
+If you are wrapping this in a service that must not die, catch `BaseException`
+at the top of the worker as well.
 
 ## Introspection
 
