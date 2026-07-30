@@ -122,28 +122,7 @@ async fn spawn_service_tasks(
             device.clone(),
             shutdown.clone(),
         )),
-        tokio::spawn(heartbeat_loop(device.clone(), shutdown.clone())),
     ]
-}
-
-async fn heartbeat_loop(device: Arc<DeviceHandle>, mut shutdown: watch::Receiver<bool>) {
-    use tokio::time::MissedTickBehavior;
-
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                if device.is_heartbeat_paused() {
-                    continue;
-                }
-                let _ = device.heartbeat_ping().await;
-            }
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() { break; }
-            }
-        }
-    }
 }
 
 /// Send an acquisition control request and return the response.
@@ -307,6 +286,9 @@ async fn e2e_double_start_rejected() {
 }
 
 /// Verify a running acquisition remains live beyond the heartbeat window.
+///
+/// The service no longer runs a keepalive of its own — the transport owns it —
+/// so this now exercises the library's, through the full Zenoh path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_sustained_streaming() {
     let _cam = TestCamera::start().await;

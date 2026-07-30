@@ -161,12 +161,9 @@ async fn handle_start(
         }
     };
 
-    // 2b. Immediate heartbeat to refresh the CCP timer after the potentially
-    //     long stream-setup phase, before the 3 sequential get_feature calls
-    //     in publish_image_meta.
-    if let Err(e) = device.heartbeat_ping().await {
-        warn!(device_id, error = %e, "heartbeat after build_stream failed (non-fatal)");
-    }
+    // No explicit CCP refresh after the potentially long stream setup: the
+    // transport's keepalive waits on the same device mutex `build_stream` holds
+    // and pings as soon as that guard drops.
 
     // 3. Publish metadata before starting acquisition.
     publish_image_meta(session, device.as_ref(), device_id).await;

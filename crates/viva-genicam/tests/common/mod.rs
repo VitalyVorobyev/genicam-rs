@@ -23,6 +23,9 @@ impl TestCamera {
     /// Start a fake GigE Vision camera on the loopback interface.
     ///
     /// Acquires a global lock to ensure only one camera runs at a time.
+    // Each integration test is its own crate, so a helper only some of them use
+    // reads as dead code in the others.
+    #[allow(dead_code)]
     pub async fn start() -> Self {
         Self::start_with(|builder| builder).await
     }

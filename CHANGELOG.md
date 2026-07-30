@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An idle GigE session no longer loses control of the camera.** A GigE Vision
+  device revokes control privilege if it receives no GVCP command within
+  `GevHeartbeatTimeout` (3 000 ms is typical), and GVSP image traffic does not
+  count towards it — so a camera could be streaming at full rate, or simply
+  sitting at a Python prompt, and the next `set()` would fail with
+  `ACCESS_DENIED`. The library refreshed that timer nowhere: `connect_gige`
+  claimed privilege and nothing kept it. `GigeRegisterIo` now owns the
+  keepalive. It reads the device's own `GevHeartbeatTimeout` and pings at a
+  quarter of it, so a device asking for a shorter window gets one, and it stops
+  when the transport is dropped — holding a `Camera` is all a caller has to do.
+
+  This also removes the three app-layer copies that had grown around the gap
+  (`viva-service`, `viva-camctl stream`, and the studio's embedded backend, the
+  last two added in #72). Each contended for the application's *camera* lock
+  rather than the device lock, which is why `viva-service` needed
+  `pause_heartbeat`/`resume_heartbeat` around reconnection; the transport-owned
+  keepalive needs no such coordination and that API is gone.
+
+### Changed
+
+- `GigeDevice` gained `heartbeat_timeout_ms()` and `ping_control_channel()`, and
+  `gvcp::consts` gained `HEARTBEAT_TIMEOUT` (`0x0938`) and
+  `CCP_CONTROLLER_BITS`. `ping_control_channel` returns `Ok(false)` rather than
+  an error when the device reports privilege cleared: the register read
+  succeeded, and losing privilege to another controller is an answer, not a
+  transport failure.
+- `viva-fake-gige` can enforce the heartbeat rule (`--enforce-heartbeat`,
+  `FakeCameraBuilder::enforce_heartbeat`) and report a custom
+  `GevHeartbeatTimeout`. It is off by default so that unrelated tests are not
+  sensitive to a multi-second stall on a loaded CI runner. Without it a fake
+  camera cannot tell a working keepalive from a missing one, which is how this
+  defect survived three reimplementations of the loop above it.
+
 ## [0.3.0] - 2026-07-30
 
 The GenApi layer now implements the GenICam formula language and register

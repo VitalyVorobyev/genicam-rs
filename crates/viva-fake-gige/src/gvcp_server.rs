@@ -95,6 +95,18 @@ pub async fn run(
         let request_id = u16::from_be_bytes([pkt[6], pkt[7]]);
         let payload = &pkt[8..];
 
+        // Register access refreshes the device's heartbeat timer. Discovery and
+        // FORCEIP do not: they are broadcast by any application on the subnet.
+        // The command is still served after an expiry — a real device answers
+        // register reads from a non-controller, it only refuses configuration.
+        if matches!(
+            command,
+            READREG_CMD | WRITEREG_CMD | READMEM_CMD | WRITEMEM_CMD
+        ) && regs.lock().await.note_register_command()
+        {
+            warn!(%peer, "heartbeat expired; control privilege released");
+        }
+
         match command {
             DISCOVERY_CMD => {
                 let resp = build_discovery_ack(request_id, bind_ip);

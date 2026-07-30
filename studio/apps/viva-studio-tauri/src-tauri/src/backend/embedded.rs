@@ -454,58 +454,15 @@ impl DeviceBackend for EmbeddedBackend {
             })
         };
 
-        // Receiving GVSP frames does not keep the GVCP control channel alive.
-        // Run the keepalive independently of frame and WebSocket tasks so a
-        // stalled consumer cannot let the camera's control privilege expire.
-        let heartbeat_handle = {
-            let camera = Arc::clone(&self.camera);
-            let mut shutdown_rx = shutdown_rx.clone();
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(1));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                break;
-                            }
-                        }
-                        _ = ticker.tick() => {
-                            // A GevCCP read refreshes the camera's heartbeat
-                            // timer without repeatedly rewriting control state.
-                            let result = tokio::task::block_in_place(|| -> Result<(), String> {
-                                let mut guard = camera
-                                    .lock()
-                                    .map_err(|_| "Camera mutex poisoned".to_string())?;
-                                let connected = guard
-                                    .as_mut()
-                                    .ok_or_else(|| "No camera connected".to_string())?;
-                                let mut device = connected
-                                    .camera
-                                    .transport()
-                                    .lock_device()
-                                    .map_err(|e| format!("Failed to access device: {e}"))?;
-                                tokio::runtime::Handle::current()
-                                    .block_on(device.read_register(
-                                        gvcp_consts::CONTROL_CHANNEL_PRIVILEGE as u32,
-                                    ))
-                                    .map(|_| ())
-                                    .map_err(|e| format!("Failed to refresh camera control: {e}"))
-                            });
-
-                            if let Err(error) = result {
-                                warn!(%error, "Camera control heartbeat failed");
-                            }
-                        }
-                    }
-                }
-            })
-        };
+        // Receiving GVSP frames does not keep the GVCP control channel alive, but
+        // the keepalive that covers it belongs to `GigeRegisterIo` and lives as
+        // long as the connected camera — it is not tied to an acquisition, so a
+        // stalled consumer (or an idle session with no acquisition at all) cannot
+        // let control privilege expire.
 
         *self.acquisition.lock().await = Some(AcquisitionState {
             shutdown_tx,
-            task_handles: vec![frame_reader_handle, ws_handle, heartbeat_handle],
+            task_handles: vec![frame_reader_handle, ws_handle],
             ws_url: ws_url.clone(),
             width,
             height,

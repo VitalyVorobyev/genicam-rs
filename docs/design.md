@@ -69,7 +69,11 @@ Implementations:
 
 - `GigeRegisterIo` — async-to-sync adapter over `GigeDevice` using
   `block_in_place` + `block_on`; safe to call from both async and sync
-  contexts.
+  contexts. Also **owns the control-channel keepalive**: constructing one
+  spawns a task that reads `GevHeartbeatTimeout` and refreshes the device's
+  timer at a quarter of it, and dropping one retires that task. Holding the
+  transport is therefore sufficient to hold control privilege — nothing above
+  this layer runs a heartbeat (SR-05; three consumers used to).
 - `MockIo` — in-memory register map for tests.
 - `NullIo` — no-op backend for offline XML browsing (studio, wasm).
 
@@ -92,7 +96,9 @@ USB bulk reads via `spawn_blocking` + an mpsc channel, created through
 
 **`DeviceHandle`** (`viva-service`) — wraps `Camera<GigeRegisterIo>` in
 `spawn_blocking` for async-safe access from Zenoh queryable handlers, and owns
-reconnection with exponential backoff. `U3vDeviceHandle<T>`
+reconnection with exponential backoff. Reconnection needs no keepalive
+coordination: the replacement camera brings its own, and the old one retires
+when the swap drops the camera that owned it. `U3vDeviceHandle<T>`
 (`viva-service-u3v`) is generic over `T: UsbTransfer`, so the same service code
 runs against `FakeU3vTransport` (`--fake` mode) and `RusbTransfer` (real USB).
 

@@ -58,7 +58,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::gvcp_server::FAKE_MAC;
 
@@ -730,6 +730,10 @@ pub struct RegisterMap {
     /// address twice with a different selector in between — and a single
     /// stored word would let the second write turn the first event back off.
     enabled_events: HashSet<u16>,
+    /// When a register-access command was last served, for the heartbeat rule.
+    last_register_command: Instant,
+    /// Whether [`RegisterMap::enforce_heartbeat`] is armed.
+    enforce_heartbeat: bool,
 }
 
 /// Compress the GenApi XML into a single-entry ZIP archive (deflate).
@@ -883,7 +887,67 @@ impl RegisterMap {
             xml_blob,
             clock_origin: Instant::now(),
             enabled_events: HashSet::new(),
+            last_register_command: Instant::now(),
+            enforce_heartbeat: false,
         }
+    }
+
+    /// Arm the GigE Vision heartbeat rule: release control privilege when the
+    /// controller goes quiet for longer than `GevHeartbeatTimeout`.
+    ///
+    /// Real devices always do this, and it is the entire reason a client needs a
+    /// keepalive — GVSP image traffic does not refresh the timer, so a camera can
+    /// be streaming at full rate while its control channel times out underneath.
+    /// A fake that never expires CCP cannot tell a working keepalive from a
+    /// missing one, which is how SR-05 stayed open through three app-layer
+    /// reimplementations of the same loop.
+    ///
+    /// **Off by default**, because arming it makes every test that holds control
+    /// privilege sensitive to a 3 s stall — on a loaded CI runner that is a
+    /// flake, not a finding. Tests that are *about* the keepalive turn it on.
+    pub fn enforce_heartbeat(&mut self, enable: bool) {
+        self.enforce_heartbeat = enable;
+        self.last_register_command = Instant::now();
+    }
+
+    /// Apply the heartbeat rule, and report whether privilege was just revoked.
+    ///
+    /// Called for register-access commands only. Discovery and FORCEIP are
+    /// broadcast by any application on the subnet, so counting them would let an
+    /// unrelated `viva-camctl list` hold another application's privilege open.
+    /// Unlike a real device we do not track *which* peer is the controller —
+    /// there is only ever one in a test.
+    pub fn note_register_command(&mut self) -> bool {
+        let elapsed = self.last_register_command.elapsed();
+        self.last_register_command = Instant::now();
+        if !self.enforce_heartbeat {
+            return false;
+        }
+        let timeout = Duration::from_millis(u64::from(self.heartbeat_timeout_ms()));
+        if timeout.is_zero() || elapsed <= timeout {
+            return false;
+        }
+        let ccp = self.read(CCP, 4);
+        if u32::from_be_bytes([ccp[0], ccp[1], ccp[2], ccp[3]]) == 0 {
+            return false;
+        }
+        self.write(CCP, &0u32.to_be_bytes());
+        true
+    }
+
+    /// Report a different `GevHeartbeatTimeout` than the 3 000 ms default.
+    ///
+    /// Lets a test pick a window short enough to wait out without making the
+    /// suite slow, and makes the timing it depends on explicit rather than
+    /// implied by this crate's default.
+    pub fn set_heartbeat_timeout_ms(&mut self, timeout_ms: u32) {
+        self.write(HEARTBEAT_TIMEOUT, &timeout_ms.to_be_bytes());
+    }
+
+    /// The heartbeat window this device reports, in milliseconds.
+    pub fn heartbeat_timeout_ms(&self) -> u32 {
+        let data = self.read(HEARTBEAT_TIMEOUT, 4);
+        u32::from_be_bytes([data[0], data[1], data[2], data[3]])
     }
 
     /// Read `len` bytes starting at `addr`.

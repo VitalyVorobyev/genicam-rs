@@ -45,6 +45,11 @@ struct Args {
     /// GVCP control port.
     #[arg(long, default_value_t = 3956)]
     port: u16,
+
+    /// Release control privilege when the controller stops sending GVCP
+    /// commands for longer than GevHeartbeatTimeout, as a real device does.
+    #[arg(long)]
+    enforce_heartbeat: bool,
 }
 
 #[tokio::main]
@@ -71,6 +76,7 @@ async fn main() {
         .pixel_format(pfnc_code)
         .bind_ip(args.bind)
         .port(args.port)
+        .enforce_heartbeat(args.enforce_heartbeat)
         .build()
         .await
         .unwrap_or_else(|e| {
