@@ -17,6 +17,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 1. Start the fake camera ────────────────────────────────────────────
     println!("Starting fake GigE Vision camera on 127.0.0.1:3956 ...");
+    // ANCHOR: fake_camera
+    // The guard owns the camera's tasks: it answers GVCP and streams GVSP for
+    // as long as it is alive, and shuts down when dropped.
     let _camera_guard = FakeCamera::builder()
         .width(640)
         .height(480)
@@ -25,6 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .port(3956)
         .build()
         .await?;
+    // ANCHOR_END: fake_camera
     println!("  Fake camera is running.\n");
 
     // ── 2. Discover cameras on the network ──────────────────────────────────
@@ -47,20 +51,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("fake camera not found on loopback");
 
     // ── 3. Connect and fetch GenApi XML ─────────────────────────────────────
+    // ANCHOR: connect
     println!("Connecting to {} ...", dev_info.ip);
-    let (camera, xml) = connect_gige_with_xml(dev_info).await?;
+    let (mut camera, xml) = connect_gige_with_xml(dev_info).await?;
     println!(
         "  Connected. GenApi XML: {} bytes, {} features.\n",
         xml.len(),
         camera.nodemap().node_names().count()
     );
-
-    // Wrap for spawn_blocking access
-    let camera = std::sync::Arc::new(std::sync::Mutex::new(camera));
+    // ANCHOR_END: connect
 
     // ── 4. Read camera features ─────────────────────────────────────────────
+    // ANCHOR: read_features
+    // `get` and `set` are synchronous. They block on register I/O, and
+    // `GigeRegisterIo` steps off the async worker itself, so no `spawn_blocking`
+    // wrapper is needed even here inside `#[tokio::main]`.
     println!("Reading camera features:");
-    for feature in &[
+    for feature in [
         "Width",
         "Height",
         "PixelFormat",
@@ -68,39 +75,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Gain",
         "GevTimestampTickFrequency",
     ] {
-        let cam = camera.clone();
-        let name = feature.to_string();
-        let value = tokio::task::spawn_blocking(move || {
-            let cam = cam.lock().unwrap();
-            cam.get(&name)
-        })
-        .await?;
-        match value {
-            Ok(v) => println!("  {feature} = {v}"),
-            Err(e) => println!("  {feature} = <error: {e}>"),
+        match camera.get(feature) {
+            Ok(value) => println!("  {feature} = {value}"),
+            Err(err) => println!("  {feature} = <error: {err}>"),
         }
     }
     println!();
 
     // ── 5. Write a feature ──────────────────────────────────────────────────
     println!("Setting Width = 320, ExposureTime = 10000 ...");
-    {
-        let cam = camera.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cam = cam.lock().unwrap();
-            cam.set("Width", "320")?;
-            cam.set_exposure_time_us(10000.0)?;
-            Ok::<_, viva_genicam::GenicamError>(())
-        })
-        .await??;
-    }
-    let cam = camera.clone();
-    let width = tokio::task::spawn_blocking(move || {
-        let cam = cam.lock().unwrap();
-        cam.get("Width")
-    })
-    .await??;
-    println!("  Width readback = {width}\n");
+    camera.set("Width", "320")?;
+    camera.set_exposure_time_us(10_000.0)?;
+    println!("  Width readback = {}\n", camera.get("Width")?);
+    // ANCHOR_END: read_features
 
     // ── 6. Stream frames ────────────────────────────────────────────────────
     println!("Streaming 5 frames ...");
@@ -128,14 +115,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = tokio::runtime::Handle::current();
     let transport = GigeRegisterIo::new(handle, device);
     let nodemap = viva_genicam::genapi::NodeMap::try_from_xml(viva_genapi_xml::parse(&xml)?)?;
-    let cam = std::sync::Arc::new(std::sync::Mutex::new(Camera::new(transport, nodemap)));
+    let mut cam = Camera::new(transport, nodemap);
 
-    // Start acquisition via spawn_blocking (block_on can't nest in async).
-    let cam2 = cam.clone();
-    tokio::task::spawn_blocking(move || {
-        cam2.lock().unwrap().acquisition_start().unwrap();
-    })
-    .await?;
+    cam.acquisition_start()?;
 
     for i in 0..5 {
         let frame = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame())
@@ -159,11 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let cam2 = cam.clone();
-    tokio::task::spawn_blocking(move || {
-        cam2.lock().unwrap().acquisition_stop().unwrap();
-    })
-    .await?;
+    cam.acquisition_stop()?;
     println!("\nDemo complete. All operations succeeded without hardware.");
 
     Ok(())

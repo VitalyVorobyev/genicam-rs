@@ -41,6 +41,28 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo deny check
 
+      - name: Install mdBook
+        if: ${{ !cancelled() }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      # mdBook exits 0 even when a page fails to build — a missing
+      # `{{#include}}` target logs `[ERROR]` and publishes the page anyway. So
+      # the exit code is not the gate; the log is.
+      #
+      # This does not cover a missing *anchor*, which mdBook renders as an empty
+      # code block with no diagnostic whatsoever. The `book_includes` test in
+      # `viva-genicam` covers that, and runs under `cargo test` on the matrix.
+      - name: Build the book
+        if: ${{ !cancelled() }}
+        run: |
+          mdbook build book 2>&1 | tee mdbook.log
+          if grep -q '\[ERROR\]' mdbook.log; then
+            echo "::error::mdbook reported errors while building the book"
+            exit 1
+          fi
+
   build:
     strategy:
       fail-fast: false

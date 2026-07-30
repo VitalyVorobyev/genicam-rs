@@ -123,6 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         device.ip
     );
 
+    // ANCHOR: stream
     // Connect to camera (fetches XML, builds nodemap).
     let mut camera = connect_gige(&device).await?;
 
@@ -150,13 +151,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start acquisition.
     camera.acquisition_start()?;
+    // ANCHOR_END: stream
 
     let stats = frame_stream.stats_handle();
     let mut last_overlay = Instant::now();
     let mut frame_index = 0usize;
     let mut save_remaining = args.save;
 
-    // Main acquisition loop - dramatically simplified!
+    // ANCHOR: frame_loop
+    // `next_frame` yields a fully reassembled frame; packet-level bookkeeping
+    // stays inside `FrameStream`. `None` means the stream ended.
     while let Some(frame) = frame_stream.next_frame().await? {
         frame_index += 1;
         print_frame_info(frame_index, &frame);
@@ -182,6 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     camera.acquisition_stop()?;
+    // ANCHOR_END: frame_loop
     println!("Capture stopped after {} frames.", frame_index);
     Ok(())
 }

@@ -1,66 +1,78 @@
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+//! Read and write a GenApi feature by name on the first camera discovered.
+//!
+//! ```bash
+//! cargo run -p viva-genicam --example get_set_feature
+//! cargo run -p viva-genicam --example get_set_feature -- --name Gain --value 3.0
+//! ```
+//!
+//! The equivalent from the command line is `viva-camctl get --ip <IP> --name
+//! <FEATURE>` / `viva-camctl set --ip <IP> --name <FEATURE> --value <VALUE>`.
+
+use std::env;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
-use viva_genapi_xml::{self, XmlError};
-use viva_genicam::gige::GVCP_PORT;
+use viva_genicam::{connect_gige, gige};
 
-fn format_mac(mac: &[u8; 6]) -> String {
-    mac.iter()
-        .map(|b| format!("{b:02X}"))
-        .collect::<Vec<_>>()
-        .join(":")
+fn parse_args() -> (String, Option<String>) {
+    let mut args = env::args().skip(1);
+    let mut name = "ExposureTime".to_string();
+    let mut value: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--name" => {
+                if let Some(next) = args.next() {
+                    name = next;
+                }
+            }
+            "--value" => {
+                value = args.next();
+            }
+            _ => {}
+        }
+    }
+    (name, value)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    let timeout = Duration::from_millis(500);
-    let mut devices = viva_genicam::gige::discover(timeout).await?;
+    let (name, value) = parse_args();
+
+    let mut devices = gige::discover(Duration::from_millis(500)).await?;
     if devices.is_empty() {
         println!("No cameras found.");
         return Ok(());
     }
     let device = devices.remove(0);
-    println!("Connecting to {} ({})", device.ip, format_mac(&device.mac));
-    let addr = SocketAddr::new(IpAddr::V4(device.ip), GVCP_PORT);
-    let camera = Arc::new(Mutex::new(
-        viva_genicam::gige::GigeDevice::open(addr).await?,
-    ));
+    println!("Connecting to {} ...", device.ip);
 
-    let xml = {
-        let cam = Arc::clone(&camera);
-        viva_genapi_xml::fetch_and_load_xml(move |address, length| {
-            let cam = Arc::clone(&cam);
-            async move {
-                let mut guard = cam.lock().await;
-                guard
-                    .read_mem(address, length)
-                    .await
-                    .map_err(|err| XmlError::Transport(err.to_string()))
-            }
-        })
-        .await?
-    };
-    println!("Fetched XML ({} bytes)", xml.len());
-    let meta = viva_genapi_xml::parse_into_minimal_nodes(&xml)?;
-    if let Some(version) = meta.schema_version.as_deref() {
-        println!("Schema version: {version}");
+    // ANCHOR: get_set
+    // `connect_gige` fetches the GenApi XML and builds the NodeMap, so every
+    // feature the camera declares is addressable by name from here on.
+    let mut camera = connect_gige(&device).await?;
+
+    // Feature access is synchronous even inside an async program: the register
+    // I/O behind it blocks, and `GigeRegisterIo` steps off the async worker on
+    // its own rather than making every caller do it.
+    println!("{name} = {}", camera.get(&name)?);
+
+    if let Some(value) = value.as_deref() {
+        camera.set(&name, value)?;
+        println!("{name} = {} (after write)", camera.get(&name)?);
     }
-    println!("Top level features ({}):", meta.top_level_features.len());
-    for feature in meta.top_level_features.iter().take(8) {
-        println!("  - {feature}");
-    }
-    if meta.top_level_features.len() > 8 {
-        println!("  ... ({} more)", meta.top_level_features.len() - 8);
+    // ANCHOR_END: get_set
+
+    // An enumeration knows which values it will accept; anything else answers
+    // with an error, which is the cheapest way to ask "is this an enum?".
+    if let Ok(entries) = camera.enum_entries(&name) {
+        println!("allowed values: {}", entries.join(", "));
     }
 
-    const DEVICE_VENDOR_NAME_REG: u64 = 0x0000_0000_0000_0048;
-    println!(
-        "Stub: would map register 0x{DEVICE_VENDOR_NAME_REG:016X} to a GenApi feature for DeviceVendorName"
-    );
-    println!("       -> read via camera.read_mem(...) and expose as string node");
+    // Access mode is evaluated live, so `pIsLocked` and `pIsAvailable` are
+    // already accounted for — a feature reported RO here will refuse a write.
+    if let Some(node) = camera.nodemap().node(&name) {
+        println!("kind: {}", node.kind_name());
+    }
 
     Ok(())
 }
