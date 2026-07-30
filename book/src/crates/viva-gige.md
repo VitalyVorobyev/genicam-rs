@@ -1,263 +1,245 @@
-# `viva-gige` — GigE Vision Transport (GVCP/GVSP)
+# `viva-gige` — GigE Vision transport (GVCP/GVSP)
 
-`viva-gige` implements GigE Vision transport primitives for **Windows, Linux, and macOS**:
+`viva-gige` implements the GigE Vision transport on Windows, Linux and macOS:
+discovery and control over **GVCP**, image data over **GVSP**, plus interface
+enumeration, event and action messages, and device-timestamp mapping.
 
-- **Discovery** (GVCP) bound to a specific local interface
-- **Control path** (GVCP register read/write, GenCP semantics)
-- **Events/Actions** (GVCP)
-- **Streaming** (GVSP) with reassembly, resend requests, MTU/packet-size negotiation, and basic stats
-
-This chapter explains concepts, config knobs, and usage patterns—both via CLI (`viva-camctl`) and via Rust APIs.
-
-> ⚠️ Names in the snippets reflect the crate import style `viva_gige` (Cargo package `viva-gige`). If an identifier differs in your codebase, adjust accordingly—we’ll keep this page updated as APIs stabilize.
+It sits below `viva-genapi` — this crate moves bytes, the NodeMap decides which
+bytes. Applications normally reach it through `viva-genicam`.
 
 ---
 
-## Feature matrix (current)
+## Module map
 
-| Area | Capability | Notes |
-|---|---|---|
-| Discovery | Broadcast on chosen NIC | Bind to local IPv4; IPv6 is out of scope for GEV |
-| Control | Register read/write | GVCP commands exposing GenCP-like semantics |
-| Events | Event channel | Optional; device → host notifications |
-| Actions | Action command | Host → device sync/trigger |
-| Streaming | GVSP receive | Frame reassembly, missing-packet detection |
-| Resend | GVCP resend requests | Windowed resend; vendor-dependent behavior |
-| MTU | Negotiation | 1500 default; jumbo frames if NIC/network allow |
-| Packet delay | Inter-packet gap | Avoids NIC/driver overrun; per-stream configurable |
-| Stats | Per-stream counters | Frames, drops, resends, latency basics |
+| Module | Contents |
+|---|---|
+| `gvcp` | `discover`, `discover_on_interface`, `discover_all`, `force_ip`, `DeviceInfo`, `GigeDevice`, `GigeError` |
+| `gvsp` | Packet parsing, frame reassembly, `StreamDest`, `StreamConfig`, chunk extraction |
+| `nic` | `Iface` — interface enumeration and selection |
+| `action` | `send_action`, `ActionParams`, `AckSummary` |
+| `message` | The event/message channel |
+| `stats` | `StreamStats` and its accumulator |
+| `time` | `TimeSync` — device ticks to host time |
 
 ---
 
 ## Selecting the local interface
 
-On multi-NIC hosts, **always bind** to the NIC connected to your camera network. Two common ways:
+On a multi-NIC host, bind to the NIC that reaches the camera. `Iface` offers
+four ways to get one, and the difference between them has caused real bugs:
 
-1. **By local IPv4** (recommended for scripts/CLI):
-```bash
-cargo run -p viva-camctl -- list --iface 192.168.0.5
-````
+```rust,ignore
+use viva_gige::nic::Iface;
 
-2. **By interface name** (if your API exposes it):
-
-```rust
-use viva_gige::net::InterfaceSelector;
-let sel = InterfaceSelector::ByName("Ethernet 2"); // or ByIpv4("192.168.0.5")
+Iface::from_system("eth0")?;                  // by interface name
+Iface::from_ipv4("192.168.0.5".parse()?)?;    // by *host* address
+Iface::from_remote_ipv4("192.168.0.10".parse()?)?; // by the *camera's* address
+Iface::list()?;                               // everything the library can see
 ```
 
-> Windows tip: run the first discovery as **Administrator** to let the firewall prompt appear and create inbound UDP rules.
+`from_ipv4` takes an address **on this host**. `from_remote_ipv4` takes the
+camera's address and probes the routing table for the interface that reaches
+it — which is what you want when all you have is the camera's IP. Passing a
+camera address to `from_ipv4` is the defect that made acquisition fail on real
+hardware in [#70](https://github.com/VitalyVorobyev/viva-genicam/issues/70): it
+only ever worked against the loopback fake, where the two addresses coincide.
+
+`Iface::list()` is also a diagnostic. It reports interfaces *as the library sees
+them*, which is not always the set the OS shows — on Windows, link-local
+`169.254.x.x` addresses were invisible until the `link-local` feature of
+`if-addrs` was enabled, and an interface missing from this list is invisible to
+discovery no matter what `ipconfig` says
+([#57](https://github.com/VitalyVorobyev/viva-genicam/issues/57)).
 
 ---
 
 ## Discovery (GVCP)
 
-Discovery sends a **broadcast GVCP** command and collects replies for a small window (e.g., 200–500 ms). Each reply yields a `DeviceInfo` record (IP, MAC, manufacturer, model, name, user name, serial, firmware version, etc.).
+A broadcast command, then replies collected for a timeout window. Each reply
+becomes a `DeviceInfo` with IP, MAC, manufacturer, model, version, serial and
+user-defined name.
 
-CLI:
+```rust
+{{#include ../../../crates/viva-genicam/examples/list_cameras.rs:discover}}
+```
+
+| Function | Scans |
+|---|---|
+| `discover(timeout)` | Every routable interface |
+| `discover_on_interface(timeout, name)` | One named interface |
+| `discover_all(timeout)` | Every interface **including loopback** |
+
+Use `discover_all` only for the [fake camera](../tutorials/fake-camera.md).
+One unusable interface no longer aborts the whole call, and a stray non-GVCP
+packet on the port no longer discards the replies already collected — both were
+real failure modes.
+
+From the CLI:
 
 ```bash
 cargo run -p viva-camctl -- list --iface 192.168.0.5
 ```
 
-Rust pattern:
-
-```rust
-use viva_gige::{discovery::discover_on, net::InterfaceSelector, Result};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let iface = InterfaceSelector::ByIpv4("192.168.0.5".parse().unwrap());
-    let devices = discover_on(iface).await?;
-    for d in devices { println!("{} {} @ {}", d.manufacturer, d.model, d.ip); }
-    Ok(())
-}
-```
-
-**Troubleshooting**
-
-* No devices found → check NIC, subnet, firewall, and that you chose the right interface.
-* Intermittent replies → disable NIC power saving; avoid Wi‑Fi for GEV.
-
 ---
 
-## Control path (GVCP register access)
+## Control (GVCP)
 
-Most GenICam features eventually map to **register reads/writes**. `viva-gige` provides helpers to open a control session and perform 8/16/32‑bit (and block) register operations.
+`GigeDevice` owns one control channel:
 
-CLI (examples):
+```rust,ignore
+use viva_gige::gvcp::{GigeDevice, GVCP_PORT};
+
+let mut device = GigeDevice::open(SocketAddr::new(camera_ip.into(), GVCP_PORT)).await?;
+device.claim_control().await?;
+
+let value = device.read_register(0x0a00).await?;
+device.write_register(0x0a00, value | 1).await?;
+
+let bytes = device.read_mem(0x0200, 512).await?;
+```
+
+`read_register`/`write_register` are 32-bit at a 32-bit address;
+`read_mem`/`write_mem` take a 64-bit address and a length, and chunk the
+transfer to fit the transport.
+
+### Control privilege and the heartbeat
+
+`claim_control()` takes the Control Channel Privilege. A device **revokes it**
+if no GVCP command arrives within `GevHeartbeatTimeout` — 3 000 ms is typical —
+and GVSP image traffic does not count towards that timer. A camera can therefore
+be streaming at full rate while the control channel times out, and the next
+write fails with `AccessDenied`.
+
+You do not have to manage this. `GigeRegisterIo` in `viva-genicam` owns a
+keepalive: it reads the device's own `GevHeartbeatTimeout` and pings at a
+quarter of it, so holding a `Camera` is enough. `heartbeat_timeout_ms()` and
+`ping_control_channel()` are here for anyone driving `GigeDevice` directly.
+
+### IP configuration
+
+`force_ip` assigns a temporary address to a camera identified by MAC — useful
+when a camera is on the wrong subnet and otherwise unreachable.
+`write_persistent_ip` and `enable_persistent_ip` make it survive a power cycle.
 
 ```bash
-# Read a named feature via the high-level stack
-cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
-
-# Write a value
-cargo run -p viva-camctl -- set --ip 192.168.0.10 --name ExposureTime --value 5000
-
-# Low-level register read (if exposed by CLI)
-cargo run -p viva-camctl -- peek --ip 192.168.0.10 --addr 0x0010_0200 --len 4
+cargo run -p viva-camctl -- set-ip --mac DE:AD:BE:EF:CA:FE --ip 192.168.1.100 --force
 ```
-
-Rust pattern (low‑level):
-
-```rust
-use viva_gige::{control::ControlClient, net::InterfaceSelector, Result};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let client = ControlClient::connect("192.168.0.10".parse().unwrap(),
-                                        InterfaceSelector::ByIpv4("192.168.0.5".parse().unwrap())).await?;
-    let val = client.read_u32(0x0010_0200).await?;
-    client.write_u32(0x0010_0200, val | 0x1).await?;
-    Ok(())
-}
-```
-
-> Integrates with GenApi: higher layers (NodeMap) compute addressing (incl. **SwissKnife** expressions and selectors) and call into the control client.
 
 ---
 
-## Events & Actions (GVCP)
+## Events and actions
 
-* **Events**: device → host notifications (e.g., exposure end). Enable in the device, bind a socket, and poll/await event messages.
-* **Actions**: host → many devices synchronization (same action ID). Configure device keys and send an action command with a **scheduled timestamp** if supported.
+- **Events** are device-to-host notifications on the message channel (exposure
+  end, and vendor-defined ones). `set_message_destination` points the device at
+  a host socket; `viva_genicam::EventStream` presents the result.
+- **Actions** are host-to-many-devices: `send_action` broadcasts an action
+  command so several cameras trigger together, optionally at a scheduled
+  timestamp. `AckSummary` reports which devices acknowledged.
 
-> Behavior varies by vendor; keep time bases consistent if you schedule actions.
+Both are vendor-variable. If you schedule actions, keep the time bases
+consistent — see `TimeSync` below.
 
 ---
 
 ## Streaming (GVSP)
 
-A GVSP receiver must:
+The receiver negotiates stream parameters on the control channel, then receives
+UDP packets and reassembles frames by block ID.
 
-1. **Negotiate** stream parameters (channel, packet size, destination host/port).
-2. **Receive** UDP packets and reassemble frames by **block ID**.
-3. **Detect loss**, trigger **resend** via GVCP, and time out stale frames.
-4. Optionally parse **chunk data** after the image payload.
-
-CLI (basic):
-
-```bash
-# Auto-negotiate packet size and store first 2 frames
-cargo run -p viva-camctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --auto --save 2
-```
-
-Rust pattern (high‑level sketch):
+Application code builds streams through `viva-genicam`, not this crate
+directly:
 
 ```rust
-use viva_gige::{stream::{StreamBuilder, ResendPolicy}, net::InterfaceSelector};
-
-let stream = StreamBuilder::new("192.168.0.10".parse().unwrap())
-    .interface(InterfaceSelector::ByIpv4("192.168.0.5".parse().unwrap()))
-    .packet_size_auto(true)                 // negotiate MTU / SCPS
-    .inter_packet_delay(Some(3500))         // ns or device units, per API
-    .resend_policy(ResendPolicy::Windowed { max_attempts: 2, window_packets: 64 })
-    .socket_rcvbuf_bytes(16 * 1024 * 1024)  // increase OS receive buffer
-    .build()
-    .await?;
-
-while let Some(frame) = stream.next().await { /* reassembled frame bytes + metadata */ }
+{{#include ../../../crates/viva-genicam/examples/grab_gige.rs:stream}}
 ```
+
+`StreamBuilder` (in `viva_genicam::stream`) exposes `iface`, `dest`,
+`auto_packet_size`, `target_mtu`, `packet_size`, `packet_delay`,
+`destination_port`, `multicast`, `rcvbuf_bytes` and `channel`. `FrameStream`
+wraps the result and yields whole frames.
+
+### Packet size and MTU
+
+`GevSCPSPacketSize` is the size of the transmitted **IP packet**, so it must fit
+the path MTU end to end. `auto_packet_size(true)` negotiates it. Two caveats
+worth knowing:
+
+- Cameras **clamp** a size they cannot honour, and the library does not read the
+  value back yet (backlog SR-02). If throughput does not match what you set,
+  read `GevSCPSPacketSize` back with `viva-camctl get`.
+- On a large-MTU link the requested size must still be clamped to the IPv4
+  maximum. Linux loopback reports MTU 65536, which would produce a
+  65 508-byte datagram against the 65 507-byte limit — every `send_to` fails.
 
 ### Resend
 
-* **Windowed** resend: track missing packet ranges within a frame and request them once or twice.
-* **Cut‑loss threshold**: abandon a frame when late/missing packets exceed a limit to avoid backpressure.
+GVSP defines packet resend, and the pieces exist here — `ResendPlanner`,
+`coalesce_missing`, `GigeDevice::request_resend`. **They are not wired into the
+receive path** (backlog SR-04). Nothing in a live stream requests a resend, and
+nothing increments the `resends` counter, so a summary reading `resends=0` means
+"not implemented" rather than "none were needed". `drops` is the number to
+watch. This section changes when resend lands.
 
-### MTU & Packet Size
+### Chunk data
 
-* Start with **1500 MTU**. If NIC/network support jumbo frames, negotiate **8–9 kB** packet size for fewer syscalls.
-* Ensure **both camera and NIC** are configured for the desired MTU.
+With `ChunkModeActive` set, the payload carries the image followed by chunk
+blocks (`[id][reserved][length][data]`). `parse_chunks` extracts them and skips
+what it does not recognise; `viva_genicam::ChunkMap` maps the known ones
+(timestamp, exposure, gain) to typed values.
 
-### Inter‑packet Delay (IPD)
+### Statistics
 
-* Add a small delay between packets at the source to prevent RX ring overflow on the host/NIC.
-* Useful on older NICs, laptops, and Windows where socket buffers may be smaller.
-
-### Socket buffers
-
-* Increase `SO_RCVBUF` to 8–32 MiB on the receive socket when streaming high‑rate video.
-* On Linux, `net.core.rmem_max` may cap this; on Windows/macOS, OS caps also apply.
-
-### Chunk mode
-
-* When **chunks** are enabled, the payload contains **image** followed by one or more **chunk blocks** (ID, length, data).
-* Parsers should skip unknown chunk IDs gracefully.
-
-### Timestamp mapping
-
-* Many devices expose a **tick counter**. Keep a linear mapping `(tick → host time)` using the first packets of each frame or periodic sync.
+`StreamStats` carries `frames`, `bytes`, `drops`, `packets`, `avg_fps`,
+`avg_mbps`, `avg_latency_ms` and the elapsed window. The resend and
+backpressure counters are inert for the reason above.
 
 ---
 
-## Configuration knobs (cheat sheet)
+## Timestamp mapping
 
-| Knob                       | Purpose                          | Typical value                    |
-| -------------------------- | -------------------------------- | -------------------------------- |
-| `--iface <IPv4>`           | Bind discovery/stream to NIC     | Your NIC IP, e.g., `192.168.0.5` |
-| `--packet-size` / `--auto` | Fixed vs. negotiated packet size | `--auto` first, then pin         |
-| `--ipd`                    | Inter‑packet delay               | 2000–8000 (units per API)        |
-| `--rcvbuf`                 | Socket receive buffer            | 8–32 MiB                         |
-| `--resend`                 | Resend policy                    | `windowed,max=2,win=64`          |
-| `--save N`                 | Write first N frames             | Debugging/validation             |
-
-> Map these to environment variables if you prefer config files for deployments.
+Devices report a tick counter, not wall-clock time. `TimeSync` maintains a
+linear mapping from device ticks to host `SystemTime`, calibrated by latching
+the device timestamp against a host reading. Without that calibration there is
+no origin to map from — so treat an uncalibrated host timestamp as absent
+rather than as data.
 
 ---
 
-## Error handling & logging
-
-Enable logs with `RUST_LOG`/`tracing_subscriber`:
+## Logging
 
 ```bash
-RUST_LOG=info,viva_gige=debug cargo run -p viva-camctl -- stream ...
+RUST_LOG=info,viva_gige=debug cargo run -p viva-camctl -- stream --ip 192.168.0.10
 ```
 
-Common categories:
-
-* `discovery` (binds, broadcast, replies)
-* `control` (register ops, timeouts)
-* `stream` (packet loss, reorder, resends, frame stats)
+`viva-camctl` maps `-v` to `debug` and `-vv` to `trace` if you would rather not
+set the variable. Useful targets: `viva_gige::gvcp` (binds, discovery, register
+ops), `viva_gige::gvsp` (packets, reassembly, frame stats), `viva_gige::nic`
+(interface enumeration and socket binding).
 
 ---
 
-## Windows specifics
+## Platform notes
 
-* **Firewall**: allow inbound UDP for discovery and the chosen stream port.
-* **Jumbo frames**: enable on the NIC Advanced settings (and on switches).
-* **Buffering**: larger `SO_RCVBUF` helps; keep system power plan on **High performance**.
+**Windows.** Allow inbound UDP for discovery and the stream port, for both the
+Private and Public firewall profiles. Enable jumbo frames in the NIC's advanced
+settings if the whole path supports them, and keep the power plan on high
+performance — receive buffers default low on many desktop NICs.
 
----
+**Linux.** With firewalld, GVCP replies arrive from source port 3956 and the
+GVSP port needs its own rule — see
+[Link-local (APIPA) cameras](../networking.md#3-link-local-apipa-cameras).
+`net.core.rmem_max` caps how far `rcvbuf_bytes` can go.
 
-## Minimal end‑to‑end example
-
-```rust
-use viva_gige::{discovery::discover_on, control::ControlClient, stream::StreamBuilder, net::InterfaceSelector};
-
-# #[tokio::main]
-# async fn main() -> anyhow::Result<()> {
-let iface = InterfaceSelector::ByIpv4("192.168.0.5".parse().unwrap());
-let devices = discover_on(iface).await?;
-let cam = devices.first().expect("no cameras");
-
-let ctrl = ControlClient::connect(cam.ip, iface).await?;
-// Example: ensure streaming is stopped before reconfiguring
-// ctrl.write_u32(REGISTER_ACQ_START_STOP, 0)?; // placeholder address
-
-let mut stream = StreamBuilder::new(cam.ip)
-    .interface(iface)
-    .packet_size_auto(true)
-    .socket_rcvbuf_bytes(16 * 1024 * 1024)
-    .build()
-    .await?;
-
-if let Some(frame) = stream.next().await { println!("got {} bytes", frame.bytes.len()); }
-# Ok(()) }
-```
+**Link-local.** GigE Vision cameras fall back to `169.254.0.0/16` when no DHCP
+server answers. That works, but the host needs an address in the same range and
+the firewall usually needs telling — the same networking chapter covers it.
 
 ---
 
 ## See also
 
-* [`viva-gencp`](viva-gencp.md): message layouts & helpers for control path
-* `viva-genapi-xml` and [`viva-genapi`](viva-genapi.md): NodeMap, selectors, **SwissKnife** evaluation
-* Tutorials: [Registers](../tutorials/registers.md), [Streaming](../tutorials/streaming.md)
+- [`viva-gencp`](viva-gencp.md) — the message layer GVCP carries
+- [`viva-genapi`](viva-genapi.md) — the NodeMap above this transport
+- Tutorials: [Discovery](../tutorials/discovery.md),
+  [Registers](../tutorials/registers.md), [Streaming](../tutorials/streaming.md)
+- [Networking Guide](../networking.md) — MTU, firewalls, link-local
