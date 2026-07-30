@@ -140,14 +140,139 @@ Use System Settings → Network:
 
 ⸻
 
-## 3. MTU and jumbo frames
+## 3. Link-local (APIPA) cameras
+
+A GigE Vision camera with no static IP and no DHCP server on the segment falls
+back to an IPv4 link-local address in `169.254.0.0/16` — what Windows calls
+APIPA. This is the normal state of a camera plugged straight into a host with
+nothing else configured, so it is worth knowing even if you plan to assign
+static addresses later.
+
+The library discovers such cameras on all platforms, but the **host** must hold
+a link-local address of its own first, and on Linux the firewall usually has to
+be told to let the reply back in.
+
+> Most of this section comes from a bring-up performed by
+> [@InsuJeong496](https://github.com/InsuJeong496) on a JAI FS-3200T-10GE-NNC
+> and written up in
+> [issue #57](https://github.com/VitalyVorobyev/viva-genicam/issues/57#issuecomment-5127958912).
+> Their results: discovery succeeded, the MAC parsed correctly, the GenApi XML
+> downloaded, 1 065 features loaded, and end-to-end streaming worked once the
+> two firewall rules below were in place — with no vendor driver installed.
+
+### 3.1. What is fixed and what is yours
+
+The single most useful thing in that report was the distinction between the
+values the protocol fixes and the values that belong to one particular machine.
+Copying an address out of someone else's guide is the usual reason these
+recipes fail.
+
+Fixed — do not change these:
+
+| Item | Value |
+|---|---|
+| IPv4 link-local network | `169.254.0.0/16` |
+| Directed broadcast for that network | `169.254.255.255` |
+| GVCP port on the camera | UDP `3956` |
+
+Yours — substitute your own:
+
+| Item | Where to get it |
+|---|---|
+| Host interface name | `ip -brief address` (Linux) |
+| Host link-local address | Let the OS assign one, or pick an unused `169.254.x.y` |
+| Camera address | Whatever `viva-camctl list` reports; it can change between sessions |
+| firewalld zone | `firewall-cmd --get-active-zones` |
+| GVSP destination port | `10040` unless you pass `--port` to `viva-camctl stream` |
+
+### 3.2. Giving the host a link-local address (Linux)
+
+Normally NetworkManager assigns one automatically when a link comes up with no
+DHCP answer. If it has not, add one by hand:
+
+```bash
+# Replace enp9s0f3u3 with your camera NIC. Keep the /16 and the broadcast.
+sudo ip address add 169.254.105.107/16 \
+  broadcast 169.254.255.255 \
+  dev enp9s0f3u3
+```
+
+Check what an interface currently has:
+
+```bash
+ip -brief address
+```
+
+Once the host has a link-local address, discovery sends its directed broadcast
+to `169.254.255.255:3956`.
+
+On Windows this step is normally automatic — an adapter with no DHCP lease
+self-assigns a `169.254.x.y` address. On macOS the same is true, though see the
+MTU note in [§4](#4-mtu-and-jumbo-frames): jumbo frames cannot be selected there.
+
+### 3.3. Letting the reply back in (firewalld)
+
+The most common symptom is that discovery finds nothing while the camera is
+plainly on the link. The camera answers *from* UDP port 3956 to whatever
+ephemeral port the client bound, so a default-deny inbound policy drops the ACK
+and discovery simply times out.
+
+Find the zone that owns the camera interface, then allow that source port:
+
+```bash
+firewall-cmd --get-active-zones
+
+sudo firewall-cmd --zone=public \
+  --add-rich-rule='rule family="ipv4" source address="169.254.0.0/16" source-port port="3956" protocol="udp" accept'
+```
+
+Replace `public` with your zone. Keep `169.254.0.0/16` and `3956`.
+
+Streaming needs a second rule, because GVSP arrives on the port the host asked
+the camera to send to — `10040` by default:
+
+```bash
+sudo firewall-cmd --zone=public --add-port=10040/udp
+```
+
+If you override the port, allow the one you actually use:
+
+```bash
+viva-camctl stream --ip <camera-ip> --iface <host-link-local-ip> --port <PORT>
+sudo firewall-cmd --zone=<your-zone> --add-port=<PORT>/udp
+```
+
+**These are runtime rules.** They vanish on the next firewall reload or reboot
+unless you repeat them with `--permanent`.
+
+### 3.4. Checking it worked
+
+```bash
+viva-camctl --iface <host-link-local-ip> list
+```
+
+At `-v` the discovery log names the interface it sent from and the address it
+heard back from:
+
+```text
+INFO sending GVCP discovery interface_name=enp9s0f3u3 local=169.254.105.107 dest=169.254.255.255:3956
+INFO received GVCP response interface_name=enp9s0f3u3 src=169.254.253.222:3956
+```
+
+If the first line is missing, the host has no link-local address on that NIC
+(§3.2). If the first line appears but the second never does, suspect the
+firewall (§3.3).
+
+⸻
+
+## 4. MTU and jumbo frames
 
 MTU (Maximum Transmission Unit) determines the largest Ethernet frame size.
 Standard MTU is 1500 bytes; jumbo frames extend this (e.g. 9000 bytes). For
 large images, jumbo frames can significantly reduce protocol overhead and CPU
 load.  ￼
 
-### 3.1. When to care
+### 4.1. When to care
 
 You probably need to look at MTU when:
 - Frame sizes are large (multi-megapixel).
@@ -157,7 +282,7 @@ You probably need to look at MTU when:
 For simple bring-up and low/moderate data rates, standard MTU=1500 usually
 works.
 
-### 3.2. Enabling jumbo frames
+### 4.2. Enabling jumbo frames
 
 All components in the path must agree:
 - Camera
@@ -186,7 +311,7 @@ and check that TX/RX MTU matches your expectation.
 
 ⸻
 
-## 4. Packet delay and flow control
+## 5. Packet delay and flow control
 
 Some cameras allow configuring inter-packet delay or packet interval:
 - Without delay:
@@ -206,7 +331,7 @@ also be used to ease pressure on the network at the cost of lower peak FPS.  ￼
 
 ⸻
 
-## 5. Multi-camera considerations
+## 6. Multi-camera considerations
 
 When running multiple cameras:
 - Total throughput is roughly the sum of each camera’s stream.
@@ -231,7 +356,7 @@ Monitor:
 
 ⸻
 
-## 6. Using --iface and discovery quirks
+## 7. Using --iface and discovery quirks
 
 On systems with more than one active NIC, automatic interface selection might
 pick the wrong one.
@@ -247,11 +372,11 @@ If discovery only works when you specify --iface, but not without it:
 
 ⸻
 
-## 7. Troubleshooting checklist
+## 8. Troubleshooting checklist
 
 Use this checklist when things don’t work as expected.
 
-### 7.1. Discovery fails
+### 8.1. Discovery fails
 
 See also the troubleshooting section in Discovery￼.
 - Check link LEDs on camera, switch, and NIC.
@@ -264,7 +389,14 @@ See also the troubleshooting section in Discovery￼.
     - Disable other NICs to simplify routing.
     - Try a direct cable instead of a switch.
 
-### 7.2. Streaming is unstable (drops / resends)
+If the camera has a `169.254.x.y` address, go to
+[§3 Link-local (APIPA) cameras](#3-link-local-apipa-cameras) instead — the
+causes there are specific and the fixes are two commands.
+
+If none of this helps, the camera itself is the evidence we need:
+see [Reporting a camera we can't open](./reporting.md).
+
+### 8.2. Streaming is unstable (drops / resends)
 - Check MTU vs packet size; avoid exceeding path MTU.
 - For high data rates:
     - Enable jumbo frames end-to-end (camera, switch, NIC).
@@ -276,7 +408,7 @@ See also the troubleshooting section in Discovery￼.
     - Better NIC / driver.
     - Moving processing off to another thread / core.
 
-### 7.3. Vendor tool works, viva-genicam does not
+### 8.3. Vendor tool works, viva-genicam does not
 Compare:
 - Which NIC / IP the vendor tool uses.
    - The camera’s configured stream destination (IP/port).
@@ -287,7 +419,7 @@ Compare:
 
 ⸻
 
-8. Recap
+9. Recap
 
 After this chapter you should:
 	•	Understand basic GigE Vision network topologies and when to use each.

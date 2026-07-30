@@ -25,6 +25,7 @@
 - [Testing & Dev Environment](testing.md)
 - [Contributing](contributing.md)
 - [FAQ & Troubleshooting](faq.md)
+- [Reporting a camera we can't open](reporting.md)
 - [API reference](api.md)
 - [Glossary](glossary.md)
 - [License & Acknowledgements](license.md)
