@@ -347,8 +347,9 @@ const MAX_IPV4_PACKET_SIZE: u32 = 65535;
 /// `packet_size - (IP + UDP + GVSP headers)` and so excludes L2 from the
 /// negotiated value (`ARV_GVSP_PACKET_PROTOCOL_OVERHEAD`).
 ///
-/// The MTU is clamped to [`MAX_IPV4_PACKET_SIZE`] because an unclamped value is
-/// not merely suboptimal, it is unsendable: on Linux loopback (MTU 65536) the
+/// The MTU is clamped to 65535, the largest an IPv4 datagram can be, because an
+/// unclamped value is not merely suboptimal, it is unsendable: on Linux
+/// loopback (MTU 65536) the
 /// sender would build a `65536 - 36` byte payload and a 65508-byte UDP datagram,
 /// one byte past the 65507-byte maximum, and `send_to` fails for every packet.
 pub fn best_packet_size(mtu: u32) -> u32 {

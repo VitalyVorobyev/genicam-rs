@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
-use viva_gencp::{CommandFlags, OpCode, StatusCode};
+use viva_gencp::{CommandFlags, OpCode, PENDING_ACK_COMMAND, StatusCode};
 
 use crate::U3vError;
 use crate::usb::UsbTransfer;
@@ -25,11 +25,41 @@ const ACK_PREFIX: u32 = 0x4356_3341;
 /// Size of the U3V command/ack prefix in bytes.
 const PREFIX_SIZE: usize = 12;
 
-/// Status code indicating the device needs more time (PENDING_ACK).
-const STATUS_PENDING_ACK: u16 = 0x8006;
-
 /// Maximum number of PENDING_ACK loops before giving up.
 const MAX_PENDING_RETRIES: usize = 100;
+
+/// Upper bound on a single pending-acknowledge wait.
+///
+/// A device asking for more time should not be able to park a control
+/// transaction indefinitely, and `MAX_PENDING_RETRIES` alone does not bound
+/// the total wait.
+const MAX_PENDING_WAIT: Duration = Duration::from_millis(10_000);
+
+/// Wait used when a pending-acknowledge carries no usable timeout field.
+const DEFAULT_PENDING_WAIT_MS: u64 = 100;
+
+/// Extract the requested wait from a pending-acknowledge SCD.
+///
+/// Layout is 2 reserved bytes followed by a little-endian `u16` of
+/// milliseconds — the GenCP framing is little-endian throughout, and aravis
+/// reads the same field the same way (`ArvUvcpPendingAckInfos` is
+/// `{ guint16 unknown; guint16 timeout; }`, read with `GUINT16_FROM_LE`).
+///
+/// The previous reading took all four bytes as a **big-endian `u32`**, which
+/// is wrong in both offset and byte order: a device asking for 1 000 ms sends
+/// `00 00 E8 03`, which that reading turned into 59 395 ms. See backlog TC-12
+/// for the GVCP side of the same field, which is still unsettled against
+/// hardware.
+fn pending_ack_timeout_ms(scd: &[u8]) -> u64 {
+    if scd.len() < 4 {
+        return DEFAULT_PENDING_WAIT_MS;
+    }
+    let requested = u16::from_le_bytes([scd[2], scd[3]]) as u64;
+    if requested == 0 {
+        return DEFAULT_PENDING_WAIT_MS;
+    }
+    requested.min(MAX_PENDING_WAIT.as_millis() as u64)
+}
 
 /// Default control channel timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -184,23 +214,31 @@ impl<T: UsbTransfer> ControlChannel<T> {
                 )));
             }
 
+            // A pending-acknowledge is identified by its command id, before
+            // the status is consulted at all: its status is `SUCCESS`, so
+            // status-first dispatch would accept it as the real answer and
+            // return its timeout SCD as register data. aravis orders the two
+            // checks the same way (`arvuvdevice.c`).
+            if ack.command == PENDING_ACK_COMMAND {
+                let wait_ms = pending_ack_timeout_ms(&ack.payload);
+                tracing::debug!(wait_ms, "PENDING_ACK, extending deadline");
+                std::thread::sleep(Duration::from_millis(wait_ms));
+                continue;
+            }
+
+            // Anything else must be the acknowledgement for the command we
+            // sent. Without this the request id alone was the only guard, so
+            // any other ack that happened to carry a matching id was accepted.
+            if ack.command != opcode.ack_code() {
+                return Err(U3vError::Protocol(format!(
+                    "unexpected acknowledgement command {:#06x}, expected {:#06x}",
+                    ack.command,
+                    opcode.ack_code()
+                )));
+            }
+
             match ack.status {
                 StatusCode::Success => return Ok(ack.payload),
-                StatusCode::Unknown(STATUS_PENDING_ACK) => {
-                    let wait_ms = if ack.payload.len() >= 4 {
-                        u32::from_be_bytes([
-                            ack.payload[0],
-                            ack.payload[1],
-                            ack.payload[2],
-                            ack.payload[3],
-                        ]) as u64
-                    } else {
-                        100
-                    };
-                    tracing::debug!(wait_ms, "PENDING_ACK, waiting");
-                    std::thread::sleep(Duration::from_millis(wait_ms));
-                    continue;
-                }
                 status => return Err(U3vError::Status { status }),
             }
         }
@@ -243,6 +281,13 @@ fn encode_command(opcode: OpCode, flags: CommandFlags, request_id: u16, payload:
 /// Decoded U3V acknowledgement fields.
 struct AckPacket {
     status: StatusCode,
+    /// The acknowledgement's command id.
+    ///
+    /// Must be kept: a pending-acknowledge is distinguished from a real answer
+    /// by this field and not by `status`, which is `SUCCESS` on both. This was
+    /// previously discarded, so a pending-ack's timeout SCD was returned to
+    /// the caller as if it were register data.
+    command: u16,
     request_id: u16,
     payload: Vec<u8>,
 }
@@ -264,7 +309,7 @@ fn decode_ack(buf: &[u8]) -> Result<AckPacket, U3vError> {
     }
 
     let status_raw = u16::from_le_bytes([buf[4], buf[5]]);
-    let _opcode = u16::from_le_bytes([buf[6], buf[7]]);
+    let command = u16::from_le_bytes([buf[6], buf[7]]);
     let length = u16::from_le_bytes([buf[8], buf[9]]) as usize;
     let request_id = u16::from_le_bytes([buf[10], buf[11]]);
 
@@ -281,6 +326,7 @@ fn decode_ack(buf: &[u8]) -> Result<AckPacket, U3vError> {
 
     Ok(AckPacket {
         status,
+        command,
         request_id,
         payload,
     })
@@ -299,11 +345,25 @@ mod tests {
     const EP_IN: u8 = 0x81;
 
     /// Build a mock ack response with the given status, request_id, and payload.
-    fn build_ack(status: StatusCode, request_id: u16, payload: &[u8]) -> Vec<u8> {
+    // Acknowledgement command ids, so fixtures can name the command they are
+    // impersonating without burying it in `OpCode::…::ack_code()` noise.
+    const ACK_READ_REG: u16 = OpCode::ReadRegister.ack_code();
+    const ACK_WRITE_REG: u16 = OpCode::WriteRegister.ack_code();
+    const ACK_READ_MEM: u16 = OpCode::ReadMem.ack_code();
+    const ACK_WRITE_MEM: u16 = OpCode::WriteMem.ack_code();
+
+    /// Build an acknowledgement with an explicit command id.
+    ///
+    /// The command id used to be hardcoded to `ReadMem`'s, with the comment
+    /// "opcode doesn't matter for most tests" — which was true only because
+    /// `transact` ignored the field. It is exactly the assumption that let a
+    /// pending-acknowledge be accepted as a real answer, so every caller now
+    /// states the command it is impersonating.
+    fn build_ack(command: u16, status: StatusCode, request_id: u16, payload: &[u8]) -> Vec<u8> {
         let mut buf = BytesMut::with_capacity(PREFIX_SIZE + payload.len());
         buf.put_u32_le(ACK_PREFIX);
         buf.put_u16_le(status.to_raw());
-        buf.put_u16_le(OpCode::ReadMem.ack_code()); // opcode doesn't matter for most tests
+        buf.put_u16_le(command);
         buf.put_u16_le(payload.len() as u16);
         buf.put_u16_le(request_id);
         buf.extend_from_slice(payload);
@@ -351,7 +411,7 @@ mod tests {
     #[test]
     fn decode_ack_success() {
         let payload = vec![0x01, 0x02, 0x03, 0x04];
-        let buf = build_ack(StatusCode::Success, 0x0042, &payload);
+        let buf = build_ack(ACK_READ_MEM, StatusCode::Success, 0x0042, &payload);
         let ack = decode_ack(&buf).unwrap();
         assert_eq!(ack.status, StatusCode::Success);
         assert_eq!(ack.request_id, 0x0042);
@@ -360,7 +420,7 @@ mod tests {
 
     #[test]
     fn decode_ack_bad_prefix() {
-        let mut buf = build_ack(StatusCode::Success, 0x0001, &[]);
+        let mut buf = build_ack(ACK_READ_MEM, StatusCode::Success, 0x0001, &[]);
         // Corrupt prefix
         buf[0] = 0xFF;
         assert!(decode_ack(&buf).is_err());
@@ -368,7 +428,7 @@ mod tests {
 
     #[test]
     fn decode_ack_truncated() {
-        let buf = build_ack(StatusCode::Success, 0x0001, &[1, 2, 3, 4]);
+        let buf = build_ack(ACK_READ_MEM, StatusCode::Success, 0x0001, &[1, 2, 3, 4]);
         // Truncate: send header but chop off payload
         assert!(decode_ack(&buf[..PREFIX_SIZE]).is_err());
     }
@@ -380,7 +440,12 @@ mod tests {
 
         // Enqueue a success ack with a 4-byte register value
         let value: u32 = 0xDEAD_BEEF;
-        let ack = build_ack(StatusCode::Success, 0x0000, &value.to_be_bytes());
+        let ack = build_ack(
+            ACK_READ_REG,
+            StatusCode::Success,
+            0x0000,
+            &value.to_be_bytes(),
+        );
         mock.enqueue_read(EP_IN, ack);
 
         let result = ch.read_register(0x0000_1000).unwrap();
@@ -398,7 +463,7 @@ mod tests {
         let mut ch = make_channel(&mock);
 
         // Enqueue success ack (empty payload is fine for write)
-        let ack = build_ack(StatusCode::Success, 0x0000, &[]);
+        let ack = build_ack(ACK_WRITE_REG, StatusCode::Success, 0x0000, &[]);
         mock.enqueue_read(EP_IN, ack);
 
         ch.write_register(0x0000_1000, 0x1234_5678).unwrap();
@@ -414,7 +479,7 @@ mod tests {
         let mut ch = make_channel(&mock);
 
         let data = vec![0xAA; 64];
-        let ack = build_ack(StatusCode::Success, 0x0000, &data);
+        let ack = build_ack(ACK_READ_MEM, StatusCode::Success, 0x0000, &data);
         mock.enqueue_read(EP_IN, ack);
 
         let result = ch.read_mem(0x0000_2000, 64).unwrap();
@@ -430,8 +495,14 @@ mod tests {
 
         let chunk1 = vec![0xAA; 36];
         let chunk2 = vec![0xBB; 28];
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0000, &chunk1));
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0001, &chunk2));
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_MEM, StatusCode::Success, 0x0000, &chunk1),
+        );
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_MEM, StatusCode::Success, 0x0001, &chunk2),
+        );
 
         let result = ch.read_mem(0x0000_3000, 64).unwrap();
         assert_eq!(result.len(), 64);
@@ -449,8 +520,14 @@ mod tests {
         // max_write_chunk = 48 - 12 - 8 = 28
         let mut ch = ControlChannel::new(Arc::clone(&mock), EP_IN, EP_OUT, 48, 1024);
 
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0000, &[]));
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0001, &[]));
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_WRITE_MEM, StatusCode::Success, 0x0000, &[]),
+        );
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_WRITE_MEM, StatusCode::Success, 0x0001, &[]),
+        );
 
         let data = vec![0xCC; 50]; // > 28, so needs 2 chunks
         ch.write_mem(0x0000_4000, &data).unwrap();
@@ -464,21 +541,29 @@ mod tests {
         let mock = Arc::new(MockUsbTransfer::new());
         let mut ch = make_channel(&mock);
 
-        // First ack: PENDING_ACK with 0ms wait
-        let pending_payload = 0u32.to_be_bytes();
+        // First ack: a real GenCP pending-acknowledge. Note the status is
+        // SUCCESS -- it is the command id that marks it -- and the SCD is
+        // 2 reserved bytes plus a little-endian u16 of milliseconds.
+        let pending_scd = [0x00, 0x00, 0x00, 0x00];
         mock.enqueue_read(
             EP_IN,
             build_ack(
-                StatusCode::Unknown(STATUS_PENDING_ACK),
+                PENDING_ACK_COMMAND,
+                StatusCode::Success,
                 0x0000,
-                &pending_payload,
+                &pending_scd,
             ),
         );
         // Second ack: success
         let value = 0x1234_5678u32;
         mock.enqueue_read(
             EP_IN,
-            build_ack(StatusCode::Success, 0x0000, &value.to_be_bytes()),
+            build_ack(
+                ACK_READ_REG,
+                StatusCode::Success,
+                0x0000,
+                &value.to_be_bytes(),
+            ),
         );
 
         let result = ch.read_register(0x0000_5000).unwrap();
@@ -490,7 +575,10 @@ mod tests {
         let mock = Arc::new(MockUsbTransfer::new());
         let mut ch = make_channel(&mock);
 
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::InvalidAddress, 0x0000, &[]));
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_REG, StatusCode::InvalidAddress, 0x0000, &[]),
+        );
 
         let err = ch.read_register(0xFFFF_FFFF).unwrap_err();
         assert!(matches!(
@@ -502,13 +590,90 @@ mod tests {
     }
 
     #[test]
+    fn pending_ack_scd_is_a_little_endian_u16_after_two_reserved_bytes() {
+        // A device asking for 1000 ms sends 00 00 E8 03.
+        assert_eq!(pending_ack_timeout_ms(&[0x00, 0x00, 0xE8, 0x03]), 1000);
+        // The previous reading took all four bytes as a big-endian u32, which
+        // turned that same request into a 59-second sleep.
+        assert_ne!(
+            pending_ack_timeout_ms(&[0x00, 0x00, 0xE8, 0x03]),
+            u32::from_be_bytes([0x00, 0x00, 0xE8, 0x03]) as u64
+        );
+        // Too short, and zero, fall back rather than busy-looping.
+        assert_eq!(pending_ack_timeout_ms(&[0x00]), DEFAULT_PENDING_WAIT_MS);
+        assert_eq!(
+            pending_ack_timeout_ms(&[0x00, 0x00, 0x00, 0x00]),
+            DEFAULT_PENDING_WAIT_MS
+        );
+        // A device cannot park the transaction indefinitely.
+        assert_eq!(
+            pending_ack_timeout_ms(&[0x00, 0x00, 0xFF, 0xFF]),
+            MAX_PENDING_WAIT.as_millis() as u64
+        );
+    }
+
+    #[test]
+    fn access_denied_is_reported_not_retried_as_pending() {
+        // 0x8006 used to be read as "device needs more time", so a refusal was
+        // slept over 100 times and then reported as a timeout. It is
+        // ACCESS_DENIED -- exactly what #45's FLIR returned on a locked node.
+        let mock = Arc::new(MockUsbTransfer::new());
+        let mut ch = make_channel(&mock);
+
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_REG, StatusCode::AccessDenied, 0x0000, &[]),
+        );
+
+        let err = ch.read_register(0x0000_1000).unwrap_err();
+        assert!(matches!(
+            err,
+            U3vError::Status {
+                status: StatusCode::AccessDenied
+            }
+        ));
+        // One exchange, not 100.
+        assert_eq!(mock.take_writes(EP_OUT).len(), 1);
+    }
+
+    #[test]
+    fn acknowledgement_for_another_command_is_rejected() {
+        // The request id alone used to be the only guard, so any ack carrying a
+        // matching id was accepted and its payload returned as register data.
+        let mock = Arc::new(MockUsbTransfer::new());
+        let mut ch = make_channel(&mock);
+
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(
+                ACK_WRITE_MEM,
+                StatusCode::Success,
+                0x0000,
+                &0xDEAD_BEEFu32.to_be_bytes(),
+            ),
+        );
+
+        let err = ch.read_register(0x0000_1000).unwrap_err();
+        assert!(
+            matches!(err, U3vError::Protocol(ref msg) if msg.contains("unexpected acknowledgement command")),
+            "expected a protocol error naming the command, got {err:?}"
+        );
+    }
+
+    #[test]
     fn request_id_increments() {
         let mock = Arc::new(MockUsbTransfer::new());
         let mut ch = make_channel(&mock);
 
         // Two reads, request ID should increment
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0000, &[0; 4]));
-        mock.enqueue_read(EP_IN, build_ack(StatusCode::Success, 0x0001, &[0; 4]));
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_REG, StatusCode::Success, 0x0000, &[0; 4]),
+        );
+        mock.enqueue_read(
+            EP_IN,
+            build_ack(ACK_READ_REG, StatusCode::Success, 0x0001, &[0; 4]),
+        );
 
         ch.read_register(0x1000).unwrap();
         ch.read_register(0x2000).unwrap();

@@ -262,7 +262,7 @@ pub enum GigeError {
     Timeout,
     #[error("GenCP: {0}")]
     GenCp(#[from] viva_gencp::GenCpError),
-    #[error("device reported status {0:?}")]
+    #[error("device reported status {0}")]
     Status(StatusCode),
 }
 
@@ -897,8 +897,14 @@ impl GigeDevice {
                     }
                     match ack.header.status {
                         StatusCode::Success => return Ok(ack),
-                        StatusCode::DeviceBusy if attempt < consts::MAX_RETRIES => {
-                            warn!(request_id, attempt, "device busy, retrying");
+                        // Only `BUSY` (0x8007) is congestion. This used to
+                        // match `DeviceBusy`, which was mapped to 0x8004 —
+                        // `WRITE_PROTECT` — so the retry loop burned its
+                        // budget on a read-only register that could never
+                        // accept the write, and gave up immediately on the
+                        // one status retrying is for.
+                        status if status.is_retryable() && attempt < consts::MAX_RETRIES => {
+                            warn!(request_id, attempt, %status, "device busy, retrying");
                             self.backoff(attempt).await;
                             payload = BytesMut::from(&payload_bytes[..]);
                             continue;
@@ -1517,6 +1523,96 @@ mod tests {
         assert_eq!(server.await.expect("join"), 1, "command must not be resent");
     }
 
+    /// A device that answers `error_replies` commands with `status_raw` and
+    /// then, if it is asked again, succeeds. Returns the number of commands it
+    /// received, which is what distinguishes "retried" from "reported".
+    async fn status_device(
+        status_raw: u16,
+        error_replies: usize,
+    ) -> (SocketAddr, tokio::task::JoinHandle<usize>) {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let addr = sock.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            let mut commands = 0usize;
+            loop {
+                let recv =
+                    time::timeout(Duration::from_millis(600), sock.recv_from(&mut buf)).await;
+                let Ok(Ok((_len, peer))) = recv else { break };
+                commands += 1;
+                let request_id = u16::from_be_bytes([buf[6], buf[7]]);
+                let mut ack = Vec::new();
+                if commands <= error_replies {
+                    ack.extend_from_slice(&status_raw.to_be_bytes());
+                    ack.extend_from_slice(&0x0081u16.to_be_bytes());
+                    ack.extend_from_slice(&0u16.to_be_bytes());
+                    ack.extend_from_slice(&request_id.to_be_bytes());
+                } else {
+                    ack.extend_from_slice(&0u16.to_be_bytes());
+                    ack.extend_from_slice(&0x0081u16.to_be_bytes());
+                    ack.extend_from_slice(&4u16.to_be_bytes());
+                    ack.extend_from_slice(&request_id.to_be_bytes());
+                    ack.extend_from_slice(&0xCAFEBABEu32.to_be_bytes());
+                }
+                sock.send_to(&ack, peer).await.expect("send ack");
+            }
+            commands
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn busy_is_retried() {
+        // 0x8007 BUSY is congestion: the command can succeed if asked again.
+        let (addr, server) = status_device(0x8007, 1).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let value = device.read_register(0x0a00).await.expect("read register");
+        assert_eq!(value, 0xCAFEBABE);
+        assert_eq!(
+            server.await.expect("join"),
+            2,
+            "BUSY must be retried, so the device sees a second command"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_protect_is_reported_not_retried() {
+        // 0x8004 WRITE_PROTECT is permanent. It used to be decoded as
+        // `DeviceBusy`, so the retry loop spent its whole budget on a register
+        // that could never accept the write.
+        let (addr, server) = status_device(0x8004, usize::MAX).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let err = device
+            .read_register(0x0a00)
+            .await
+            .expect_err("write protect must surface");
+        assert!(
+            matches!(err, GigeError::Status(StatusCode::WriteProtect)),
+            "expected WRITE_PROTECT, got {err:?}"
+        );
+        assert_eq!(
+            server.await.expect("join"),
+            1,
+            "a permanent refusal must not be retried"
+        );
+    }
+
+    #[tokio::test]
+    async fn access_denied_names_itself_in_the_error() {
+        // The #45 case: the user saw `Unknown(32774)` and could tell us nothing.
+        let (addr, server) = status_device(0x8006, usize::MAX).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let err = device
+            .read_register(0x0a00)
+            .await
+            .expect_err("access denied must surface");
+        assert_eq!(
+            err.to_string(),
+            "device reported status ACCESS_DENIED (0x8006)"
+        );
+        assert_eq!(server.await.expect("join"), 1);
+    }
+
     #[test]
     fn request_header_roundtrip() {
         let header = GvcpRequestHeader {
@@ -1563,13 +1659,13 @@ mod tests {
     #[test]
     fn ack_header_conversion() {
         let ack = AckHeader {
-            status: StatusCode::DeviceBusy,
+            status: StatusCode::Busy,
             opcode: OpCode::ReadMem,
             length: 12,
             request_id: 0x44,
         };
         let converted = GvcpAckHeader::from(ack);
-        assert_eq!(converted.status, StatusCode::DeviceBusy);
+        assert_eq!(converted.status, StatusCode::Busy);
         assert_eq!(converted.command, OpCode::ReadMem.ack_code());
         assert_eq!(converted.length, 12);
         assert_eq!(converted.request_id, 0x44);
