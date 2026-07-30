@@ -37,7 +37,9 @@ dependencies = [
 
 [project.scripts]
 # The Rust CLI, linked into the extension module rather than shipped as a
-# separate binary — one artifact, and it works on every target and from an sdist.
+# separate per-target binary: one artifact, and the console script comes from
+# the same entry-point mechanism whether the install is from a wheel or built
+# from the sdist.
 viva-camctl = "viva_genicam._camctl:main"
 
 [project.optional-dependencies]
