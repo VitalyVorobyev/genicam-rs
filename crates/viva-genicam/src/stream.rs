@@ -578,20 +578,32 @@ fn windows_frame_receiver(
             let _ = tx.try_send(Err(GenicamError::transport(format!(
                 "socket conversion failed: {err}"
             ))));
-            return WindowsReceiver { frames: rx, stop, join: None };
+            return WindowsReceiver {
+                frames: rx,
+                stop,
+                join: None,
+            };
         }
     };
     if let Err(err) = socket.set_nonblocking(false) {
         let _ = tx.try_send(Err(GenicamError::transport(format!(
             "set blocking mode failed: {err}"
         ))));
-        return WindowsReceiver { frames: rx, stop, join: None };
+        return WindowsReceiver {
+            frames: rx,
+            stop,
+            join: None,
+        };
     }
     if let Err(err) = socket.set_read_timeout(Some(Duration::from_millis(100))) {
         let _ = tx.try_send(Err(GenicamError::transport(format!(
             "set stream socket read timeout failed: {err}"
         ))));
-        return WindowsReceiver { frames: rx, stop, join: None };
+        return WindowsReceiver {
+            frames: rx,
+            stop,
+            join: None,
+        };
     }
 
     let reader_stop = Arc::clone(&stop);
@@ -714,7 +726,11 @@ fn windows_frame_receiver(
         }
     });
 
-    WindowsReceiver { frames: rx, stop, join: Some(reader) }
+    WindowsReceiver {
+        frames: rx,
+        stop,
+        join: Some(reader),
+    }
 }
 
 /// High-level async iterator over reassembled GVSP frames.

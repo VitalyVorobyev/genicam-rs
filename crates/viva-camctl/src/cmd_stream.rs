@@ -27,6 +27,12 @@ pub struct StreamArgs {
     pub duration_s: u64,
 }
 
+// `await_holding_lock` resolves its lint level at the enclosing coroutine body,
+// so a statement-scoped `#[allow]` on the `let stream = { … }` below has no
+// effect and the attribute has to live here. The single offending guard is
+// documented at the point it is taken; nothing else in this function holds a
+// lock across an await.
+#[allow(clippy::await_holding_lock)]
 pub async fn run(args: StreamArgs) -> Result<()> {
     let iface_ip = args
         .iface
@@ -78,8 +84,8 @@ pub async fn run(args: StreamArgs) -> Result<()> {
     //
     // The guard must span the builder's awaits (StreamBuilder borrows the
     // locked device), and nothing else contends this mutex until streaming
-    // starts, so holding it across the awaits cannot deadlock here.
-    #[allow(clippy::await_holding_lock)]
+    // starts, so holding it across the awaits cannot deadlock here. The
+    // `await_holding_lock` allow this needs is on the function; see there.
     let stream = {
         let mut stream_device = camera
             .transport()
