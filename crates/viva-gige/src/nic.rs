@@ -332,12 +332,27 @@ pub fn mtu(_iface: &Iface) -> io::Result<u32> {
     Ok(1500)
 }
 
+/// Largest packet an IPv4 datagram can carry.
+///
+/// The IPv4 total-length field is 16 bits, so no datagram can exceed this no
+/// matter how large the link MTU claims to be. Loopback interfaces routinely
+/// report more: Linux `lo` is 65536 and macOS `lo0` is 16384.
+const MAX_IPV4_PACKET_SIZE: u32 = 65535;
+
 /// Compute an optimal GVSP packet size from the link MTU.
 ///
-/// `GevSCPSPacketSize` is the transmitted IP packet size, so it must match the
-/// link MTU rather than subtracting Ethernet, IPv4, or UDP headers.
+/// `GevSCPSPacketSize` is the transmitted IP packet size, so it tracks the link
+/// MTU rather than subtracting Ethernet, IPv4, or UDP headers — corroborated by
+/// aravis, which derives its payload block size as
+/// `packet_size - (IP + UDP + GVSP headers)` and so excludes L2 from the
+/// negotiated value (`ARV_GVSP_PACKET_PROTOCOL_OVERHEAD`).
+///
+/// The MTU is clamped to [`MAX_IPV4_PACKET_SIZE`] because an unclamped value is
+/// not merely suboptimal, it is unsendable: on Linux loopback (MTU 65536) the
+/// sender would build a `65536 - 36` byte payload and a 65508-byte UDP datagram,
+/// one byte past the 65507-byte maximum, and `send_to` fails for every packet.
 pub fn best_packet_size(mtu: u32) -> u32 {
-    mtu
+    mtu.min(MAX_IPV4_PACKET_SIZE)
 }
 
 /// Multicast socket options applied while binding.
@@ -566,6 +581,20 @@ mod tests {
         let mtu = 1500;
         let size = best_packet_size(mtu);
         assert_eq!(size, mtu);
+    }
+
+    #[test]
+    fn packet_size_is_clamped_to_the_ipv4_maximum() {
+        // Linux loopback reports MTU 65536. Left unclamped the sender emits a
+        // 65508-byte UDP datagram — one past the 65507-byte maximum — and every
+        // `send_to` fails, so the stream delivers no frames at all.
+        assert_eq!(best_packet_size(65536), MAX_IPV4_PACKET_SIZE);
+        assert_eq!(best_packet_size(u32::MAX), MAX_IPV4_PACKET_SIZE);
+
+        // The clamped value must still leave the datagram inside the UDP limit.
+        const UDP_MAX_PAYLOAD: u32 = 65535 - 20 - 8;
+        let gvsp_payload = best_packet_size(65536) - 20 - 8 - 8;
+        assert!(gvsp_payload + 8 <= UDP_MAX_PAYLOAD);
     }
 
     #[test]

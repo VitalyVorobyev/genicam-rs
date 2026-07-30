@@ -435,7 +435,15 @@ fn gvsp_payload_size(packet_size: u32) -> usize {
 }
 
 /// State for a frame being assembled from GVSP packets.
+///
+/// On Windows the runtime path uses [`WindowsFrameAssembly`] instead, so the
+/// fields only this type's completion step reads (`block_id`, `width`, `height`,
+/// `pixel_format`, `timestamp`) have no reader there — the completion step lives
+/// in `next_frame`, which is `cfg(not(windows))`. The type is still built under
+/// `test` so the reassembly unit tests below run on every platform. Unifying the
+/// two implementations is backlog API-01; the allow goes away with them.
 #[cfg(any(not(windows), test))]
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug)]
 struct FrameAssemblyState {
     block_id: u64,
