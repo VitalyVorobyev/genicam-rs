@@ -133,6 +133,13 @@ function AppLayoutInner() {
     log("info", "Starting acquisition\u2026");
     try {
       setActiveTab("image");
+      const streamValues = await readBulk([
+        "AcquisitionMode",
+        "PixelFormat",
+        "Width",
+        "Height",
+      ]);
+      seedValues(streamValues);
       await startAcq();
       log("success", "Acquisition started");
       addToast("success", "Acquisition started");
@@ -140,7 +147,7 @@ function AppLayoutInner() {
       log("error", `Acquisition start failed: ${String(e)}`);
       addToast("error", `Acquisition start failed: ${String(e)}`);
     }
-  }, [startAcq, log, addToast]);
+  }, [startAcq, readBulk, seedValues, log, addToast]);
 
   const handleStopAcquisition = useCallback(async () => {
     log("info", "Stopping acquisition\u2026");

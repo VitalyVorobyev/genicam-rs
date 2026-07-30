@@ -281,7 +281,7 @@ impl DeviceBackend for EmbeddedBackend {
 
         // Build the stream and start acquisition on a blocking thread
         // (GigeRegisterIo uses block_on() internally, must not run in async context).
-        let (width, height, frame_stream) = {
+        let (width, height, pixel_format, frame_stream) = {
             let mut guard = self
                 .camera
                 .lock()
@@ -307,6 +307,10 @@ impl DeviceBackend for EmbeddedBackend {
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(480);
+                let pixel_format = cam.get("PixelFormat").unwrap_or_else(|error| {
+                    warn!(%error, "Failed to read PixelFormat before acquisition");
+                    "Unknown".to_string()
+                });
 
                 // Get device handle for stream building.
                 let mut device_guard = cam
@@ -350,20 +354,13 @@ impl DeviceBackend for EmbeddedBackend {
                 cam.acquisition_start()
                     .map_err(|e| format!("Failed to start acquisition: {e}"))?;
 
-                Ok((width, height, frame_stream))
+                Ok((width, height, pixel_format, frame_stream))
             })?
         };
 
         // Create WS broadcast channels.
         let (frame_tx, _) = watch::channel(Bytes::new());
-        let info_tx = watch::channel(viva_streamer::ws::StreamInfo {
-            width,
-            height,
-            pixel_format: "Mono8".to_string(),
-            encoding: "BMP",
-            frame_type: "info",
-        })
-        .0;
+        let info_tx = watch::channel(camera_stream_info(width, height, pixel_format.clone())).0;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Bind WebSocket server.
@@ -381,11 +378,15 @@ impl DeviceBackend for EmbeddedBackend {
         // Spawn frame reader task.
         let frame_reader_handle = {
             let frame_tx = frame_tx.clone();
+            let info_tx = info_tx.clone();
             let mut shutdown_rx = shutdown_rx.clone();
             let mut frame_stream = frame_stream;
             tokio::spawn(async move {
                 let mut encoder_gray = viva_streamer::bmp::BmpEncoder::new(width, height);
                 let mut encoder_rgb = viva_streamer::bmp::BmpEncoder::new_rgb24(width, height);
+                let mut stream_width = width;
+                let mut stream_height = height;
+                let mut stream_pixel_format = pixel_format;
                 let mut logged_first = false;
 
                 loop {
@@ -408,7 +409,7 @@ impl DeviceBackend for EmbeddedBackend {
                                         logged_first = true;
                                     }
 
-                                    if frame.width != width || frame.height != height {
+                                    if frame.width != stream_width || frame.height != stream_height {
                                         encoder_gray = viva_streamer::bmp::BmpEncoder::new(
                                             frame.width,
                                             frame.height,
@@ -417,6 +418,21 @@ impl DeviceBackend for EmbeddedBackend {
                                             frame.width,
                                             frame.height,
                                         );
+                                    }
+
+                                    let frame_pixel_format = frame.pixel_format.to_string();
+                                    if frame.width != stream_width
+                                        || frame.height != stream_height
+                                        || frame_pixel_format != stream_pixel_format
+                                    {
+                                        stream_width = frame.width;
+                                        stream_height = frame.height;
+                                        stream_pixel_format = frame_pixel_format;
+                                        let _ = info_tx.send(camera_stream_info(
+                                            stream_width,
+                                            stream_height,
+                                            stream_pixel_format.clone(),
+                                        ));
                                     }
 
                                     let bmp = encode_camera_frame(
@@ -819,6 +835,20 @@ fn json_value_to_string(value: &serde_json::Value) -> String {
 
 // ── Frame encoding ──────────────────────────────────────────────────────────
 
+fn camera_stream_info(
+    width: u32,
+    height: u32,
+    pixel_format: impl Into<String>,
+) -> viva_streamer::ws::StreamInfo {
+    viva_streamer::ws::StreamInfo {
+        width,
+        height,
+        pixel_format: pixel_format.into(),
+        encoding: "BMP",
+        frame_type: "info",
+    }
+}
+
 /// Convert a `viva_genicam::Frame` to BMP bytes for WebSocket delivery.
 fn encode_camera_frame(
     frame: &viva_genicam::Frame,
@@ -892,5 +922,20 @@ fn camera_bayer_pattern(pf: viva_genicam::pfnc::PixelFormat) -> viva_streamer::b
         PixelFormat::BayerBG8 => BayerPattern::Bggr,
         PixelFormat::BayerGB8 => BayerPattern::Gbrg,
         _ => BayerPattern::Rggb,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::camera_stream_info;
+
+    #[test]
+    fn stream_info_preserves_camera_pixel_format() {
+        let info = camera_stream_info(2048, 1536, "BayerRG8");
+
+        assert_eq!(info.width, 2048);
+        assert_eq!(info.height, 1536);
+        assert_eq!(info.pixel_format, "BayerRG8");
+        assert_eq!(info.encoding, "BMP");
     }
 }

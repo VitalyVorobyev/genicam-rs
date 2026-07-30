@@ -85,7 +85,7 @@ export function ImageFormatSection({
   const pixelFormatValue =
     typeof livePixelFormat?.value === "string"
       ? livePixelFormat.value
-      : (pixelFormatEntries[0]?.name ?? "");
+      : "";
 
   const binningHNode = nodes?.["BinningHorizontal"];
   const binningVNode = nodes?.["BinningVertical"];
@@ -301,6 +301,11 @@ export function ImageFormatSection({
             value={pixelFormatValue}
             onChange={handlePixelFormatChange}
           >
+            {pixelFormatValue === "" && (
+              <option value="" disabled>
+                Unavailable
+              </option>
+            )}
             {pixelFormatEntries.map((entry) => (
               <option key={entry.name} value={entry.name}>
                 {entry.display_name ?? entry.name}
