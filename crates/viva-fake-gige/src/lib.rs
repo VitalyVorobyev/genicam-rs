@@ -56,6 +56,8 @@ pub struct FakeCameraBuilder {
     port: u16,
     pixel_format: u32,
     zip_xml: bool,
+    enforce_heartbeat: bool,
+    heartbeat_timeout_ms: Option<u32>,
 }
 
 /// PFNC pixel format codes.
@@ -72,6 +74,8 @@ impl Default for FakeCameraBuilder {
             port: 3956,
             pixel_format: MONO8,
             zip_xml: false,
+            enforce_heartbeat: false,
+            heartbeat_timeout_ms: None,
         }
     }
 }
@@ -124,14 +128,34 @@ impl FakeCameraBuilder {
         self
     }
 
+    /// Release control privilege when the controller stops sending GVCP commands
+    /// for longer than `GevHeartbeatTimeout` (default: off).
+    ///
+    /// See [`registers::RegisterMap::enforce_heartbeat`] for why this is not the
+    /// default even though every real device behaves this way.
+    pub fn enforce_heartbeat(mut self, enable: bool) -> Self {
+        self.enforce_heartbeat = enable;
+        self
+    }
+
+    /// Report a different `GevHeartbeatTimeout` than the 3 000 ms default.
+    ///
+    /// A shorter window keeps a test that has to wait one out from dominating
+    /// the suite's runtime.
+    pub fn heartbeat_timeout_ms(mut self, timeout_ms: u32) -> Self {
+        self.heartbeat_timeout_ms = Some(timeout_ms);
+        self
+    }
+
     /// Start the fake camera and return a handle.
     pub async fn build(self) -> Result<FakeCamera, std::io::Error> {
-        let regs = Arc::new(Mutex::new(registers::RegisterMap::new(
-            self.width,
-            self.height,
-            self.pixel_format,
-            self.zip_xml,
-        )));
+        let mut register_map =
+            registers::RegisterMap::new(self.width, self.height, self.pixel_format, self.zip_xml);
+        if let Some(timeout_ms) = self.heartbeat_timeout_ms {
+            register_map.set_heartbeat_timeout_ms(timeout_ms);
+        }
+        register_map.enforce_heartbeat(self.enforce_heartbeat);
+        let regs = Arc::new(Mutex::new(register_map));
 
         let acq_start = Arc::new(Notify::new());
         let acq_stop_flag = Arc::new(AtomicBool::new(false));

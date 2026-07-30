@@ -96,6 +96,16 @@ pub mod consts {
     pub const CCP_CONTROL: u32 = 1 << 1;
     /// CCP value indicating an exclusive owner.
     pub const CCP_EXCLUSIVE: u32 = 1 << 0;
+    /// Bits of the CCP register that mean "this application is the controller".
+    pub const CCP_CONTROLLER_BITS: u32 = CCP_CONTROL | CCP_EXCLUSIVE;
+
+    /// Heartbeat timeout register (`GevHeartbeatTimeout`), in milliseconds.
+    ///
+    /// A device that has granted control privilege releases it again if it
+    /// receives no GVCP command from the controlling application within this
+    /// window. GVSP image traffic does not count — a stream can be running at
+    /// full rate while the control channel times out underneath it.
+    pub const HEARTBEAT_TIMEOUT: u64 = 0x0938;
 
     // ── Message channel bootstrap registers ─────────────────────────────
     //
@@ -821,6 +831,34 @@ impl GigeDevice {
     pub async fn release_control(&mut self) -> Result<(), GigeError> {
         self.write_register(consts::CONTROL_CHANNEL_PRIVILEGE as u32, 0)
             .await
+    }
+
+    /// Read `GevHeartbeatTimeout` (milliseconds).
+    ///
+    /// This is how long the device will keep control privilege granted with no
+    /// GVCP command from the controlling application.
+    pub async fn heartbeat_timeout_ms(&mut self) -> Result<u32, GigeError> {
+        self.read_register(consts::HEARTBEAT_TIMEOUT as u32).await
+    }
+
+    /// Refresh the device's heartbeat timer, and report whether this
+    /// application still holds control privilege.
+    ///
+    /// Any GVCP command resets the timer, so this reads CCP rather than writing
+    /// it: a read is idempotent, and its value doubles as the answer to "does
+    /// the device still consider us the controller?". A device that revoked
+    /// privilege — because an earlier heartbeat was lost, or because another
+    /// application took control — is reported as `Ok(false)` here instead of
+    /// failing the next configuration write with `ACCESS_DENIED`.
+    ///
+    /// Losing privilege is not a transport failure, so it is not an `Err`: the
+    /// register read succeeded and the answer is simply "no". `Err` means the
+    /// command itself did not complete.
+    pub async fn ping_control_channel(&mut self) -> Result<bool, GigeError> {
+        let privilege = self
+            .read_register(consts::CONTROL_CHANNEL_PRIVILEGE as u32)
+            .await?;
+        Ok(privilege & consts::CCP_CONTROLLER_BITS != 0)
     }
 
     /// Return the remote GVCP socket address associated with this device.

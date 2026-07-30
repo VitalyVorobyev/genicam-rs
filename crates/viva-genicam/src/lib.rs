@@ -710,18 +710,38 @@ pub struct ChunkConfig {
 ///
 /// **Note:** `block_in_place` requires a multi-thread runtime.  Using a
 /// `current_thread` runtime will still panic.
+///
+/// # Control channel keepalive
+///
+/// Constructing the adapter spawns a background task that keeps the device's
+/// control channel alive; see [`GigeRegisterIo::new`]. Holding a
+/// `GigeRegisterIo` is therefore enough to keep control privilege — no caller
+/// has to run a heartbeat of its own.
 pub struct GigeRegisterIo {
     handle: tokio::runtime::Handle,
-    device: Mutex<GigeDevice>,
+    device: Arc<Mutex<GigeDevice>>,
 }
 
 impl GigeRegisterIo {
     /// Create a new adapter using the provided runtime handle and device.
+    ///
+    /// This also spawns the control-channel keepalive on `handle`. A GigE Vision
+    /// device revokes control privilege if it receives no GVCP command within
+    /// `GevHeartbeatTimeout` (3 000 ms on both `viva-fake-gige` and the aravis
+    /// fake camera, `arvfakecamera.c:1082`), and GVSP image traffic does not
+    /// count — so a camera can sit at an interactive prompt, or stream frames for
+    /// a minute, and then refuse the next write with `ACCESS_DENIED`.
+    ///
+    /// Nothing in an application's normal flow refreshes that timer, which is why
+    /// three consumers of this crate had each grown their own copy of the loop —
+    /// and why the Python bindings, which had none, hit the failure.
+    ///
+    /// The keepalive stops when the adapter is dropped, so privilege is
+    /// maintained for exactly as long as the transport that needs it.
     pub fn new(handle: tokio::runtime::Handle, device: GigeDevice) -> Self {
-        Self {
-            handle,
-            device: Mutex::new(device),
-        }
+        let device = Arc::new(Mutex::new(device));
+        spawn_keepalive(handle.clone(), Arc::downgrade(&device));
+        Self { handle, device }
     }
 
     /// Lock the underlying [`GigeDevice`] for direct async operations.
@@ -763,6 +783,167 @@ impl RegisterIo for GigeRegisterIo {
         }
         .map_err(|err| GenApiError::Io(err.to_string()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Control channel keepalive
+// ---------------------------------------------------------------------------
+
+/// Heartbeat window assumed when the device does not report a usable one.
+///
+/// Both `viva-fake-gige` and the aravis fake camera report 3 000 ms, and it is
+/// short enough to be a safe assumption for a device that tells us nothing.
+const ASSUMED_HEARTBEAT_TIMEOUT_MS: u32 = 3_000;
+
+/// How many keepalives we aim to fit inside one heartbeat window.
+///
+/// Four means three consecutive pings can be lost — to packet loss, to a long
+/// `lock_device()` hold during stream setup, to a scheduling stall — and the
+/// fourth still lands inside the window.
+const KEEPALIVES_PER_WINDOW: u32 = 4;
+
+/// Floor on the keepalive period, so a device reporting an implausibly small
+/// timeout cannot turn the keepalive into a flood.
+const MIN_KEEPALIVE_PERIOD: Duration = Duration::from_millis(100);
+
+/// Ceiling on the keepalive period. A device may report a very long window; the
+/// keepalive is also our liveness check, so it stays reasonably prompt.
+const MAX_KEEPALIVE_PERIOD: Duration = Duration::from_secs(2);
+
+/// Choose a keepalive period from the device's reported `GevHeartbeatTimeout`.
+///
+/// `None` means the register could not be read; `Some(0)` is a device declining
+/// to say. Both fall back to [`ASSUMED_HEARTBEAT_TIMEOUT_MS`] rather than to a
+/// period derived from a value we do not trust.
+///
+/// aravis instead pings on a fixed 1 s period
+/// (`ARV_GV_DEVICE_HEARTBEAT_PERIOD_US`), which is fine for the 3 000 ms window
+/// devices usually report but too slow for one that asks for less. Deriving the
+/// period costs a single extra register read at connect.
+fn keepalive_period(reported_timeout_ms: Option<u32>) -> Duration {
+    let timeout_ms = match reported_timeout_ms {
+        Some(ms) if ms > 0 => ms,
+        _ => ASSUMED_HEARTBEAT_TIMEOUT_MS,
+    };
+    Duration::from_millis(u64::from(timeout_ms / KEEPALIVES_PER_WINDOW))
+        .clamp(MIN_KEEPALIVE_PERIOD, MAX_KEEPALIVE_PERIOD)
+}
+
+/// Run one GVCP transaction against the shared device from the blocking pool.
+///
+/// Returns `None` once the transport has been dropped — the keepalive's exit
+/// signal. `spawn_blocking` rather than `block_in_place` because the device
+/// mutex can be held for the whole of stream negotiation, and waiting for it on
+/// the blocking pool costs the runtime a pool thread rather than a worker.
+async fn on_blocking_pool<R, F>(
+    handle: &tokio::runtime::Handle,
+    device: &std::sync::Weak<Mutex<GigeDevice>>,
+    op: F,
+) -> Option<Result<R, String>>
+where
+    F: FnOnce(&tokio::runtime::Handle, &mut GigeDevice) -> Result<R, String> + Send + 'static,
+    R: Send + 'static,
+{
+    let device = device.upgrade()?;
+    let handle = handle.clone();
+    let joined = tokio::task::spawn_blocking(move || match device.lock() {
+        Ok(mut guard) => op(&handle, &mut guard),
+        Err(_) => Err("gige device mutex poisoned".to_string()),
+    })
+    .await;
+    Some(joined.unwrap_or_else(|err| Err(err.to_string())))
+}
+
+/// Keep the device's control channel alive for as long as the transport exists.
+///
+/// The task holds a [`Weak`](std::sync::Weak) reference to the device, so it
+/// stops on its own once the [`GigeRegisterIo`] is dropped; there is no handle
+/// to remember to shut down, and a replaced connection's keepalive retires with
+/// the connection it belonged to.
+///
+/// It contends only for the device mutex — never for whatever lock the
+/// application puts around its [`Camera`] — which is what lets it run without
+/// the pause/resume dance every app-layer copy of this loop needed.
+fn spawn_keepalive(handle: tokio::runtime::Handle, device: std::sync::Weak<Mutex<GigeDevice>>) {
+    handle.clone().spawn(async move {
+        let reported = on_blocking_pool(&handle, &device, |handle, dev| {
+            handle
+                .block_on(dev.heartbeat_timeout_ms())
+                .map_err(|err| err.to_string())
+        })
+        .await;
+
+        let period = match reported {
+            // Transport already gone; nothing to keep alive.
+            None => return,
+            Some(Ok(timeout_ms)) => {
+                debug!(timeout_ms, "device reported GevHeartbeatTimeout");
+                keepalive_period(Some(timeout_ms))
+            }
+            Some(Err(error)) => {
+                warn!(
+                    %error,
+                    assumed_timeout_ms = ASSUMED_HEARTBEAT_TIMEOUT_MS,
+                    "could not read GevHeartbeatTimeout; assuming a short window"
+                );
+                keepalive_period(None)
+            }
+        };
+        debug!(?period, "control channel keepalive started");
+
+        let mut ticker = tokio::time::interval(period);
+        // After a long device-mutex hold (stream negotiation) one fresh ping is
+        // enough; do not burst-fire the ticks that elapsed meanwhile.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // `interval` fires immediately, and the timeout read above has just
+        // refreshed the timer.
+        ticker.tick().await;
+
+        let mut consecutive_failures: u32 = 0;
+        let mut privilege_seen = false;
+        loop {
+            ticker.tick().await;
+            let pinged = on_blocking_pool(&handle, &device, |handle, dev| {
+                handle
+                    .block_on(dev.ping_control_channel())
+                    .map_err(|err| err.to_string())
+            })
+            .await;
+            match pinged {
+                None => {
+                    debug!("control channel keepalive stopped: transport dropped");
+                    return;
+                }
+                Some(Ok(true)) => {
+                    if consecutive_failures > 0 {
+                        info!(consecutive_failures, "control channel keepalive recovered");
+                    }
+                    consecutive_failures = 0;
+                    privilege_seen = true;
+                }
+                Some(Ok(false)) if !privilege_seen => {
+                    // The caller never claimed control. A read-only session is
+                    // legitimate — `viva-camctl xml` is one — and there is no
+                    // privilege to keep alive, so stop rather than warn about it
+                    // every period.
+                    debug!("no control privilege held; keepalive not needed");
+                    return;
+                }
+                Some(Ok(false)) => {
+                    consecutive_failures += 1;
+                    warn!(
+                        consecutive_failures,
+                        "control channel privilege lost; either another application took \
+                         control or an earlier keepalive did not reach the device"
+                    );
+                }
+                Some(Err(error)) => {
+                    consecutive_failures += 1;
+                    warn!(%error, consecutive_failures, "control channel keepalive failed");
+                }
+            }
+        }
+    });
 }
 
 /// Connect to a GigE Vision camera and return a fully configured [`Camera`].
@@ -1014,5 +1195,33 @@ fn parse_bool(value: &str) -> Option<bool> {
         "1" | "true" => Some(true),
         "0" | "false" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keepalive_period_fits_four_pings_in_the_reported_window() {
+        assert_eq!(keepalive_period(Some(3_000)), Duration::from_millis(750));
+        assert_eq!(keepalive_period(Some(1_000)), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn an_unusable_heartbeat_timeout_falls_back_to_a_short_window() {
+        // A device that declines to report, and a register we could not read,
+        // must not be believed as "0 ms" or "no timeout at all".
+        let assumed = keepalive_period(Some(ASSUMED_HEARTBEAT_TIMEOUT_MS));
+        assert_eq!(keepalive_period(None), assumed);
+        assert_eq!(keepalive_period(Some(0)), assumed);
+    }
+
+    #[test]
+    fn the_period_is_clamped_at_both_ends() {
+        // 40 ms / 4 = 10 ms would be a flood; a 10-minute window would make the
+        // keepalive useless as a liveness check.
+        assert_eq!(keepalive_period(Some(40)), MIN_KEEPALIVE_PERIOD);
+        assert_eq!(keepalive_period(Some(600_000)), MAX_KEEPALIVE_PERIOD);
     }
 }

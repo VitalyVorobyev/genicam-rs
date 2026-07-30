@@ -94,13 +94,19 @@ Unit tests are embedded in source modules (`mod tests { }`). Integration tests u
 # All tests (unit + integration + service e2e)
 cargo test --workspace
 
-# GigE integration tests (12 tests: discovery, features, streaming)
+# GigE integration tests (23: discovery, features, streaming)
 cargo test -p viva-genicam --test fake_camera
 
-# U3V integration tests (5 tests: open, features, streaming, pixel formats)
-cargo test -p viva-genicam --test fake_u3v_camera
+# GenApi predicates against a real device (5: pIsLocked, pIsAvailable, ...)
+cargo test -p viva-genicam --test predicates
 
-# Service end-to-end tests (3 tests: acquisition, double-start, sustained streaming)
+# Control-channel keepalive (2: idle survival + a negative control)
+cargo test -p viva-genicam --test heartbeat
+
+# U3V integration tests (5: open, features, streaming, pixel formats)
+cargo test -p viva-genicam --test fake_u3v_camera --features u3v
+
+# Service end-to-end tests (4: acquisition, double-start, sustained streaming)
 cargo test -p viva-service --test fake_camera_e2e
 
 # Test with logging
