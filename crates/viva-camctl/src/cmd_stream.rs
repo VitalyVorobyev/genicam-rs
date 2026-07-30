@@ -74,6 +74,11 @@ pub async fn run(args: StreamArgs) -> Result<()> {
     // privilege, stream configuration, and acquisition commands all come from
     // the same application endpoint. This scope also releases the device lock
     // before the higher-level Camera API is used again below.
+    //
+    // The guard must span the builder's awaits (StreamBuilder borrows the
+    // locked device), and nothing else contends this mutex until streaming
+    // starts, so holding it across the awaits cannot deadlock here.
+    #[allow(clippy::await_holding_lock)]
     let stream = {
         let mut stream_device = camera
             .transport()
