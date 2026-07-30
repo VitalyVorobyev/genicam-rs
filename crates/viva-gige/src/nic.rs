@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::fs;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket};
 use std::sync::Mutex;
 
 use bytes::BytesMut;
@@ -19,7 +19,7 @@ use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{debug, info};
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
 use tracing::warn;
 
 /// Default socket receive buffer size used when the caller does not provide a
@@ -125,6 +125,44 @@ impl Iface {
             io::ErrorKind::NotFound,
             format!("no interface with IPv4 {addr}"),
         ))
+    }
+
+    /// Resolve the local interface selected by the operating system for a
+    /// remote IPv4 address.
+    pub fn from_remote_ipv4(remote: Ipv4Addr) -> io::Result<Self> {
+        const GVCP_PORT: u16 = 3956;
+
+        let socket = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("failed to create route probe for remote IPv4 {remote}: {err}"),
+            )
+        })?;
+        socket.connect((remote, GVCP_PORT)).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("failed to resolve route to remote IPv4 {remote}: {err}"),
+            )
+        })?;
+        let local = match socket.local_addr()?.ip() {
+            IpAddr::V4(local) => local,
+            IpAddr::V6(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("route to remote IPv4 {remote} selected an IPv6 address"),
+                ));
+            }
+        };
+
+        Self::from_ipv4(local).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "route to remote IPv4 {remote} selected local IPv4 {local}, \
+                     but its interface could not be resolved: {err}"
+                ),
+            )
+        })
     }
 
     /// Every interface the operating system reports, one entry per name.
@@ -265,19 +303,56 @@ pub fn mtu(_iface: &Iface) -> io::Result<u32> {
         }
     }
 
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::NetworkManagement::IpHelper::{GetIfEntry2, MIB_IF_ROW2};
+
+        let mut row = MIB_IF_ROW2 {
+            InterfaceIndex: _iface.index(),
+            ..Default::default()
+        };
+        let status = unsafe { GetIfEntry2(&mut row) };
+        if status == 0 {
+            tracing::debug!(
+                name = _iface.name(),
+                mtu = row.Mtu,
+                "resolved interface MTU"
+            );
+            return Ok(row.Mtu);
+        }
+
+        let err = io::Error::from_raw_os_error(status as i32);
+        warn!(
+            name = _iface.name(),
+            error = %err,
+            "failed to read MTU, using default"
+        );
+    }
+
     Ok(1500)
 }
 
-/// Compute an optimal GVSP payload size from the link MTU.
+/// Largest packet an IPv4 datagram can carry.
 ///
-/// The resulting value subtracts the Ethernet, IPv4 and UDP headers to produce
-/// the maximum amount of user payload that fits in a single packet.
-pub fn best_packet_size(mtu: u32) -> u32 {
-    const ETHERNET_L2: u32 = 14; // Ethernet II header without VLAN tags.
-    const IPV4_HEADER: u32 = 20; // RFC 791 minimum header size.
-    const UDP_HEADER: u32 = 8; // RFC 768 header size.
+/// The IPv4 total-length field is 16 bits, so no datagram can exceed this no
+/// matter how large the link MTU claims to be. Loopback interfaces routinely
+/// report more: Linux `lo` is 65536 and macOS `lo0` is 16384.
+const MAX_IPV4_PACKET_SIZE: u32 = 65535;
 
-    mtu.saturating_sub(ETHERNET_L2 + IPV4_HEADER + UDP_HEADER)
+/// Compute an optimal GVSP packet size from the link MTU.
+///
+/// `GevSCPSPacketSize` is the transmitted IP packet size, so it tracks the link
+/// MTU rather than subtracting Ethernet, IPv4, or UDP headers — corroborated by
+/// aravis, which derives its payload block size as
+/// `packet_size - (IP + UDP + GVSP headers)` and so excludes L2 from the
+/// negotiated value (`ARV_GVSP_PACKET_PROTOCOL_OVERHEAD`).
+///
+/// The MTU is clamped to [`MAX_IPV4_PACKET_SIZE`] because an unclamped value is
+/// not merely suboptimal, it is unsendable: on Linux loopback (MTU 65536) the
+/// sender would build a `65536 - 36` byte payload and a 65508-byte UDP datagram,
+/// one byte past the 65507-byte maximum, and `send_to` fails for every packet.
+pub fn best_packet_size(mtu: u32) -> u32 {
+    mtu.min(MAX_IPV4_PACKET_SIZE)
 }
 
 /// Multicast socket options applied while binding.
@@ -329,6 +404,11 @@ pub async fn bind_udp(
     socket.set_reuse_port(true)?;
 
     socket.set_recv_buffer_size(recv_buffer)?;
+    let actual_recv_buffer = socket.recv_buffer_size()?;
+    debug!(
+        requested_recv_buffer = recv_buffer,
+        actual_recv_buffer, "configured GVSP receive buffer"
+    );
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if let Some(iface) = iface.as_ref()
@@ -487,11 +567,34 @@ mod tests {
     }
 
     #[test]
-    fn packet_size_respects_headers() {
+    fn from_remote_ipv4_uses_route_selected_local_address() {
+        let remote = Ipv4Addr::new(127, 0, 0, 2);
+        let iface =
+            Iface::from_remote_ipv4(remote).expect("loopback route should select an interface");
+
+        assert_eq!(iface.ipv4(), Some(Ipv4Addr::LOCALHOST));
+        assert_ne!(iface.ipv4(), Some(remote));
+    }
+
+    #[test]
+    fn packet_size_matches_link_mtu() {
         let mtu = 1500;
         let size = best_packet_size(mtu);
-        assert!(size < mtu);
-        assert_eq!(size, 1500 - (14 + 20 + 8));
+        assert_eq!(size, mtu);
+    }
+
+    #[test]
+    fn packet_size_is_clamped_to_the_ipv4_maximum() {
+        // Linux loopback reports MTU 65536. Left unclamped the sender emits a
+        // 65508-byte UDP datagram — one past the 65507-byte maximum — and every
+        // `send_to` fails, so the stream delivers no frames at all.
+        assert_eq!(best_packet_size(65536), MAX_IPV4_PACKET_SIZE);
+        assert_eq!(best_packet_size(u32::MAX), MAX_IPV4_PACKET_SIZE);
+
+        // The clamped value must still leave the datagram inside the UDP limit.
+        const UDP_MAX_PAYLOAD: u32 = 65535 - 20 - 8;
+        let gvsp_payload = best_packet_size(65536) - 20 - 8 - 8;
+        assert!(gvsp_payload + 8 <= UDP_MAX_PAYLOAD);
     }
 
     #[test]

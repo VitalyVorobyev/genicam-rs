@@ -18,20 +18,37 @@
 //! }
 //! ```
 
+#[cfg(any(not(windows), test))]
 use std::collections::HashSet;
+#[cfg(windows)]
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(windows)]
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(windows)]
+use std::thread;
+#[cfg(not(windows))]
+use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
-use bytes::{Bytes, BytesMut};
+#[cfg(not(windows))]
+use bytes::Bytes;
+use bytes::BytesMut;
 use tokio::net::UdpSocket;
-use tracing::{debug, info, trace, warn};
+use tracing::info;
+#[cfg(not(windows))]
+use tracing::{debug, trace, warn};
 use viva_pfnc::PixelFormat;
 
 use crate::GenicamError;
 use crate::frame::Frame;
 use crate::time::TimeSync;
 use viva_gige::gvcp::{GigeDevice, StreamParams};
-use viva_gige::gvsp::{self, GvspPacket, PacketBitmap, StreamConfig};
+#[cfg(any(not(windows), test))]
+use viva_gige::gvsp::PacketBitmap;
+use viva_gige::gvsp::{self, GvspPacket, StreamConfig};
 use viva_gige::nic::{self, DEFAULT_RCVBUF_BYTES, Iface, McOptions};
 use viva_gige::stats::{StreamStats, StreamStatsAccumulator};
 
@@ -48,6 +65,7 @@ pub(crate) enum PacketSource {
 
 impl PacketSource {
     /// Receive raw packet bytes from the source.
+    #[cfg(not(windows))]
     async fn recv(&self, buf: &mut [u8]) -> Result<Bytes, GenicamError> {
         match self {
             PacketSource::Udp(socket) => {
@@ -308,7 +326,11 @@ impl<'a> StreamBuilder<'a> {
     ) -> Result<UdpSocket, GenicamError> {
         match dest {
             StreamDest::Unicast { dst_port, .. } => {
-                let bind_ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+                let bind_ip = IpAddr::V4(
+                    iface
+                        .ipv4()
+                        .ok_or_else(|| GenicamError::transport("interface lacks IPv4 address"))?,
+                );
                 nic::bind_udp(bind_ip, *dst_port, Some(iface.clone()), rcvbuf_bytes)
                     .await
                     .map_err(|err| GenicamError::transport(err.to_string()))
@@ -395,19 +417,33 @@ impl<'a> From<&'a mut GigeDevice> for StreamBuilder<'a> {
 const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// GVSP header size preceding payload data.
+#[cfg(any(not(windows), test))]
 const GVSP_HEADER_SIZE: usize = 8;
 /// IPv4 header size used by GigE Vision streams.
+#[cfg(any(not(windows), test))]
 const IPV4_HEADER_SIZE: usize = 20;
 /// UDP header size used by GigE Vision streams.
+#[cfg(any(not(windows), test))]
 const UDP_HEADER_SIZE: usize = 8;
 /// Bytes in a GVSP data packet that are not image payload.
+#[cfg(any(not(windows), test))]
 const GVSP_PACKET_OVERHEAD: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + GVSP_HEADER_SIZE;
 
+#[cfg(any(not(windows), test))]
 fn gvsp_payload_size(packet_size: u32) -> usize {
     (packet_size as usize).saturating_sub(GVSP_PACKET_OVERHEAD)
 }
 
 /// State for a frame being assembled from GVSP packets.
+///
+/// On Windows the runtime path uses [`WindowsFrameAssembly`] instead, so the
+/// fields only this type's completion step reads (`block_id`, `width`, `height`,
+/// `pixel_format`, `timestamp`) have no reader there — the completion step lives
+/// in `next_frame`, which is `cfg(not(windows))`. The type is still built under
+/// `test` so the reassembly unit tests below run on every platform. Unifying the
+/// two implementations is backlog API-01; the allow goes away with them.
+#[cfg(any(not(windows), test))]
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug)]
 struct FrameAssemblyState {
     block_id: u64,
@@ -423,6 +459,7 @@ struct FrameAssemblyState {
     started: Instant,
 }
 
+#[cfg(any(not(windows), test))]
 impl FrameAssemblyState {
     fn new(
         block_id: u64,
@@ -513,6 +550,197 @@ impl FrameAssemblyState {
     }
 }
 
+#[cfg(windows)]
+struct WindowsFrameAssembly {
+    block_id: u64,
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+    timestamp: u64,
+    next_packet_id: u32,
+    payload: BytesMut,
+    started: Instant,
+}
+
+#[cfg(windows)]
+struct WindowsReceiver {
+    frames: tokio::sync::mpsc::Receiver<Result<Frame, GenicamError>>,
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+fn windows_frame_receiver(
+    source: PacketSource,
+    packet_size: u32,
+    stats: StreamStatsAccumulator,
+    frame_timeout_ns: Arc<AtomicU64>,
+) -> WindowsReceiver {
+    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let PacketSource::Udp(socket) = source;
+    let socket = match socket.into_std() {
+        Ok(socket) => socket,
+        Err(err) => {
+            let _ = tx.try_send(Err(GenicamError::transport(format!(
+                "socket conversion failed: {err}"
+            ))));
+            return WindowsReceiver {
+                frames: rx,
+                stop,
+                join: None,
+            };
+        }
+    };
+    if let Err(err) = socket.set_nonblocking(false) {
+        let _ = tx.try_send(Err(GenicamError::transport(format!(
+            "set blocking mode failed: {err}"
+        ))));
+        return WindowsReceiver {
+            frames: rx,
+            stop,
+            join: None,
+        };
+    }
+    if let Err(err) = socket.set_read_timeout(Some(Duration::from_millis(100))) {
+        let _ = tx.try_send(Err(GenicamError::transport(format!(
+            "set stream socket read timeout failed: {err}"
+        ))));
+        return WindowsReceiver {
+            frames: rx,
+            stop,
+            join: None,
+        };
+    }
+
+    let reader_stop = Arc::clone(&stop);
+    let reader = thread::spawn(move || {
+        let mut recv_buffer = vec![0u8; (packet_size as usize + 64).max(4096)];
+        let mut active: Option<WindowsFrameAssembly> = None;
+
+        while !reader_stop.load(Ordering::Acquire) {
+            let (len, _) = match socket.recv_from(&mut recv_buffer) {
+                Ok(result) => result,
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) =>
+                {
+                    if active.as_ref().is_some_and(|frame| {
+                        frame.started.elapsed().as_nanos()
+                            > frame_timeout_ns.load(Ordering::Relaxed) as u128
+                    }) {
+                        active = None;
+                        stats.record_drop();
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    let _ = tx.try_send(Err(GenicamError::transport(format!(
+                        "socket receive failed: {err}"
+                    ))));
+                    break;
+                }
+            };
+
+            let packet = match gvsp::parse_packet(&recv_buffer[..len]) {
+                Ok(packet) => packet,
+                Err(_) => continue,
+            };
+
+            match packet {
+                GvspPacket::Leader {
+                    block_id,
+                    width,
+                    height,
+                    pixel_format,
+                    timestamp,
+                    ..
+                } => {
+                    if active.take().is_some() {
+                        stats.record_drop();
+                    }
+                    active = Some(WindowsFrameAssembly {
+                        block_id,
+                        width,
+                        height,
+                        pixel_format: PixelFormat::from_code(pixel_format),
+                        timestamp,
+                        next_packet_id: 1,
+                        payload: BytesMut::new(),
+                        started: Instant::now(),
+                    });
+                }
+                GvspPacket::Payload {
+                    block_id,
+                    packet_id,
+                    data,
+                } => {
+                    let Some(frame) = active.as_mut() else {
+                        continue;
+                    };
+                    if frame.block_id != block_id || frame.next_packet_id != packet_id {
+                        active = None;
+                        stats.record_drop();
+                        continue;
+                    }
+                    frame.payload.extend_from_slice(data.as_ref());
+                    frame.next_packet_id += 1;
+                    stats.record_packet();
+                }
+                GvspPacket::Trailer {
+                    block_id,
+                    packet_id,
+                    status,
+                    chunk_data,
+                } => {
+                    let Some(mut frame) = active.take() else {
+                        continue;
+                    };
+                    let expected_bytes = frame.width as usize
+                        * frame.height as usize
+                        * frame.pixel_format.bytes_per_pixel().unwrap_or(1);
+                    if frame.block_id != block_id
+                        || frame.next_packet_id != packet_id
+                        || status != 0
+                        || frame.payload.len() < expected_bytes
+                    {
+                        stats.record_drop();
+                        continue;
+                    }
+                    frame.payload.truncate(expected_bytes);
+                    let chunks = if chunk_data.is_empty() {
+                        None
+                    } else {
+                        crate::chunks::parse_chunk_bytes(chunk_data.as_ref()).ok()
+                    };
+                    let completed = Frame {
+                        payload: frame.payload.freeze(),
+                        width: frame.width,
+                        height: frame.height,
+                        pixel_format: frame.pixel_format,
+                        chunks,
+                        ts_dev: Some(frame.timestamp),
+                        ts_host: None,
+                    };
+                    stats.record_frame(completed.payload.len(), None);
+                    if tx.try_send(Ok(completed)).is_err() {
+                        stats.record_backpressure_drop();
+                    }
+                }
+            }
+        }
+    });
+
+    WindowsReceiver {
+        frames: rx,
+        stop,
+        join: Some(reader),
+    }
+}
+
 /// High-level async iterator over reassembled GVSP frames.
 ///
 /// Wraps a low-level [`Stream`] and handles packet parsing, reassembly,
@@ -531,13 +759,24 @@ impl FrameAssemblyState {
 /// }
 /// ```
 pub struct FrameStream {
+    #[cfg(not(windows))]
     source: PacketSource,
     stats: StreamStatsAccumulator,
     params: StreamParams,
     config: StreamConfig,
+    #[cfg(not(windows))]
     recv_buffer: Vec<u8>,
+    #[cfg(not(windows))]
     active: Option<FrameAssemblyState>,
     frame_timeout: Duration,
+    #[cfg(windows)]
+    frame_timeout_ns: Arc<AtomicU64>,
+    #[cfg(windows)]
+    frame_rx: tokio::sync::mpsc::Receiver<Result<Frame, GenicamError>>,
+    #[cfg(windows)]
+    reader_stop: Arc<AtomicBool>,
+    #[cfg(windows)]
+    reader: Option<thread::JoinHandle<()>>,
     time_sync: Option<TimeSync>,
 }
 
@@ -547,16 +786,44 @@ impl FrameStream {
     /// Optionally accepts a [`TimeSync`] for mapping device timestamps to host time.
     pub fn new(stream: Stream, time_sync: Option<TimeSync>) -> Self {
         let (source, stats, params, config) = stream.into_parts();
+        let frame_timeout = DEFAULT_FRAME_TIMEOUT;
+        #[cfg(not(windows))]
         let buffer_size = (params.packet_size as usize + 64).max(4096);
+        #[cfg(windows)]
+        let frame_timeout_ns = Arc::new(AtomicU64::new(
+            frame_timeout.as_nanos().min(u64::MAX as u128) as u64,
+        ));
+        #[cfg(windows)]
+        let WindowsReceiver {
+            frames: frame_rx,
+            stop: reader_stop,
+            join: reader,
+        } = windows_frame_receiver(
+            source,
+            params.packet_size,
+            stats.clone(),
+            Arc::clone(&frame_timeout_ns),
+        );
 
         Self {
+            #[cfg(not(windows))]
             source,
             stats,
             params,
             config,
+            #[cfg(not(windows))]
             recv_buffer: vec![0u8; buffer_size],
+            #[cfg(not(windows))]
             active: None,
-            frame_timeout: DEFAULT_FRAME_TIMEOUT,
+            frame_timeout,
+            #[cfg(windows)]
+            frame_timeout_ns,
+            #[cfg(windows)]
+            frame_rx,
+            #[cfg(windows)]
+            reader_stop,
+            #[cfg(windows)]
+            reader,
             time_sync,
         }
     }
@@ -567,6 +834,11 @@ impl FrameStream {
     /// and assembly will move on to the next frame.
     pub fn set_frame_timeout(&mut self, timeout: Duration) {
         self.frame_timeout = timeout;
+        #[cfg(windows)]
+        self.frame_timeout_ns.store(
+            timeout.as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 
     /// Update or set the time synchronization model for timestamp mapping.
@@ -596,7 +868,14 @@ impl FrameStream {
 
     /// Borrow the underlying UDP socket (returns `None` when using a custom transport).
     pub fn socket(&self) -> Option<&UdpSocket> {
-        self.source.as_udp_socket()
+        #[cfg(not(windows))]
+        {
+            self.source.as_udp_socket()
+        }
+        #[cfg(windows)]
+        {
+            None
+        }
     }
 
     /// Receive the next complete frame.
@@ -605,167 +884,200 @@ impl FrameStream {
     /// Returns `Ok(Some(frame))` when a complete frame is available, or
     /// `Ok(None)` if the stream has ended (socket closed).
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, GenicamError> {
-        loop {
-            // Check for timeout on active frame assembly.
-            if let Some(ref active) = self.active
-                && active.is_expired(self.frame_timeout)
-            {
-                let block_id = active.block_id;
-                warn!(
-                    block_id,
-                    "frame assembly timeout, dropping incomplete frame"
-                );
-                self.stats.record_drop();
-                self.active = None;
-            }
-
-            // Receive next packet.
-            let raw = match self.source.recv(&mut self.recv_buffer).await {
-                Ok(data) if data.is_empty() => return Ok(None), // Stream closed.
-                Ok(data) => data,
-                Err(e) => return Err(e),
-            };
-
-            // Parse GVSP packet.
-            let packet = match gvsp::parse_packet(&raw) {
-                Ok(p) => p,
-                Err(e) => {
-                    trace!(error = %e, "discarding malformed GVSP packet");
-                    continue;
-                }
-            };
-
-            // Process packet based on type.
-            match packet {
-                GvspPacket::Leader {
-                    block_id,
-                    width,
-                    height,
-                    pixel_format,
-                    timestamp,
-                    ..
-                } => {
-                    // Start new frame assembly, dropping any incomplete previous frame.
-                    if let Some(ref prev) = self.active
-                        && prev.block_id != block_id
-                    {
-                        debug!(
-                            old_block = prev.block_id,
-                            new_block = block_id,
-                            "new leader arrived, dropping incomplete frame"
-                        );
-                        self.stats.record_drop();
+        #[cfg(windows)]
+        {
+            return match self.frame_rx.recv().await {
+                Some(Ok(mut frame)) => {
+                    if let Some(timestamp) = frame.ts_dev {
+                        frame.ts_host = self
+                            .time_sync
+                            .as_ref()
+                            .map(|time_sync| time_sync.to_host_time(timestamp));
                     }
+                    Ok(Some(frame))
+                }
+                Some(Err(err)) => Err(err),
+                None => Ok(None),
+            };
+        }
 
-                    let pixel_format = PixelFormat::from_code(pixel_format);
-                    let packet_payload = gvsp_payload_size(self.params.packet_size);
+        #[cfg(not(windows))]
+        {
+            loop {
+                // Check for timeout on active frame assembly.
+                if let Some(ref active) = self.active
+                    && active.is_expired(self.frame_timeout)
+                {
+                    let block_id = active.block_id;
+                    warn!(
+                        block_id,
+                        "frame assembly timeout, dropping incomplete frame"
+                    );
+                    self.stats.record_drop();
+                    self.active = None;
+                }
 
-                    self.active = Some(FrameAssemblyState::new(
+                // Receive next packet.
+                let raw = match self.source.recv(&mut self.recv_buffer).await {
+                    Ok(data) if data.is_empty() => return Ok(None), // Stream closed.
+                    Ok(data) => data,
+                    Err(e) => return Err(e),
+                };
+
+                // Parse GVSP packet.
+                let packet = match gvsp::parse_packet(&raw) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        trace!(error = %e, "discarding malformed GVSP packet");
+                        continue;
+                    }
+                };
+
+                // Process packet based on type.
+                match packet {
+                    GvspPacket::Leader {
                         block_id,
                         width,
                         height,
                         pixel_format,
                         timestamp,
-                        packet_payload,
-                    ));
-                    trace!(block_id, %pixel_format, width, height, "frame leader received");
-                }
-
-                GvspPacket::Payload {
-                    block_id,
-                    packet_id,
-                    data,
-                } => {
-                    if let Some(ref mut active) = self.active
-                        && active.block_id == block_id
-                        && active.ingest(packet_id, data.as_ref())
-                    {
-                        self.stats.record_packet();
-                    }
-                }
-
-                GvspPacket::Trailer {
-                    block_id,
-                    packet_id,
-                    status,
-                    chunk_data,
-                } => {
-                    let Some(mut active) = self.active.take() else {
-                        continue;
-                    };
-
-                    if active.block_id != block_id {
-                        // Mismatched trailer, drop and continue.
-                        self.stats.record_drop();
-                        continue;
-                    }
-
-                    if status != 0 {
-                        warn!(block_id, status, "trailer reported non-zero status");
-                        self.stats.record_drop();
-                        continue;
-                    }
-
-                    active.set_trailer_packet_id(packet_id);
-                    if !active.is_complete() {
-                        warn!(
-                            block_id,
-                            trailer_packet_id = packet_id,
-                            "dropping incomplete frame"
-                        );
-                        self.stats.record_drop();
-                        continue;
-                    }
-
-                    // Build the frame.
-                    let ts_host = self
-                        .time_sync
-                        .as_ref()
-                        .map(|ts| ts.to_host_time(active.timestamp));
-
-                    let chunks = if chunk_data.is_empty() {
-                        None
-                    } else {
-                        match crate::chunks::parse_chunk_bytes(&chunk_data) {
-                            Ok(map) => Some(map),
-                            Err(e) => {
-                                debug!(error = %e, "failed to parse chunk data");
-                                None
-                            }
+                        ..
+                    } => {
+                        // Start new frame assembly, dropping any incomplete previous frame.
+                        if let Some(ref prev) = self.active
+                            && prev.block_id != block_id
+                        {
+                            debug!(
+                                old_block = prev.block_id,
+                                new_block = block_id,
+                                "new leader arrived, dropping incomplete frame"
+                            );
+                            self.stats.record_drop();
                         }
-                    };
 
-                    // Truncate payload to actual received size.
-                    // The bitmap tells us what we received; we use the payload as-is.
-                    let payload = active.payload.freeze();
+                        let pixel_format = PixelFormat::from_code(pixel_format);
+                        let packet_payload = gvsp_payload_size(self.params.packet_size);
 
-                    let frame = Frame {
-                        payload,
-                        width: active.width,
-                        height: active.height,
-                        pixel_format: active.pixel_format,
-                        chunks,
-                        ts_dev: Some(active.timestamp),
-                        ts_host,
-                    };
+                        self.active = Some(FrameAssemblyState::new(
+                            block_id,
+                            width,
+                            height,
+                            pixel_format,
+                            timestamp,
+                            packet_payload,
+                        ));
+                        trace!(block_id, %pixel_format, width, height, "frame leader received");
+                    }
 
-                    // Record statistics.
-                    let latency = frame
-                        .host_time()
-                        .and_then(|ts| SystemTime::now().duration_since(ts).ok());
-                    self.stats.record_frame(frame.payload.len(), latency);
-
-                    debug!(
+                    GvspPacket::Payload {
                         block_id,
-                        width = frame.width,
-                        height = frame.height,
-                        bytes = frame.payload.len(),
-                        "frame complete"
-                    );
+                        packet_id,
+                        data,
+                    } => {
+                        if let Some(ref mut active) = self.active
+                            && active.block_id == block_id
+                            && active.ingest(packet_id, data.as_ref())
+                        {
+                            self.stats.record_packet();
+                        }
+                    }
 
-                    return Ok(Some(frame));
+                    GvspPacket::Trailer {
+                        block_id,
+                        packet_id,
+                        status,
+                        chunk_data,
+                    } => {
+                        let Some(mut active) = self.active.take() else {
+                            continue;
+                        };
+
+                        if active.block_id != block_id {
+                            // Mismatched trailer, drop and continue.
+                            self.stats.record_drop();
+                            continue;
+                        }
+
+                        if status != 0 {
+                            warn!(block_id, status, "trailer reported non-zero status");
+                            self.stats.record_drop();
+                            continue;
+                        }
+
+                        active.set_trailer_packet_id(packet_id);
+                        if !active.is_complete() {
+                            warn!(
+                                block_id,
+                                trailer_packet_id = packet_id,
+                                "dropping incomplete frame"
+                            );
+                            self.stats.record_drop();
+                            continue;
+                        }
+
+                        // Build the frame.
+                        let ts_host = self
+                            .time_sync
+                            .as_ref()
+                            .map(|ts| ts.to_host_time(active.timestamp));
+
+                        let chunks = if chunk_data.is_empty() {
+                            None
+                        } else {
+                            match crate::chunks::parse_chunk_bytes(&chunk_data) {
+                                Ok(map) => Some(map),
+                                Err(e) => {
+                                    debug!(error = %e, "failed to parse chunk data");
+                                    None
+                                }
+                            }
+                        };
+
+                        // Truncate payload to actual received size.
+                        // The bitmap tells us what we received; we use the payload as-is.
+                        let payload = active.payload.freeze();
+
+                        let frame = Frame {
+                            payload,
+                            width: active.width,
+                            height: active.height,
+                            pixel_format: active.pixel_format,
+                            chunks,
+                            ts_dev: Some(active.timestamp),
+                            ts_host,
+                        };
+
+                        // FrameStream is the sole owner of completed-frame
+                        // accounting. Consumers may snapshot this accumulator
+                        // through stats_handle(), but must not record the same
+                        // frame again.
+                        let latency = frame
+                            .host_time()
+                            .and_then(|ts| SystemTime::now().duration_since(ts).ok());
+                        self.stats.record_frame(frame.payload.len(), latency);
+
+                        debug!(
+                            block_id,
+                            width = frame.width,
+                            height = frame.height,
+                            bytes = frame.payload.len(),
+                            "frame complete"
+                        );
+
+                        return Ok(Some(frame));
+                    }
                 }
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for FrameStream {
+    fn drop(&mut self) {
+        self.reader_stop.store(true, Ordering::Release);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
     }
 }

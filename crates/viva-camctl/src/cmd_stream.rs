@@ -1,15 +1,15 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bytes::BytesMut;
 use tokio::time::{self, Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
-use viva_genicam::gige::gvsp::{self, GvspPacket};
+use viva_genicam::genapi::RegisterIo;
+use viva_genicam::gige::gvcp::consts as gvcp_consts;
 use viva_genicam::pfnc::PixelFormat;
-use viva_genicam::{Frame, StreamBuilder, StreamDest, parse_chunk_bytes};
+use viva_genicam::{Frame, FrameStream, StreamBuilder, StreamDest};
 
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
@@ -27,15 +27,12 @@ pub struct StreamArgs {
     pub duration_s: u64,
 }
 
-struct BlockState {
-    block_id: u64,
-    width: u32,
-    height: u32,
-    pixel_format: PixelFormat,
-    timestamp: u64,
-    payload: BytesMut,
-}
-
+// `await_holding_lock` resolves its lint level at the enclosing coroutine body,
+// so a statement-scoped `#[allow]` on the `let stream = { … }` below has no
+// effect and the attribute has to live here. The single offending guard is
+// documented at the point it is taken; nothing else in this function holds a
+// lock across an await.
+#[allow(clippy::await_holding_lock)]
 pub async fn run(args: StreamArgs) -> Result<()> {
     let iface_ip = args
         .iface
@@ -46,9 +43,6 @@ pub async fn run(args: StreamArgs) -> Result<()> {
     let mut camera = common::open_camera(&device)
         .await
         .context("open camera for stream")?;
-    let mut stream_device = common::open_control(&device)
-        .await
-        .context("open control channel for stream configuration")?;
 
     let iface = common::resolve_iface(Some(iface_ip))?
         .ok_or_else(|| anyhow!("failed to resolve capture interface"))?;
@@ -66,7 +60,6 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             .context("configure multicast destination")?;
     }
 
-    let mut builder = StreamBuilder::new(&mut stream_device).iface(iface.clone());
     let dest = match mode {
         StreamMode::Unicast => StreamDest::Unicast {
             dst_ip: host_ip,
@@ -84,19 +77,50 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             }
         }
     };
-    builder = builder.dest(dest);
-    if !args.auto {
-        builder = builder.auto_packet_size(false);
-    }
-    if args.port != 0 {
-        builder = builder.destination_port(args.port);
-    }
-    let stream = builder.build().await.context("negotiate stream")?;
+    // Negotiate the stream through the camera's existing GVCP handle so control
+    // privilege, stream configuration, and acquisition commands all come from
+    // the same application endpoint. This scope also releases the device lock
+    // before the higher-level Camera API is used again below.
+    //
+    // The guard must span the builder's awaits (StreamBuilder borrows the
+    // locked device), and nothing else contends this mutex until streaming
+    // starts, so holding it across the awaits cannot deadlock here. The
+    // `await_holding_lock` allow this needs is on the function; see there.
+    let stream = {
+        let mut stream_device = camera
+            .transport()
+            .lock_device()
+            .context("access camera control channel for stream configuration")?;
+        stream_device
+            .claim_control()
+            .await
+            .context("claim camera control for stream configuration")?;
 
+        let mut builder = StreamBuilder::new(&mut stream_device)
+            .iface(iface.clone())
+            .dest(dest)
+            .rcvbuf_bytes(64 << 20);
+        if !args.auto {
+            builder = builder.auto_packet_size(false);
+        }
+        if args.port != 0 {
+            builder = builder.destination_port(args.port);
+        }
+        builder.build().await.context("negotiate stream")?
+    };
+
+    // Keep the CLI at the completed-frame boundary. FrameStream owns the receive
+    // buffer, platform-specific packet reception, GVSP reassembly, chunk parsing,
+    // and completed-frame statistics.
+    let mut frame_stream = FrameStream::new(stream, None);
+    // This is a shared snapshot handle; FrameStream records each completed frame
+    // exactly once, so the CLI must not call record_frame() again.
+    let stats = frame_stream.stats_handle();
+
+    if let Err(err) = camera.set("TLParamsLocked", "1") {
+        warn!(error = %err, "failed to lock transport-layer parameters");
+    }
     camera.acquisition_start().context("start acquisition")?;
-    let mut recv_buffer = vec![0u8; (stream.params().packet_size as usize + 64).max(4096)];
-    let stats = stream.stats_handle();
-    let mut state: Option<BlockState> = None;
     let mut saved_frames = 0usize;
     let mut frame_index = 0usize;
     let end_deadline = if args.duration_s > 0 {
@@ -119,7 +143,16 @@ pub async fn run(args: StreamArgs) -> Result<()> {
 
         tokio::select! {
             _ = ticker.tick() => {
-                let snapshot = stream.stats();
+                // GVSP image traffic does not refresh the GVCP control-channel
+                // timeout. Reading GevCCP is a non-mutating keepalive that also
+                // confirms the camera still reports this application as owner.
+                if let Err(err) = camera
+                    .transport()
+                    .read(gvcp_consts::CONTROL_CHANNEL_PRIVILEGE, 4)
+                {
+                    warn!(error = %err, "camera control heartbeat failed");
+                }
+                let snapshot = stats.snapshot();
                 println!(
                     "[stream] fps={:.1} Mbps={:.2} frames={} drops={} resends={}",
                     snapshot.avg_fps,
@@ -134,72 +167,16 @@ pub async fn run(args: StreamArgs) -> Result<()> {
                 interrupted = true;
                 break;
             }
-            recv = stream.socket().expect("UDP socket").recv_from(&mut recv_buffer) => {
-                let (len, _) = match recv {
-                    Ok(result) => result,
-                    Err(err) => {
-                        warn!(error = %err, "socket receive failed");
-                        stats.record_drop();
-                        continue;
-                    }
-                };
-                let packet = match gvsp::parse_packet(&recv_buffer[..len]) {
-                    Ok(packet) => packet,
-                    Err(err) => {
-                        warn!(error = %err, "discarding malformed GVSP packet");
-                        continue;
-                    }
-                };
-                match packet {
-                    GvspPacket::Leader { block_id, width, height, pixel_format, timestamp, .. } => {
-                        state = Some(BlockState {
-                            block_id,
-                            width,
-                            height,
-                            pixel_format: PixelFormat::from_code(pixel_format),
-                            timestamp,
-                            payload: BytesMut::new(),
-                        });
-                    }
-                    GvspPacket::Payload { block_id, data, .. } => {
-                        if let Some(active) = state.as_mut()
-                            && active.block_id == block_id {
-                                active.payload.extend_from_slice(data.as_ref());
-                            }
-                    }
-                    GvspPacket::Trailer { block_id, status, chunk_data, .. } => {
-                        let Some(active) = state.take() else { continue };
-                        if active.block_id != block_id {
-                            continue;
+            received = frame_stream.next_frame() => {
+                match received {
+                    Ok(Some(mut frame)) => {
+                        // FrameStream has already counted this frame. Mapping its
+                        // host timestamp here enriches frame metadata only and
+                        // must not trigger another record_frame() call.
+                        if let Some(timestamp) = frame.ts_dev {
+                            frame.ts_host = Some(camera.map_dev_ts(timestamp));
                         }
-                        if status != 0 {
-                            warn!(block_id, status, "trailer reported non-zero status");
-                        }
-                        let chunk_map = if chunk_data.is_empty() {
-                            None
-                        } else {
-                            match parse_chunk_bytes(chunk_data.as_ref()) {
-                                Ok(map) => Some(map),
-                                Err(err) => {
-                                    warn!(block_id, error = %err, "failed to decode chunk payload");
-                                    None
-                                }
-                            }
-                        };
-                        let frame = Frame {
-                            payload: active.payload.freeze(),
-                            width: active.width,
-                            height: active.height,
-                            pixel_format: active.pixel_format,
-                            chunks: chunk_map,
-                            ts_dev: Some(active.timestamp),
-                            ts_host: Some(camera.map_dev_ts(active.timestamp)),
-                        };
                         frame_index += 1;
-                        let latency = frame
-                            .host_time()
-                            .and_then(|ts| SystemTime::now().duration_since(ts).ok());
-                        stats.record_frame(frame.payload.len(), latency);
 
                         if saved_frames < args.save {
                             if let Err(err) = save_frame(&frame, frame_index, args.rgb) {
@@ -209,16 +186,24 @@ pub async fn run(args: StreamArgs) -> Result<()> {
                             }
                         }
                     }
+                    Err(err) => {
+                        warn!(error = %err, "stream receiver failed");
+                        break;
+                    }
+                    Ok(None) => break,
                 }
             }
         }
     }
 
     camera.acquisition_stop().context("stop acquisition")?;
+    if let Err(err) = camera.set("TLParamsLocked", "0") {
+        warn!(error = %err, "failed to unlock transport-layer parameters");
+    }
     if interrupted {
         println!("Stream interrupted by user.");
     }
-    let summary = stream.stats();
+    let summary = stats.snapshot();
     println!(
         "Summary: frames={} bytes={} drops={} resends={} avg_fps={:.1} avg_mbps={:.2}",
         summary.frames,

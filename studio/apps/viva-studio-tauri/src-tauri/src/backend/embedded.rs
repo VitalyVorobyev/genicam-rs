@@ -22,6 +22,7 @@ use tauri::Emitter;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, watch};
 use tracing::{info, warn};
 use viva_genicam::genapi::{AccessMode, Node};
+use viva_genicam::gige::gvcp::consts as gvcp_consts;
 use viva_genicam::{Camera, FrameStream, GigeRegisterIo};
 use viva_zenoh_api::{FeatureState, NumericRange};
 
@@ -68,7 +69,7 @@ struct AcquisitionState {
 /// Backend that communicates directly with cameras via GigE Vision / USB3 Vision.
 pub struct EmbeddedBackend {
     /// Connected camera behind a std::sync::Mutex for spawn_blocking access.
-    camera: std::sync::Mutex<Option<ConnectedCamera>>,
+    camera: Arc<std::sync::Mutex<Option<ConnectedCamera>>>,
     /// Cache of discovered devices, updated periodically.
     discovered: RwLock<Vec<DeviceInfo>>,
     /// Active acquisition state, if streaming.
@@ -79,7 +80,7 @@ impl EmbeddedBackend {
     /// Create a new embedded backend with no connected camera.
     pub fn new() -> Self {
         Self {
-            camera: std::sync::Mutex::new(None),
+            camera: Arc::new(std::sync::Mutex::new(None)),
             discovered: RwLock::new(Vec::new()),
             acquisition: AsyncMutex::new(None),
         }
@@ -301,21 +302,29 @@ impl DeviceBackend for EmbeddedBackend {
                     .lock_device()
                     .map_err(|e| format!("Failed to access device: {e}"))?;
 
+                let handle = tokio::runtime::Handle::current();
+                handle
+                    .block_on(device_guard.claim_control())
+                    .map_err(|e| format!("Failed to claim camera control: {e}"))?;
+
                 let camera_ip = device_guard.remote_addr().ip();
                 let camera_ipv4 = match camera_ip {
                     std::net::IpAddr::V4(ip) => ip,
                     _ => return Err("IPv6 cameras are not supported".to_string()),
                 };
 
-                let iface = viva_genicam::gige::nic::Iface::from_ipv4(camera_ipv4)
+                // camera_ipv4 belongs to the remote camera, not the host. Probe
+                // the OS route to find the local NIC and source address that
+                // Windows selected to reach that camera.
+                let iface = viva_genicam::gige::nic::Iface::from_remote_ipv4(camera_ipv4)
                     .map_err(|e| format!("Failed to detect network interface: {e}"))?;
 
                 // StreamBuilder::build() is async — use block_on from the blocking context.
-                let handle = tokio::runtime::Handle::current();
                 let stream = handle.block_on(
                     viva_genicam::StreamBuilder::new(&mut device_guard)
                         .iface(iface)
-                        .auto_packet_size(true)
+                        .auto_packet_size(false)
+                        .rcvbuf_bytes(64 << 20) // 64 MiB to absorb bursty GVSP traffic
                         .build(),
                 )
                 .map_err(|e| format!("Failed to build stream: {e}"))?;
@@ -445,9 +454,58 @@ impl DeviceBackend for EmbeddedBackend {
             })
         };
 
+        // Receiving GVSP frames does not keep the GVCP control channel alive.
+        // Run the keepalive independently of frame and WebSocket tasks so a
+        // stalled consumer cannot let the camera's control privilege expire.
+        let heartbeat_handle = {
+            let camera = Arc::clone(&self.camera);
+            let mut shutdown_rx = shutdown_rx.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                        _ = ticker.tick() => {
+                            // A GevCCP read refreshes the camera's heartbeat
+                            // timer without repeatedly rewriting control state.
+                            let result = tokio::task::block_in_place(|| -> Result<(), String> {
+                                let mut guard = camera
+                                    .lock()
+                                    .map_err(|_| "Camera mutex poisoned".to_string())?;
+                                let connected = guard
+                                    .as_mut()
+                                    .ok_or_else(|| "No camera connected".to_string())?;
+                                let mut device = connected
+                                    .camera
+                                    .transport()
+                                    .lock_device()
+                                    .map_err(|e| format!("Failed to access device: {e}"))?;
+                                tokio::runtime::Handle::current()
+                                    .block_on(device.read_register(
+                                        gvcp_consts::CONTROL_CHANNEL_PRIVILEGE as u32,
+                                    ))
+                                    .map(|_| ())
+                                    .map_err(|e| format!("Failed to refresh camera control: {e}"))
+                            });
+
+                            if let Err(error) = result {
+                                warn!(%error, "Camera control heartbeat failed");
+                            }
+                        }
+                    }
+                }
+            })
+        };
+
         *self.acquisition.lock().await = Some(AcquisitionState {
             shutdown_tx,
-            task_handles: vec![frame_reader_handle, ws_handle],
+            task_handles: vec![frame_reader_handle, ws_handle, heartbeat_handle],
             ws_url: ws_url.clone(),
             width,
             height,
