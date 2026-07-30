@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-30
+
+The GenApi layer now implements the GenICam formula language and register
+address model rather than plausible approximations of them. **Every user on
+0.2.x should upgrade**: 27 of the 30 real camera descriptions in our vendor
+corpus could not be opened at all on 0.2.8, and those that could were reading
+the wrong registers.
+
+This release grew out of a Hikrobot MV-CS050-10GC report (#35) whose author
+attached a dump of their parsed model. Cross-checking it against the vendor
+corpus showed that none of the defects it exposed were vendor-specific. See
+[ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) for the
+full audit and the policy that came out of it.
+
 ### Added
 
 - **`viva-camctl report` — one command that produces a bug report.** The
@@ -28,84 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing.
 - `Iface::list` and `Iface::all_ipv4` expose the library's own view of the
   host's interfaces, including every IPv4 on a multi-homed NIC.
-
-### Fixed
-
-- **An event could still be stranded behind the event channel's receive lock**
-  (TC-14, Codex review on #69). The previous fix added a recheck of the queue
-  after acquiring the receive lock, which closed the wide window but left a few
-  instructions of a narrow one: the first event of a decoded datagram was
-  returned and the rest queued *after* the lock was released, so a second
-  consumer could take the lock, find the queue empty, and block in `recv_from`
-  on a device that had already sent everything it was going to send. Every
-  event a datagram carries is now published in one step while the lock is held,
-  and the caller pops its own result from the queue like any other consumer —
-  the first/remainder split that had to be ordered correctly is gone.
-- **A node type we do not implement now says so** (GA-02). `is_node_tag` gated
-  the parser's isolation path, so a tag not on its list fell through to
-  `skip_element` and vanished — no log line, no `XmlModel::skipped` entry, and
-  nothing for the corpus tests to trip over. `<Register>`, 56 declarations
-  across 14 corpus documents, disappeared exactly this way. An element is now
-  taken for a node declaration if it carries a `Name`, which the GenApi schema
-  requires on every node and on nothing else at that level.
-- **`NodeMap` no longer discards the XML layer's losses.** `try_from_xml` built
-  its skip list from scratch and dropped `XmlModel::skipped` on the floor, so
-  any consumer holding a nodemap — camctl, Python, Studio — could not tell a
-  feature we failed to parse from one the camera does not have. The two lists
-  now travel together.
-- **Two concurrent `EventSocket::recv` callers could strand an event.** Both
-  could observe an empty pending queue, after which one would decode a
-  multi-event datagram, queue the remainder and return; the other was already
-  committed to `recv_from` and never rechecked, so it blocked on a device that
-  had finished speaking while its events sat in the queue. Found by codex
-  review on #68.
-- **The fake camera tracked event notification globally.** `EventNotification`
-  is selected by `EventSelector`, so enabling two events writes one address
-  twice — and a single stored word let the second write silently disable the
-  first. State is now per event id. Found by codex review on #68.
-- **Action commands were indistinguishable from register reads** (#61).
-  `ACTION_CMD` was sent as opcode 0x0080 — which is `READREG_CMD`. A camera
-  receiving one saw a register read with a 24-byte payload, so an action either
-  failed or was interpreted as six register accesses. The opcode is 0x0100
-  (`ACTION_ACK` 0x0101), and the payload is 12 bytes — `device_key`,
-  `group_key`, `group_mask` — extended to 20 by a 64-bit action time only when
-  the scheduled-action flag (bit 7 of the GVCP flags byte) is set. The old
-  encoder always sent the time, plus a stream-channel field and a reserved word
-  that the format does not have. `ActionParams::channel` is gone.
-- **The GVCP event channel could not have worked against any camera** (#62).
-  Four defects stacked on top of each other:
-  - The parser required opcode 0x000D, which is not a GVCP opcode. Events
-    arrive as `EVENT_CMD` (0x00C0) or `EVENTDATA_CMD` (0x00C2).
-  - It decoded the datagram as an acknowledgement, reading the 0x42 command key
-    and flags byte as a status word. Every field after that was shifted: the
-    event identifier was read out of the reserved word, and the timestamp out
-    of the stream channel and block id.
-  - One `EVENT_CMD` may pack several events (`length / 16`, or `/ 24` with
-    GigE Vision 2.0 extended block IDs). Only the first was considered.
-  - No `EVENT_ACK`/`EVENTDATA_ACK` was ever returned, so a device that set the
-    acknowledge-required flag would retransmit indefinitely.
-
-  All four are fixed, and `EventPacket::block_id` widens to `u64` to carry
-  extended block IDs.
-- **Message-channel bootstrap registers pointed at nothing.** The destination
-  address and port were written to 0x0900_0200 and 0x0900_0204. The real
-  registers are `GevMCDA` at 0x0B10 and `GevMCP` at 0x0B00 — 0x0900 is
-  `GevNumberOfMessageChannels`, and its value was being used as a base, so
-  every write landed roughly 150 MB into the device's register space. The port
-  was additionally written as a bare `u16` into a 32-bit register, placing it
-  in the high half.
-
-### Removed
-
-- **The raw event-enable fallback**, which toggled a bit in a "notification
-  mask" at 0x0900_0300. No such bootstrap register exists: which events a
-  device emits is selected through the GenApi `EventSelector` and
-  `EventNotification` features. A camera exposing neither now gets an error
-  naming what is missing, instead of a write to an invented address.
-  `GigeDevice::enable_event_raw` is gone with it.
-
-### Added
-
 - **The fake camera implements actions and events.** It acknowledges an
   `ACTION_CMD` addressed to its device and group keys and ignores one that is
   not, and emits `GEV_EVENT_START_OF_TRANSFER` per frame once
@@ -115,46 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   neither of these had ever been exercised, which is how both opcode errors
   survived. Golden-byte fixtures for `ACTION_CMD` and `EVENT_CMD` are asserted
   against literal spec-derived arrays, independently of our own encoder.
-
-### Changed
-
-- **The fake camera answers the mandatory bootstrap block.** `Version`,
-  `DeviceMode`, the MAC registers, the IP configuration and the channel counts
-  all read as zero before, so a register dump taken from the fake looked
-  nothing like one taken from a camera. The MAC in the registers is now
-  asserted against the MAC in the Discovery ACK — two copies of one fact
-  drifting apart is how #57 happened.
-- **The issue templates ask for artifacts GitHub will actually accept.** The
-  camera template asked for a `.xml` attachment, which GitHub rejects, and put
-  `render: shell` on the field where it told reporters to attach a file, which
-  disables uploads (DOC-12, DOC-13 — both found by codex review on #58). It now
-  asks for the `viva-camctl report` bundle.
-- **ADR-0018 and ADR-0019 no longer treat aravis as an authority.** ADR-0018
-  said to verify against "the reference implementation" and named `../aravis`
-  the tiebreaker for formula semantics; ADR-0019 called aravis and Wireshark
-  "the practical authorities". Both are amended. `CLAUDE.md` carries the
-  ranking they now defer to: real hardware, then the specification, then the
-  vendor XML corpus, then independent implementations as corroboration that is
-  cited but never decisive. A question they cannot settle goes to the backlog
-  to wait for a device (TC-09, TC-12).
-- Both READMEs install with `cargo add viva-genicam` rather than a pinned
-  `viva-genicam = "X.Y"` line. Nothing built that line, so it rotted to `"0.1"`
-  and stayed there through all of 0.2; and a pin is wrong at one end or the
-  other whenever the tree is ahead of what crates.io serves.
-
-## [0.3.0] - 2026-07-29
-
-The GenApi layer now implements the GenICam formula language and register
-address model rather than plausible approximations of them. **Every user on
-0.2.x should upgrade**: 27 of the 30 real camera descriptions in our vendor
-corpus could not be opened at all on 0.2.8, and those that could were reading
-the wrong registers.
-
-This release grew out of a Hikrobot MV-CS050-10GC report (#35) whose author
-attached a dump of their parsed model. Cross-checking it against the vendor
-corpus showed that none of the defects it exposed were vendor-specific. See
-[ADR-0018](docs/adrs/adr0018-genapi-conformance-over-convenience.md) for the
-full audit and the policy that came out of it.
 
 ### Fixed
 
@@ -244,6 +140,78 @@ full audit and the policy that came out of it.
   Baumer TXG description for its dB scale.
 - **`connect_gige` no longer panics on a malformed model** (backlog SR-01).
   `NodeMap::from` called `.expect()` on remote input.
+- **An event could still be stranded behind the event channel's receive lock**
+  (TC-14, Codex review on #69). The previous fix added a recheck of the queue
+  after acquiring the receive lock, which closed the wide window but left a few
+  instructions of a narrow one: the first event of a decoded datagram was
+  returned and the rest queued *after* the lock was released, so a second
+  consumer could take the lock, find the queue empty, and block in `recv_from`
+  on a device that had already sent everything it was going to send. Every
+  event a datagram carries is now published in one step while the lock is held,
+  and the caller pops its own result from the queue like any other consumer —
+  the first/remainder split that had to be ordered correctly is gone.
+- **A node type we do not implement now says so** (GA-02). `is_node_tag` gated
+  the parser's isolation path, so a tag not on its list fell through to
+  `skip_element` and vanished — no log line, no `XmlModel::skipped` entry, and
+  nothing for the corpus tests to trip over. `<Register>`, 56 declarations
+  across 14 corpus documents, disappeared exactly this way. An element is now
+  taken for a node declaration if it carries a `Name`, which the GenApi schema
+  requires on every node and on nothing else at that level.
+- **`NodeMap` no longer discards the XML layer's losses.** `try_from_xml` built
+  its skip list from scratch and dropped `XmlModel::skipped` on the floor, so
+  any consumer holding a nodemap — camctl, Python, Studio — could not tell a
+  feature we failed to parse from one the camera does not have. The two lists
+  now travel together.
+- **Two concurrent `EventSocket::recv` callers could strand an event.** Both
+  could observe an empty pending queue, after which one would decode a
+  multi-event datagram, queue the remainder and return; the other was already
+  committed to `recv_from` and never rechecked, so it blocked on a device that
+  had finished speaking while its events sat in the queue. Found by codex
+  review on #68.
+- **The fake camera tracked event notification globally.** `EventNotification`
+  is selected by `EventSelector`, so enabling two events writes one address
+  twice — and a single stored word let the second write silently disable the
+  first. State is now per event id. Found by codex review on #68.
+- **Action commands were indistinguishable from register reads** (#61).
+  `ACTION_CMD` was sent as opcode 0x0080 — which is `READREG_CMD`. A camera
+  receiving one saw a register read with a 24-byte payload, so an action either
+  failed or was interpreted as six register accesses. The opcode is 0x0100
+  (`ACTION_ACK` 0x0101), and the payload is 12 bytes — `device_key`,
+  `group_key`, `group_mask` — extended to 20 by a 64-bit action time only when
+  the scheduled-action flag (bit 7 of the GVCP flags byte) is set. The old
+  encoder always sent the time, plus a stream-channel field and a reserved word
+  that the format does not have. `ActionParams::channel` is gone.
+- **The GVCP event channel could not have worked against any camera** (#62).
+  Four defects stacked on top of each other:
+  - The parser required opcode 0x000D, which is not a GVCP opcode. Events
+    arrive as `EVENT_CMD` (0x00C0) or `EVENTDATA_CMD` (0x00C2).
+  - It decoded the datagram as an acknowledgement, reading the 0x42 command key
+    and flags byte as a status word. Every field after that was shifted: the
+    event identifier was read out of the reserved word, and the timestamp out
+    of the stream channel and block id.
+  - One `EVENT_CMD` may pack several events (`length / 16`, or `/ 24` with
+    GigE Vision 2.0 extended block IDs). Only the first was considered.
+  - No `EVENT_ACK`/`EVENTDATA_ACK` was ever returned, so a device that set the
+    acknowledge-required flag would retransmit indefinitely.
+
+  All four are fixed, and `EventPacket::block_id` widens to `u64` to carry
+  extended block IDs.
+- **Message-channel bootstrap registers pointed at nothing.** The destination
+  address and port were written to 0x0900_0200 and 0x0900_0204. The real
+  registers are `GevMCDA` at 0x0B10 and `GevMCP` at 0x0B00 — 0x0900 is
+  `GevNumberOfMessageChannels`, and its value was being used as a base, so
+  every write landed roughly 150 MB into the device's register space. The port
+  was additionally written as a bare `u16` into a 32-bit register, placing it
+  in the high half.
+
+### Removed
+
+- **The raw event-enable fallback**, which toggled a bit in a "notification
+  mask" at 0x0900_0300. No such bootstrap register exists: which events a
+  device emits is selected through the GenApi `EventSelector` and
+  `EventNotification` features. A camera exposing neither now gets an error
+  naming what is missing, instead of a write to an invented address.
+  `GigeDevice::enable_event_raw` is gone with it.
 
 ### Changed
 
@@ -264,6 +232,29 @@ full audit and the policy that came out of it.
 - The in-tree fake camera's XML uses conformant GenICam spelling (`=`, `&lt;&gt;`,
   no `<Output>`), and exercises a summed `<Address>` + `<pIndex>` stream-channel
   register and a `<pAddress>`-addressed `<StructReg>` end to end.
+- **The fake camera answers the mandatory bootstrap block.** `Version`,
+  `DeviceMode`, the MAC registers, the IP configuration and the channel counts
+  all read as zero before, so a register dump taken from the fake looked
+  nothing like one taken from a camera. The MAC in the registers is now
+  asserted against the MAC in the Discovery ACK — two copies of one fact
+  drifting apart is how #57 happened.
+- **The issue templates ask for artifacts GitHub will actually accept.** The
+  camera template asked for a `.xml` attachment, which GitHub rejects, and put
+  `render: shell` on the field where it told reporters to attach a file, which
+  disables uploads (DOC-12, DOC-13 — both found by codex review on #58). It now
+  asks for the `viva-camctl report` bundle.
+- **ADR-0018 and ADR-0019 no longer treat aravis as an authority.** ADR-0018
+  said to verify against "the reference implementation" and named `../aravis`
+  the tiebreaker for formula semantics; ADR-0019 called aravis and Wireshark
+  "the practical authorities". Both are amended. `CLAUDE.md` carries the
+  ranking they now defer to: real hardware, then the specification, then the
+  vendor XML corpus, then independent implementations as corroboration that is
+  cited but never decisive. A question they cannot settle goes to the backlog
+  to wait for a device (TC-09, TC-12).
+- Both READMEs install with `cargo add viva-genicam` rather than a pinned
+  `viva-genicam = "X.Y"` line. Nothing built that line, so it rotted to `"0.1"`
+  and stayed there through all of 0.2; and a pin is wrong at one end or the
+  other whenever the tree is ahead of what crates.io serves.
 
 ### Breaking
 
