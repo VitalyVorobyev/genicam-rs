@@ -555,16 +555,19 @@ struct WindowsFrameAssembly {
 }
 
 #[cfg(windows)]
+struct WindowsReceiver {
+    frames: tokio::sync::mpsc::Receiver<Result<Frame, GenicamError>>,
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
 fn windows_frame_receiver(
     source: PacketSource,
     packet_size: u32,
     stats: StreamStatsAccumulator,
     frame_timeout_ns: Arc<AtomicU64>,
-) -> (
-    tokio::sync::mpsc::Receiver<Result<Frame, GenicamError>>,
-    Arc<AtomicBool>,
-    Option<thread::JoinHandle<()>>,
-) {
+) -> WindowsReceiver {
     let (tx, rx) = tokio::sync::mpsc::channel(2);
     let stop = Arc::new(AtomicBool::new(false));
 
