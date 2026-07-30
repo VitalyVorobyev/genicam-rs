@@ -4,246 +4,172 @@ Goal of this tutorial:
 
 - Read and write **GenApi features** such as `ExposureTime` or `Gain`.
 - Understand how features map to the underlying **registers**.
-- Learn the basics of **selectors** (e.g. `GainSelector`) and how they affect values.
-- See how to do the same thing from:
-  - The `viva-camctl` CLI.
-  - The `viva-genicam` Rust examples.
+- Use **selectors** (e.g. `GainSelector`) and understand what they change.
+- Do all of it from both the `viva-camctl` CLI and Rust.
 
-If you haven’t done so yet, first go through:
-
-- [Discovery](./discovery.md)
-
-so you know the IP of your camera and which host interface you’re using.
+Work through [Discovery](./discovery.md) first, so you know your camera's IP and
+which host interface you are using.
 
 ---
 
 ## Concepts: features vs registers
 
-GenICam exposes camera configuration through **features** described in the
-GenApi XML:
+GenICam describes camera configuration as **features** in the GenApi XML:
 
-- A **feature** has a name (`ExposureTime`, `Gain`, `PixelFormat`, …).
-- Each feature has a **type**:
-  - Integer / Float / Boolean / Enumeration / Command, …
-- Under the hood, a feature usually corresponds to one or more **registers**:
-  - A simple feature may read/write a single 32-bit register.
-  - More complex ones may be derived via **SwissKnife** expressions or depend
-    on **selectors**.
+- A feature has a name (`ExposureTime`, `Gain`, `PixelFormat`, …) and a type
+  (Integer, Float, Boolean, Enumeration, Command, String, …).
+- Under the hood, a feature usually corresponds to one or more **registers**. A
+  simple one reads a single 32-bit register; others are derived through
+  **SwissKnife** expressions, or depend on **selectors**.
 
-The `viva-genapi` crate:
+The layering:
 
-- Loads the XML (via `viva-genapi-xml`).
-- Builds a **NodeMap**.
-- Lets you read and write features by name using typed accessors.
-
-The `viva-genicam` crate and `viva-camctl` CLI sit on top of this NodeMap and try to
-hide most of the low-level details.
+- `viva-genapi-xml` parses the XML into an `XmlModel`.
+- `viva-genapi` builds a `NodeMap` from it and evaluates nodes on demand.
+- `viva-genicam` and `viva-camctl` sit on top and hide the addressing.
 
 ---
 
 ## Step 1 – Inspect features with `viva-camctl`
 
-The `viva-camctl` CLI exposes basic feature access via `get` and `set` subcommands.  [oai_citation:0‡GitHub](https://github.com/VitalyVorobyev/viva-genicam)  
-
-You need:
-
-- The camera IP (from the discovery tutorial).
-- Optionally, the host interface IP if you have multiple NICs.
+You need the camera IP from the discovery tutorial, and the host interface IP if
+you have several NICs.
 
 ### 1.1. Read a feature by name
 
-Example: read `ExposureTime` from a camera at `192.168.0.10`:
-
 ```bash
-cargo run -p viva-camctl -- \
-  get --ip 192.168.0.10 --name ExposureTime
+cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
 ```
 
-You should see:
-- The current value.
-- The type (e.g. Float or Integer).
-- Possibly range information (min/max/increment) if available.
-
-If you prefer machine-readable output, add --json:
+For machine-readable output, note that `--json` is a top-level flag and goes
+**before** the subcommand:
 
 ```bash
-cargo run -p viva-camctl -- \
-  get --ip 192.168.0.10 --name ExposureTime --json
+cargo run -p viva-camctl -- --json get --ip 192.168.0.10 --name ExposureTime
 ```
-
-This is handy for scripting and CI.
 
 ### 1.2. Write a feature by name
 
-To change a value, use the set subcommand. For example, set exposure to
-5000 microseconds:
-
 ```bash
-cargo run -p viva-camctl -- \
-  set --ip 192.168.0.10 --name ExposureTime --value 5000
+cargo run -p viva-camctl -- set --ip 192.168.0.10 --name ExposureTime --value 5000
+cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
 ```
 
-Then verify:
+If the value does not change, the usual causes are:
+
+- The feature is **locked right now**. GenApi expresses this with `pIsLocked`,
+  which the library evaluates before every write — so a locked feature is
+  refused locally with a clear error, rather than being sent to the camera and
+  failing there.
+- The value violates a constraint (range, increment, alignment).
+- Another feature is overriding manual control — `ExposureAuto` is the usual
+  culprit for `ExposureTime`, `GainAuto` for `Gain`.
+
+### 1.3. Which features does this camera have?
+
+The report bundle lists node and feature counts along with the XML itself:
 
 ```bash
-cargo run -p viva-camctl -- \
-  get --ip 192.168.0.10 --name ExposureTime
+cargo run -p viva-camctl -- report --ip 192.168.0.10 --out viva-report.txt
 ```
 
-If the value doesn’t change:
-- The feature may be read-only (depending on acquisition state).
-- There may be constraints (e.g. limited range, alignment).
-- Another feature (like ExposureAuto) may be overriding manual control.
-
-Those cases are described in more depth in the [viva-genapi chapter](../crates/viva-genapi.md).
-
-⸻
+---
 
 ## Step 2 – Work with selectors
 
-Many cameras use selectors to multiplex multiple logical settings onto the
-same underlying registers. A common pattern is:
-- GainSelector = All, Red, Green, Blue, …
-- Gain = value for the currently selected channel.
+Many cameras multiplex several logical settings onto the same registers:
 
-When you change GainSelector, you are effectively changing which “row” you
-are editing. The NodeMap takes care of switching the right registers.
+- `GainSelector` = `All`, `Red`, `Green`, `Blue`, …
+- `Gain` = the value for the currently selected channel.
 
-### 2.1. Inspect which selectors exist
-
-You can use viva-camctl to dump a selector feature and see its possible values.
-For example, to inspect GainSelector:
+Changing the selector changes which "row" you are editing. The `NodeMap`
+re-resolves the addressing and invalidates the cached values that depended on
+it, so a read after a selector write returns the new channel's value rather than
+a stale one.
 
 ```bash
-cargo run -p viva-camctl -- \
-  get --ip 192.168.0.10 --name GainSelector --json
+# What can the selector be set to?
+cargo run -p viva-camctl -- --json get --ip 192.168.0.10 --name GainSelector
+
+# Different gain per channel
+cargo run -p viva-camctl -- set --ip 192.168.0.10 --name GainSelector --value Red
+cargo run -p viva-camctl -- set --ip 192.168.0.10 --name Gain --value 5.0
+
+cargo run -p viva-camctl -- set --ip 192.168.0.10 --name GainSelector --value Blue
+cargo run -p viva-camctl -- set --ip 192.168.0.10 --name Gain --value 3.0
 ```
 
-Look for:
-- The current value (e.g. "All").
-- The list of allowed values / enum entries.
-
-### 2.2. Change a feature through a selector
-
-To set different gains for different channels, a typical sequence is:
-
-```bash
-# Select the red channel, then set Gain
-cargo run -p viva-camctl -- \
-  set --ip 192.168.0.10 --name GainSelector --value Red
-
-cargo run -p viva-camctl -- \
-  set --ip 192.168.0.10 --name Gain --value 5.0
-
-# Select the blue channel, then set Gain
-cargo run -p viva-camctl -- \
-  set --ip 192.168.0.10 --name GainSelector --value Blue
-
-cargo run -p viva-camctl -- \
-  set --ip 192.168.0.10 --name Gain --value 3.0
-```
-
-From your perspective, you are just changing features. Internally,
-viva-genapi:
-- Evaluates the selector.
-- Resolves which nodes and registers are active.
-- Applies any SwissKnife expressions as needed.
-
-The `selectors_demo` example in the viva-genicam crate
-shows this pattern in Rust.
-
-⸻
-
-## Step 3 – Do the same from Rust (genicam examples)
-
-The genicam crate provides examples that mirror the CLI operations.  ￼
-
-### 3.1. Basic get/set example
-
-Run the get_set_feature example:
-
-```bash
-cargo run -p viva-genicam --example get_set_feature
-```
-
-This example demonstrates:
-- Opening a camera (e.g. by IP or by index).
-- Getting a feature by name.
-- Printing its value and metadata.
-- Setting a new value and verifying it.
-
-Inspect the source under crates/viva-genicam/examples/get_set_feature.rs for a
-minimal template you can reuse in your own project.
-
-Typical pseudo-flow inside that example (simplified):
-
-```rust
-// Pseudocode sketch — see the actual example for details
-let mut ctx = genicam::Context::new()?;
-let cam = ctx.open_by_ip("192.168.0.10".parse()?)?;
-let mut nodemap = cam.nodemap()?;
-
-// Read a float feature
-let exposure: f64 = nodemap.get_float("ExposureTime")?;
-println!("ExposureTime = {} us", exposure);
-
-// Write a new value
-nodemap.set_float("ExposureTime", 5000.0)?;
-```
-
-Types and method names may differ slightly; always follow the real example in
-the repository for exact signatures.
-
-### 3.2. Selectors demo
-
-To see selector logic in code, run:
+The `selectors_demo` example shows the same pattern in Rust:
 
 ```bash
 cargo run -p viva-genicam --example selectors_demo
 ```
 
-This example walks through:
-- Enumerating selector values.
-- Looping over them to set/read the associated feature.
-- Printing out the effective values per selector.
+---
 
-This is a good reference if you need to build a UI that exposes per-channel
-settings (e.g. separate gains per color channel).
+## Step 3 – Do the same from Rust
 
-⸻
+```bash
+cargo run -p viva-genicam --example get_set_feature
+cargo run -p viva-genicam --example get_set_feature -- --name Gain --value 3.0
+```
+
+The whole of it:
+
+```rust
+{{#include ../../../crates/viva-genicam/examples/get_set_feature.rs:get_set}}
+```
+
+Two things are worth pointing out.
+
+**Values are strings at this boundary.** `Camera::get` returns `String` and
+`Camera::set` takes `&str`; the node's own type decides how that text is parsed
+and encoded. `set_exposure_time_us` and `set_gain_db` are typed conveniences
+over the two most common cases.
+
+**Feature access is synchronous, including inside `#[tokio::main]`.** The
+register I/O behind it blocks, and `GigeRegisterIo` steps off the async worker
+by itself — you do not need to wrap calls in `spawn_blocking`.
+
+If you have no camera to hand, the same calls work against the
+[fake camera](./fake-camera.md):
+
+```bash
+cargo run -p viva-genicam --example demo_fake_camera
+```
+
+```rust
+{{#include ../../../crates/viva-genicam/examples/demo_fake_camera.rs:read_features}}
+```
+
+---
 
 ## Step 4 – When you might need raw register access
 
-Most applications should prefer feature-by-name access via GenApi:
-- You get type safety (integers vs floats vs enums).
-- You respect vendor constraints and SFNC behaviour.
-- Your code is more portable across cameras.
+Prefer features by name. You get the node's type, you respect the vendor's
+declared constraints, and your code stays portable across cameras.
 
-However, there are cases where raw registers are still useful:
+Raw registers are still occasionally the right tool:
+
 - Debugging unusual vendor behaviour or firmware bugs.
-- Working with undocumented features that are not in the XML.
-- Bringing up very early prototypes where the GenApi XML is incomplete.
+- Reaching something genuinely absent from the XML.
+- Bringing up a device whose GenApi description is incomplete.
 
-The lower-level crates (viva-gige and viva-gencp) expose primitives for reading
-and writing device memory directly. Refer to:
-- [viva-gige chapter](../crates/viva-gige.md)
-- [viva-gencp chapter](../crates/viva-gencp.md)
+`viva-gige` and `viva-gencp` expose the primitives — see the
+[viva-gige](../crates/viva-gige.md) and [viva-gencp](../crates/viva-gencp.md)
+chapters. Be careful: writing arbitrary registers can leave a device unusable
+until it is power-cycled.
 
-for details and examples. Be careful: writing to arbitrary registers can easily
-put the device into an unusable state until power-cycled.
-
-⸻
+---
 
 ## Recap
 
-After this tutorial you should be able to:
-- Read and write GenApi features by name using viva-camctl.
-- Understand and use selector features (e.g. GainSelector → Gain).
-- Locate and run the genicam examples (get_set_feature, selectors_demo)
-as templates for your own applications.
-- Know that raw register access exists, but is usually a last resort.
+You should now be able to:
 
-Next step: [GenApi XML](./genapi-xml.md)￼— how the XML is fetched and turned
-into the NodeMap that backs these features.
+- Read and write features by name, from the CLI and from Rust.
+- Recognise why a write was refused — a lock, a constraint, or an auto feature.
+- Use selectors to address per-channel settings.
+- Know that raw register access exists and is a last resort.
 
----
+Next: [GenApi XML](./genapi-xml.md) — where the feature list comes from in the
+first place.

@@ -128,7 +128,7 @@ See [`book/src/python.md`](book/src/python.md) for the full Python API.
 - **[GenICam standards introduction](docs/standards.md)** -- what GenApi, GenCP, GVCP, SFNC, and PFNC are and how they map to crates
 - **[Book (mdBook)](https://vitalyvorobyev.github.io/viva-genicam/)** -- tutorials, architecture, networking cookbook
 - **[API reference (docs.rs)](https://docs.rs/viva-genicam)** -- generated Rust API docs
-- **[Examples](crates/viva-genicam/examples/)** -- 17 runnable examples covering discovery, streaming, events, chunks, and more
+- **[Examples](crates/viva-genicam/examples/)** -- 18 runnable examples covering discovery, streaming, events, chunks, and more. The book's Rust snippets are pulled from these files, so what you read there is code that compiles in CI
 - **[System design](docs/design.md)** -- architecture, key abstractions, data flows, design tenets
 - **[Decision records](docs/adrs/)** -- why the big choices were made
 - **[Roadmap](docs/roadmap.md)** -- what's planned
@@ -155,6 +155,10 @@ cargo run -p viva-genicam --example list_cameras
 
 # Read/write features
 cargo run -p viva-genicam --example get_set_feature
+cargo run -p viva-genicam --example get_set_feature -- --name Gain --value 3.0
+
+# Fetch and inspect the camera's GenApi XML
+cargo run -p viva-genicam --example fetch_xml
 
 # Grab frames
 cargo run -p viva-genicam --example grab_gige

@@ -35,6 +35,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let (timeout, iface) = parse_args();
     info!(?timeout, iface = iface.as_deref(), "starting discovery");
+    // ANCHOR: discover
+    // `discover` broadcasts on the interfaces the library can see; naming one
+    // pins it to that NIC, which is what you want on a multi-homed host.
     let devices = if let Some(name) = iface.as_deref() {
         viva_genicam::gige::discover_on_interface(timeout, name).await?
     } else {
@@ -56,5 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dev.model.as_deref().unwrap_or("-"),
         );
     }
+    // ANCHOR_END: discover
     Ok(())
 }

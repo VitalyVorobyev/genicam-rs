@@ -3,10 +3,8 @@
 Goal of this tutorial:
 
 - Verify that your host can **see** your GigE Vision camera.
-- Learn how to run discovery from:
-  - The `viva-camctl` CLI.
-  - The `viva-genicam` Rust examples.
-- Understand the most common issues (NIC selection, firewall, subnets).
+- Run discovery from the `viva-camctl` CLI and from Rust.
+- Understand the usual reasons it fails (NIC selection, firewall, subnets).
 
 If discovery does not work, the other tutorials will not help much — fix this
 first.
@@ -18,133 +16,133 @@ first.
 Make sure that:
 
 - The workspace builds:
-```bash
-cargo build --workspace
-```
-- Your camera and host are physically connected:
-- Direct cable: host NIC ↔ camera.
-- Or via a switch dedicated to the camera subnet.
-- The camera has a valid IPv4 address:
-- From DHCP on your camera network, or
-- A static address that matches the host NIC’s subnet.
 
-For deeper network discussion (jumbo frames, tuning, etc.), see
-Networking￼ once that chapter is filled in.
+  ```bash
+  cargo build --workspace
+  ```
 
-⸻
+- Your camera and host are physically connected — a direct cable from host NIC
+  to camera, or a switch on a subnet dedicated to the cameras.
+- The camera has a valid IPv4 address: from DHCP on your camera network, a
+  static address matching the host NIC's subnet, or a link-local (APIPA)
+  address. Link-local setups need a little extra care on the host — see
+  [Link-local (APIPA) cameras](../networking.md#3-link-local-apipa-cameras).
 
-## Step 1 – Discover with viva-camctl
+For jumbo frames, MTU and throughput tuning, see the
+[Networking Guide](../networking.md).
 
-The easiest way to test discovery is the viva-camctl CLI, which wraps the
-genicam crate.
+---
+
+## Step 1 – Discover with `viva-camctl`
 
 ### 1.1. Basic discovery
-
-Run:
 
 ```bash
 cargo run -p viva-camctl -- list
 ```
 
-What to expect:
-* On success, you get a table or list of devices with at least:
-* IP address
-* MAC address
-* Model / manufacturer (if reported)
-* If nothing appears:
-* Check that the camera is powered and connected.
-* Check that your NIC is on the same subnet as the camera.
-* Check that your host firewall allows UDP broadcast on that NIC.
+On success you get one line per device with its IP, MAC, manufacturer and
+model. If nothing appears:
+
+- Check that the camera is powered and the link LED is lit.
+- Check that your NIC is on the same subnet as the camera.
+- Check that your host firewall allows UDP broadcast on that NIC.
 
 ### 1.2. Selecting an interface explicitly
 
-On multi-NIC systems, viva-camctl may need to be told which interface to use.
-
-Run:
+On multi-NIC systems, tell `viva-camctl` which interface to use. The value is
+the IPv4 address of your **host** NIC on the camera network, not the camera's:
 
 ```bash
 cargo run -p viva-camctl -- list --iface 192.168.0.5
 ```
 
-Where 192.168.0.5 is the IPv4 address of your host NIC on the camera
-network.
+If you are not sure which NIC to use, `ip addr` (Linux), `ifconfig` (macOS) or
+`ipconfig` (Windows) will tell you. The discovery output also names each
+interface the library itself can see, which is not always the same set the OS
+reports — an interface missing from that list is invisible to discovery no
+matter what anything else says.
 
-If you are not sure which NIC to use:
-* On Linux/macOS: use ip addr / ifconfig to inspect addresses.
-* On Windows: use ipconfig and your network settings GUI.
+If discovery works with `--iface` but not without it, your machine has several
+active interfaces and the automatic choice is not the one you expect.
 
-If discovery works when `--iface` is specified but not without it, your machine
-likely has multiple active interfaces and the automatic NIC choice is not what
-you expect.
+### 1.3. Machine-readable output
 
-⸻
+`--json` is a top-level flag, so it goes **before** the subcommand:
 
-## Step 2 – Discover via the genicam examples
+```bash
+cargo run -p viva-camctl -- --json list
+```
 
-The genicam crate comes with examples that exercise the same discovery logic
-from Rust code.
+---
 
-Run:
+## Step 2 – Discover from Rust
 
 ```bash
 cargo run -p viva-genicam --example list_cameras
+cargo run -p viva-genicam --example list_cameras -- --iface eth0
 ```
 
-This example:
-- Broadcasts on your camera network.
-- Prints basic info about each device it finds.
+Note that the two `--iface` flags take different things: `viva-camctl` wants the
+host NIC's **IPv4 address**, this example wants its **name**. That is worth
+knowing before you conclude your interface is broken.
 
-Use this when you want to:
-- See how to embed discovery into your own Rust application.
-- Compare behaviour between the CLI and the library (they should match).
+The part that matters is short:
 
-The code for list_cameras lives under `crates/viva-genicam/examples/` and is a
-good starting point for your own experiments.
+```rust
+{{#include ../../../crates/viva-genicam/examples/list_cameras.rs:discover}}
+```
 
-⸻
+Three entry points exist, and the difference matters more than it looks:
+
+| Function | Scans |
+|---|---|
+| `gige::discover(timeout)` | Every routable interface the library can enumerate |
+| `gige::discover_on_interface(timeout, name)` | One named interface |
+| `gige::discover_all(timeout)` | Every interface **including loopback** |
+
+Use `discover_all` only when you are talking to the [fake
+camera](./fake-camera.md) on `127.0.0.1`. Against real hardware it adds a
+loopback scan that can only produce noise.
+
+---
 
 ## Step 3 – Interpreting results
 
-When discovery succeeds, you should record:
-- The camera’s IP address (e.g. 192.168.0.10).
-- Which host NIC / interface you used (e.g. 192.168.0.5).
+Record two things — you will reuse them in every later tutorial:
 
-You will reuse these values in later tutorials, e.g.:
-- Registers & features: --ip 192.168.0.10
-- Streaming: --ip 192.168.0.10 --iface 192.168.0.5
+- The camera's IP address (e.g. `192.168.0.10`) → `--ip 192.168.0.10`
+- The host NIC you used (e.g. `192.168.0.5`) → `--iface 192.168.0.5`
 
-If you see multiple devices, you may want to label them (physically or in a
-note) to avoid confusion later.
+If several cameras answer, label them physically now rather than guessing later.
 
-⸻
+---
 
 ## Troubleshooting checklist
 
-If viva-camctl -- list or list_cameras find no devices:
-1.	Physical link
-    - Is the link LED on the NIC / switch / camera lit?
-    - Try a different Ethernet cable or port.
-2.	Subnets
-	- Host NIC and camera must be on the same subnet (e.g. both 192.168.0.x/24).
-	- Avoid having two NICs on the same subnet; this can confuse routing.
-3.	Firewall
-	- Allow UDP broadcast on the camera NIC.
-	- On Windows, make sure the executable is allowed for both “Private” and
-“Public” networks or run inside a network profile that permits broadcast.
-4.	Multiple NICs
-	- Use --iface <host-ip> to force the correct interface.
-	- Temporarily disable other NICs to confirm the problem is NIC selection.
-5. Vendor tools
-    - If the vendor’s viewer can see the camera but viva-camctl cannot:
-    - Compare which NIC / IP the vendor tool uses.
-    - Check whether the vendor tool reconfigured the camera’s IP (e.g. via
-DHCP or “force IP” features).
+If neither `viva-camctl list` nor `list_cameras` finds anything:
 
-If discovery is still failing after this checklist, capture logs with:
+1. **Physical link** — is the link LED lit on NIC, switch and camera? Try
+   another cable or port.
+2. **Subnets** — host NIC and camera must share a subnet. Two NICs on the same
+   subnet confuse routing; avoid it.
+3. **Firewall** — allow UDP broadcast on the camera NIC. On Windows the
+   executable must be permitted for both "Private" and "Public" profiles. On
+   Linux with firewalld, GVCP replies arrive from source port 3956 and need an
+   explicit rule; see
+   [Letting the reply back in](../networking.md#33-letting-the-reply-back-in-firewalld).
+4. **Multiple NICs** — force the right one with `--iface <host-ip>`, or disable
+   the others temporarily to confirm that NIC selection is the problem.
+5. **Vendor tools** — if the vendor's viewer sees the camera and `viva-camctl`
+   does not, compare which NIC and IP the vendor tool uses, and check whether it
+   reconfigured the camera's address (DHCP, or a "force IP" button).
+
+Still failing? Capture the details and send them:
 
 ```bash
-RUST_LOG=debug cargo run -p viva-camctl -- list --iface <host-ip>
+cargo run -p viva-camctl -- report --out viva-report.txt
 ```
 
-and open an issue with the log output and a short description of your setup.
-This will also be useful when extending the [GigE transport](../crates/viva-gige.md).
+The report records your interfaces as the library sees them and everything
+discovery did or did not hear — which is precisely what we need and cannot
+guess. See [Reporting a camera we can't open](../reporting.md).

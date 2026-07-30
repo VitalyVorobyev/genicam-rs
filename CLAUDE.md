@@ -286,7 +286,23 @@ cargo run -p viva-camctl -- list --iface 127.0.0.1
 
 - **mdBook**: `book/` directory - tutorials, architecture, networking cookbook (published user docs)
 - **API docs**: Generated via `cargo doc`, published to GitHub Pages
-- **Examples**: 17 examples in `crates/viva-genicam/examples/` (including `demo_fake_camera` for zero-hardware demo)
+- **Examples**: 18 examples in `crates/viva-genicam/examples/` (including `demo_fake_camera` for zero-hardware demo)
+
+**The book's Rust snippets come from these examples**, via mdBook
+`{{#include <file>:<anchor>}}` against `// ANCHOR:` / `// ANCHOR_END:`
+comments. That is deliberate: `cargo clippy --workspace --all-targets`
+compiles every example, so a snippet cannot drift from the API it
+documents. Book chapters used to describe an API that never existed
+(`viva_genicam::Client`, `viva_gige::control::ControlClient`,
+`genicam::Context::new`) — DOC-01. When adding a snippet, anchor it in a
+real example rather than hand-writing it, and never delete an anchor
+without checking who includes it.
+
+mdBook will not tell you when this breaks: a missing include *file* logs
+`[ERROR]` and still exits 0, and a missing *anchor* renders as an empty
+code block with no diagnostic at all. `crates/viva-genicam/tests/book_includes.rs`
+is the real gate and runs under `cargo test --workspace`; `ci.yml`'s lint
+job additionally greps `mdbook build` output for `[ERROR]`.
 - **Standards intro**: `docs/standards.md` - what GenApi/GenCP/GVCP/SFNC/PFNC are and how they map to crates
 - **Development docs**: `docs/` - see the next section
 
