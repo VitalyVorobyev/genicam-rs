@@ -1016,7 +1016,10 @@ impl FrameStream {
                             ts_host,
                         };
 
-                        // Record statistics.
+                        // FrameStream is the sole owner of completed-frame
+                        // accounting. Consumers may snapshot this accumulator
+                        // through stats_handle(), but must not record the same
+                        // frame again.
                         let latency = frame
                             .host_time()
                             .and_then(|ts| SystemTime::now().duration_since(ts).ok());

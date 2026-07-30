@@ -70,6 +70,10 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             }
         }
     };
+    // Negotiate the stream through the camera's existing GVCP handle so control
+    // privilege, stream configuration, and acquisition commands all come from
+    // the same application endpoint. This scope also releases the device lock
+    // before the higher-level Camera API is used again below.
     let stream = {
         let mut stream_device = camera
             .transport()
@@ -92,7 +96,13 @@ pub async fn run(args: StreamArgs) -> Result<()> {
         }
         builder.build().await.context("negotiate stream")?
     };
+
+    // Keep the CLI at the completed-frame boundary. FrameStream owns the receive
+    // buffer, platform-specific packet reception, GVSP reassembly, chunk parsing,
+    // and completed-frame statistics.
     let mut frame_stream = FrameStream::new(stream, None);
+    // This is a shared snapshot handle; FrameStream records each completed frame
+    // exactly once, so the CLI must not call record_frame() again.
     let stats = frame_stream.stats_handle();
 
     if let Err(err) = camera.set("TLParamsLocked", "1") {
@@ -121,6 +131,9 @@ pub async fn run(args: StreamArgs) -> Result<()> {
 
         tokio::select! {
             _ = ticker.tick() => {
+                // GVSP image traffic does not refresh the GVCP control-channel
+                // timeout. Reading GevCCP is a non-mutating keepalive that also
+                // confirms the camera still reports this application as owner.
                 match camera.transport().lock_device() {
                     Ok(mut device) => {
                         if let Err(err) = device
@@ -152,6 +165,9 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             received = frame_stream.next_frame() => {
                 match received {
                     Ok(Some(mut frame)) => {
+                        // FrameStream has already counted this frame. Mapping its
+                        // host timestamp here enriches frame metadata only and
+                        // must not trigger another record_frame() call.
                         if let Some(timestamp) = frame.ts_dev {
                             frame.ts_host = Some(camera.map_dev_ts(timestamp));
                         }

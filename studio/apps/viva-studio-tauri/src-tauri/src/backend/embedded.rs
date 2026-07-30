@@ -313,6 +313,9 @@ impl DeviceBackend for EmbeddedBackend {
                     _ => return Err("IPv6 cameras are not supported".to_string()),
                 };
 
+                // camera_ipv4 belongs to the remote camera, not the host. Probe
+                // the OS route to find the local NIC and source address that
+                // Windows selected to reach that camera.
                 let iface = viva_genicam::gige::nic::Iface::from_remote_ipv4(camera_ipv4)
                     .map_err(|e| format!("Failed to detect network interface: {e}"))?;
 
@@ -451,6 +454,9 @@ impl DeviceBackend for EmbeddedBackend {
             })
         };
 
+        // Receiving GVSP frames does not keep the GVCP control channel alive.
+        // Run the keepalive independently of frame and WebSocket tasks so a
+        // stalled consumer cannot let the camera's control privilege expire.
         let heartbeat_handle = {
             let camera = Arc::clone(&self.camera);
             let mut shutdown_rx = shutdown_rx.clone();
@@ -466,6 +472,8 @@ impl DeviceBackend for EmbeddedBackend {
                             }
                         }
                         _ = ticker.tick() => {
+                            // A GevCCP read refreshes the camera's heartbeat
+                            // timer without repeatedly rewriting control state.
                             let result = tokio::task::block_in_place(|| -> Result<(), String> {
                                 let mut guard = camera
                                     .lock()
