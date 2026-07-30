@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An event could still be stranded behind the event channel's receive lock**
+  (TC-14, Codex review on #69). The previous fix added a recheck of the queue
+  after acquiring the receive lock, which closed the wide window but left a few
+  instructions of a narrow one: the first event of a decoded datagram was
+  returned and the rest queued *after* the lock was released, so a second
+  consumer could take the lock, find the queue empty, and block in `recv_from`
+  on a device that had already sent everything it was going to send. Every
+  event a datagram carries is now published in one step while the lock is held,
+  and the caller pops its own result from the queue like any other consumer —
+  the first/remainder split that had to be ordered correctly is gone.
 - **A node type we do not implement now says so** (GA-02). `is_node_tag` gated
   the parser's isolation path, so a tag not on its list fell through to
   `skip_element` and vanished — no log line, no `XmlModel::skipped` entry, and

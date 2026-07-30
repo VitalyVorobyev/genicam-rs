@@ -263,32 +263,36 @@ impl EventSocket {
     ///
     /// A datagram carrying several events is decoded once and drained across
     /// successive calls. When the device set the acknowledge-required flag the
-    /// acknowledgement is sent before the first event is returned — a device
+    /// acknowledgement is sent before any of its events are returned — a device
     /// that does not get one will retransmit.
+    ///
+    /// Concurrent callers are symmetric consumers of one queue, and none of
+    /// them is promised the event its own `recv_from` decoded.
     pub async fn recv(&self) -> io::Result<EventPacket> {
         loop {
             if let Some(packet) = self.pending.lock().await.pop_front() {
                 return Ok(packet);
             }
 
+            // Two locks, and only one order: the receive lock, then the queue.
+            // A caller blocked in `recv_from` must not hold the queue, or a
+            // second caller could not drain events that have already arrived.
             let mut buffer = self.buffer.lock().await;
-            // Recheck under the receive lock. Waiting for it is exactly the
-            // window in which another task can decode a multi-event datagram
-            // and queue its remainder: those events are older than anything
-            // the socket will hand us next, and if we went to `recv_from`
-            // instead we would block on a device that may never speak again
-            // while its events sat in the queue.
+            // Recheck: waiting for the receive lock is the window in which
+            // another caller queues a decoded datagram, and those events are
+            // older than anything the socket will hand us next.
             if let Some(packet) = self.pending.lock().await.pop_front() {
                 return Ok(packet);
             }
 
             let (len, src) = self.sock.recv_from(&mut buffer[..]).await?;
             trace!(bytes = len, %src, "received GVCP message");
-            let parsed = EventPacket::parse_datagram(src, &buffer[..len]);
-            drop(buffer);
 
-            match parsed {
+            match EventPacket::parse_datagram(src, &buffer[..len]) {
                 Ok((header, events)) => {
+                    if events.is_empty() {
+                        continue;
+                    }
                     if header.ack_required {
                         let ack = encode_ack(header.ack_opcode(), header.request_id);
                         if let Err(err) = self.sock.send_to(&ack, src).await {
@@ -297,21 +301,19 @@ impl EventSocket {
                             trace!(%src, request_id = header.request_id, "acknowledged event");
                         }
                     }
-                    let mut iter = events.into_iter();
-                    let Some(first) = iter.next() else {
-                        continue;
-                    };
-                    let rest: VecDeque<_> = iter.collect();
-                    if !rest.is_empty() {
-                        debug!(extra = rest.len(), %src, "datagram carried multiple events");
-                        self.pending.lock().await.extend(rest);
-                    }
-                    debug!(event_id = first.event_id, %src, "parsed GVCP event");
-                    return Ok(first);
+                    // Every event this datagram carried is published in one
+                    // step, while the receive lock is still held. Returning
+                    // one directly and queueing the remainder would be the
+                    // same code with a window in it: between releasing the
+                    // receive lock and queueing the rest, another caller can
+                    // take the lock, find the queue empty and block in
+                    // `recv_from` on a device that may never speak again,
+                    // while the events it wanted sat undelivered.
+                    debug!(events = events.len(), %src, "queueing GVCP events");
+                    self.pending.lock().await.extend(events);
                 }
                 Err(err) => {
                     warn!(%src, error = %err, "discarding malformed event packet");
-                    continue;
                 }
             }
         }
@@ -473,10 +475,16 @@ mod tests {
     ///
     /// Both tasks start while the queue is empty, so both get past the fast
     /// path and one blocks on the receive lock. When the datagram lands, the
-    /// winner queues the second event and returns the first — and the loser
-    /// wakes holding a lock it must not carry into `recv_from`, because the
-    /// device has already said everything it is going to say. Without the
-    /// recheck this test hangs with an event sitting in the queue.
+    /// winner queues both events, and the loser wakes holding a lock it must
+    /// not carry into `recv_from` — the device has already said everything it
+    /// is going to say. Without the recheck after acquiring the receive lock
+    /// this hangs with an event sitting in the queue.
+    ///
+    /// It does *not* cover the narrower ordering the recheck depends on:
+    /// publishing the decoded events before releasing the receive lock. That
+    /// window is a few instructions wide, so no timing test holds it open
+    /// reliably — which is why the events are published in one step inside the
+    /// lock rather than split into a returned first and a queued remainder.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_queued_event_is_not_stranded_behind_the_receive_lock() {
         let sock = Arc::new(
@@ -500,7 +508,10 @@ mod tests {
 
         let mut buf = BytesMut::new();
         buf.put_u8(consts::GVCP_CMD_KEY);
-        buf.put_u8(0);
+        // Ask for an acknowledgement, as a device wanting delivery confirmed
+        // does: the ack is sent while the receive lock is held, so this also
+        // covers that sending it does not stall the second consumer.
+        buf.put_u8(consts::FLAG_ACK_REQUIRED);
         buf.put_u16(gvcp::EVENT_COMMAND);
         buf.put_u16((gvcp::EVENT_ENTRY * 2) as u16);
         buf.put_u16(0x0001);
