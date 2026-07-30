@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Mapping the next 5 device timestamps:");
     for idx in 0..5 {
-        execute_command(&mut camera, latch_cmd)?;
+        camera.execute_command(latch_cmd)?;
         let ticks = read_timestamp(&camera, value_node)?;
         let mapped = camera.map_dev_ts(ticks);
         println!("  sample #{idx}: {ticks} -> {:?}", mapped);
@@ -141,19 +141,6 @@ fn find_alias(nodemap: &NodeMap, names: &[&'static str]) -> Option<&'static str>
         .iter()
         .copied()
         .find(|name| nodemap.node(name).is_some())
-}
-
-fn execute_command<T: RegisterIo>(
-    camera: &mut Camera<T>,
-    command: &str,
-) -> Result<(), GenicamError> {
-    let transport_ptr = camera.transport() as *const T;
-    unsafe {
-        camera
-            .nodemap_mut()
-            .exec_command(command, &*transport_ptr)
-            .map_err(GenicamError::from)
-    }
 }
 
 fn read_timestamp<T: RegisterIo>(camera: &Camera<T>, node: &str) -> Result<u64, GenicamError> {

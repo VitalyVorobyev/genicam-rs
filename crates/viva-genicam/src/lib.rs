@@ -427,6 +427,20 @@ impl<T: RegisterIo> Camera<T> {
         Ok(())
     }
 
+    /// Execute a command feature by name.
+    ///
+    /// [`Camera::set`] already dispatches to this for `Node::Command`, but
+    /// only from a `&str` value; callers that hold a command name directly
+    /// would otherwise have to reach through [`Camera::nodemap_mut`] and
+    /// [`Camera::transport`] at once, which the borrow checker rejects from
+    /// outside the struct. Splitting the two fields here is the same thing
+    /// [`Camera::acquisition_start`] does.
+    pub fn execute_command(&mut self, name: &str) -> Result<(), GenicamError> {
+        self.nodemap
+            .exec_command(name, &self.transport)
+            .map_err(Into::into)
+    }
+
     /// Trigger acquisition start via the SFNC command feature.
     pub fn acquisition_start(&mut self) -> Result<(), GenicamError> {
         self.nodemap

@@ -22,7 +22,6 @@ use tauri::Emitter;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, watch};
 use tracing::{info, warn};
 use viva_genicam::genapi::{AccessMode, Node};
-use viva_genicam::gige::gvcp::consts as gvcp_consts;
 use viva_genicam::{Camera, FrameStream, GigeRegisterIo};
 use viva_zenoh_api::{FeatureState, NumericRange};
 
@@ -37,6 +36,11 @@ use super::{BackendMode, ConnectResult, DeviceBackend, NetworkConfig};
 /// Wrapped in a `std::sync::Mutex` because `Camera<GigeRegisterIo>` is `!Sync`
 /// (the `NodeMap` uses `RefCell` for caching). All access goes through
 /// `spawn_blocking`.
+///
+/// `Send` is derived, not asserted: every field is `Send` already. The
+/// `unsafe impl Send` this type used to carry was redundant, and a redundant
+/// unsafe impl is worse than none — it would have gone on silently covering
+/// for a genuinely non-`Send` field added later.
 struct ConnectedCamera {
     camera: Camera<GigeRegisterIo>,
     /// Kept for logging and disconnect matching.
@@ -45,11 +49,6 @@ struct ConnectedCamera {
     #[allow(dead_code)]
     xml: String,
 }
-
-// SAFETY: ConnectedCamera is only accessed through spawn_blocking with a
-// std::sync::Mutex, so it is never shared across threads concurrently.
-// The Mutex ensures exclusive access.
-unsafe impl Send for ConnectedCamera {}
 
 /// State for an active image acquisition session.
 struct AcquisitionState {
@@ -283,11 +282,13 @@ impl DeviceBackend for EmbeddedBackend {
                 .as_mut()
                 .ok_or_else(|| "No camera connected".to_string())?;
 
-            let cam_ptr = &mut connected.camera as *mut Camera<GigeRegisterIo>;
+            // `block_in_place` puts no `Send` bound on its closure, so the
+            // borrow can be handed over directly — the raw-pointer reborrow
+            // that used to stand here bought nothing and cost the aliasing
+            // guarantee.
+            let cam = &mut connected.camera;
 
             tokio::task::block_in_place(move || {
-                let cam = unsafe { &mut *cam_ptr };
-
                 let width = cam.get("Width")
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
