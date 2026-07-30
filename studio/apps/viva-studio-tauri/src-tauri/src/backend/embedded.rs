@@ -22,6 +22,7 @@ use tauri::Emitter;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, watch};
 use tracing::{info, warn};
 use viva_genicam::genapi::{AccessMode, Node};
+use viva_genicam::gige::gvcp::consts as gvcp_consts;
 use viva_genicam::{Camera, FrameStream, GigeRegisterIo};
 use viva_zenoh_api::{FeatureState, NumericRange};
 
@@ -478,7 +479,10 @@ impl DeviceBackend for EmbeddedBackend {
                                     .lock_device()
                                     .map_err(|e| format!("Failed to access device: {e}"))?;
                                 tokio::runtime::Handle::current()
-                                    .block_on(device.claim_control())
+                                    .block_on(device.read_register(
+                                        gvcp_consts::CONTROL_CHANNEL_PRIVILEGE as u32,
+                                    ))
+                                    .map(|_| ())
                                     .map_err(|e| format!("Failed to refresh camera control: {e}"))
                             });
 

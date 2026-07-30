@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::time::{self, Instant, MissedTickBehavior};
@@ -156,10 +156,6 @@ pub async fn run(args: StreamArgs) -> Result<()> {
                             frame.ts_host = Some(camera.map_dev_ts(timestamp));
                         }
                         frame_index += 1;
-                        let latency = frame
-                            .host_time()
-                            .and_then(|ts| SystemTime::now().duration_since(ts).ok());
-                        stats.record_frame(frame.payload.len(), latency);
 
                         if saved_frames < args.save {
                             if let Err(err) = save_frame(&frame, frame_index, args.rgb) {
