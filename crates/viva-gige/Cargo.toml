@@ -30,6 +30,12 @@ socket2 = { workspace = true, features = ["all"] }
 [target.'cfg(not(any(target_os = "linux", target_os = "android")))'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+] }
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }

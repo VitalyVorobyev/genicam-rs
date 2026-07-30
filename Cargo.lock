@@ -3290,6 +3290,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "viva-gencp",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
