@@ -30,6 +30,7 @@ here.
 | [0017](adr0017-studio-monorepo-two-workspaces.md) | Studio Monorepo with Two Cargo Workspaces | Accepted |
 | [0018](adr0018-genapi-conformance-over-convenience.md) | GenApi Conformance over Convenient Approximations | Accepted |
 | [0019](adr0019-transport-conformance-and-spec-derived-fakes.md) | Transport Conformance and Spec-Derived Fakes | Accepted |
+| [0020](adr0020-per-transport-status-codes.md) | Per-Transport Status Codes over a Shared Table | Proposed |
 
 **Template:** `# ADR-NNNN: Title`, `**Status:**`, `**Date:**`, `## Context`,
 `## Decision`, `## Consequences` (Positive/Negative). File name:

@@ -24,6 +24,21 @@ bitflags! {
     }
 }
 
+/// Command id of the GenCP pending-acknowledge.
+///
+/// A device that cannot answer within the controller's timeout replies with
+/// this instead of the real acknowledgement, and puts the extra time it wants
+/// in the SCD. It is a **command id, not a status** — the status field of a
+/// pending-ack is `SUCCESS`, so a receiver that only inspects the status
+/// cannot tell one from a real answer and will hand the timeout bytes back as
+/// payload. GVCP models the same mechanism the same way, as opcode `0x0089`
+/// (`viva_gige::gvcp::consts::PENDING_ACK`).
+///
+/// Corroborated by aravis `ARV_UVCP_COMMAND_PENDING_ACK`
+/// (`src/arvuvcpprivate.h`), which sits in the same command-id table as
+/// `READ_MEMORY_CMD` `0x0800` and `WRITE_MEMORY_CMD` `0x0802`.
+pub const PENDING_ACK_COMMAND: u16 = 0x0805;
+
 /// GenCP operation codes supported by this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpCode {
@@ -75,22 +90,47 @@ impl OpCode {
     }
 }
 
-/// Status codes returned by GenCP acknowledgements.
+/// Status codes shared by the GVCP and GenCP acknowledgement tables.
+///
+/// Only the codes **both** protocols define identically live here:
+/// `0x0000`, `0x8001`–`0x8007` and `0x8FFF`. Above that the tables diverge,
+/// and at `0x800B` they actively disagree — GVCP calls it `NO_MSG`
+/// (deprecated), GenCP calls it `MSG_TIMEOUT` — so a transport-specific code
+/// must be decoded by that transport, not here. See ADR-0020.
+///
+/// Values corroborated by Wireshark's GVCP dissector
+/// (`epan/dissectors/packet-gvcp.c`, `GEV_STATUS_*`) and aravis
+/// (`arvgvcpprivate.h`, `arvuvcpprivate.h`), which agree with each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusCode {
     /// Command completed successfully.
     Success,
     /// The requested command is not implemented by the device.
     NotImplemented,
-    /// One of the command parameters was invalid.
+    /// One of the command parameters was invalid or out of range.
     InvalidParameter,
-    /// The requested address range cannot be accessed.
+    /// The requested address does not exist on the device.
     InvalidAddress,
-    /// The device was busy processing a previous command.
-    DeviceBusy,
-    /// The device reported a generic or transport specific error.
-    Error,
-    /// A status code not known to this implementation.
+    /// Attempt to write to a read-only register.
+    ///
+    /// A permanent condition: retrying cannot make it succeed.
+    WriteProtect,
+    /// The access was not aligned as the underlying technology requires.
+    BadAlignment,
+    /// Attempt to read a non-readable, or write a non-writable, register.
+    ///
+    /// Distinct from [`StatusCode::WriteProtect`]: the register accepts
+    /// writes in principle but the device is refusing this one, typically
+    /// because a GenApi lock is engaged or control privilege is not held.
+    AccessDenied,
+    /// The device is busy and the command may succeed if retried.
+    ///
+    /// The only status in this table worth a retry.
+    Busy,
+    /// The device reported a generic error with nothing more specific.
+    GenericError,
+    /// A status code not known to this implementation, or specific to one
+    /// transport. Carries the raw value so a caller can still report it.
     Unknown(u16),
 }
 
@@ -102,8 +142,11 @@ impl StatusCode {
             0x8001 => StatusCode::NotImplemented,
             0x8002 => StatusCode::InvalidParameter,
             0x8003 => StatusCode::InvalidAddress,
-            0x8004 => StatusCode::DeviceBusy,
-            0x8005 => StatusCode::Error,
+            0x8004 => StatusCode::WriteProtect,
+            0x8005 => StatusCode::BadAlignment,
+            0x8006 => StatusCode::AccessDenied,
+            0x8007 => StatusCode::Busy,
+            0x8FFF => StatusCode::GenericError,
             other => StatusCode::Unknown(other),
         }
     }
@@ -115,10 +158,49 @@ impl StatusCode {
             StatusCode::NotImplemented => 0x8001,
             StatusCode::InvalidParameter => 0x8002,
             StatusCode::InvalidAddress => 0x8003,
-            StatusCode::DeviceBusy => 0x8004,
-            StatusCode::Error => 0x8005,
+            StatusCode::WriteProtect => 0x8004,
+            StatusCode::BadAlignment => 0x8005,
+            StatusCode::AccessDenied => 0x8006,
+            StatusCode::Busy => 0x8007,
+            StatusCode::GenericError => 0x8FFF,
             StatusCode::Unknown(code) => code,
         }
+    }
+
+    /// The specification's name for this code, for diagnostics.
+    pub const fn name(self) -> &'static str {
+        match self {
+            StatusCode::Success => "SUCCESS",
+            StatusCode::NotImplemented => "NOT_IMPLEMENTED",
+            StatusCode::InvalidParameter => "INVALID_PARAMETER",
+            StatusCode::InvalidAddress => "INVALID_ADDRESS",
+            StatusCode::WriteProtect => "WRITE_PROTECT",
+            StatusCode::BadAlignment => "BAD_ALIGNMENT",
+            StatusCode::AccessDenied => "ACCESS_DENIED",
+            StatusCode::Busy => "BUSY",
+            StatusCode::GenericError => "ERROR",
+            StatusCode::Unknown(_) => "unknown status",
+        }
+    }
+
+    /// Whether retrying the command could plausibly succeed.
+    ///
+    /// True only for [`StatusCode::Busy`]. Notably *not* `WriteProtect` or
+    /// `AccessDenied`, which are refusals rather than congestion.
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, StatusCode::Busy)
+    }
+}
+
+/// Prints the specification name **and** the raw hex value.
+///
+/// Both halves matter: the name is what makes an error actionable, and the
+/// raw value is what lets a reporter match it against a capture. A bare
+/// decimal — which is what `{:?}` on the old `Unknown(32774)` produced —
+/// sent a user to the issue tracker in #45 unable to tell us anything.
+impl std::fmt::Display for StatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (0x{:04X})", self.name(), self.to_raw())
     }
 }
 
@@ -226,6 +308,92 @@ pub fn decode_ack(buf: &[u8]) -> Result<GenCpAck, GenCpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared status table, written as literal values rather than derived
+    /// from `to_raw` — per ADR-0019, a fixture that reuses our own encoder
+    /// cannot catch our own misreading. Cross-checked against Wireshark's
+    /// `GEV_STATUS_*` defines and aravis's `ArvUvcpStatus`.
+    const SPEC_STATUS_TABLE: &[(u16, StatusCode, &str)] = &[
+        (0x0000, StatusCode::Success, "SUCCESS"),
+        (0x8001, StatusCode::NotImplemented, "NOT_IMPLEMENTED"),
+        (0x8002, StatusCode::InvalidParameter, "INVALID_PARAMETER"),
+        (0x8003, StatusCode::InvalidAddress, "INVALID_ADDRESS"),
+        (0x8004, StatusCode::WriteProtect, "WRITE_PROTECT"),
+        (0x8005, StatusCode::BadAlignment, "BAD_ALIGNMENT"),
+        (0x8006, StatusCode::AccessDenied, "ACCESS_DENIED"),
+        (0x8007, StatusCode::Busy, "BUSY"),
+        (0x8FFF, StatusCode::GenericError, "ERROR"),
+    ];
+
+    #[test]
+    fn status_table_matches_the_specification() {
+        for &(raw, expected, name) in SPEC_STATUS_TABLE {
+            assert_eq!(
+                StatusCode::from_raw(raw),
+                expected,
+                "decoding {raw:#06x} ({name})"
+            );
+            assert_eq!(expected.to_raw(), raw, "re-encoding {name}");
+            assert_eq!(expected.name(), name);
+        }
+    }
+
+    #[test]
+    fn regression_the_three_codes_we_used_to_mislabel() {
+        // 0x8004 was `DeviceBusy`, so a write to a read-only register reported
+        // "device busy" and the GVCP retry loop kept retrying it.
+        assert_eq!(StatusCode::from_raw(0x8004), StatusCode::WriteProtect);
+        assert!(!StatusCode::from_raw(0x8004).is_retryable());
+
+        // 0x8005 was the catch-all `Error`.
+        assert_eq!(StatusCode::from_raw(0x8005), StatusCode::BadAlignment);
+
+        // 0x8006 had no variant at all: #45's FLIR returned it on a locked
+        // node and the user saw `Unknown(32774)` — 32774 being 0x8006.
+        assert_eq!(StatusCode::from_raw(0x8006), StatusCode::AccessDenied);
+        assert_eq!(StatusCode::from_raw(32774), StatusCode::AccessDenied);
+
+        // 0x8007 is the one status a retry can help.
+        assert!(StatusCode::from_raw(0x8007).is_retryable());
+        assert!(!StatusCode::from_raw(0x0000).is_retryable());
+    }
+
+    #[test]
+    fn display_carries_both_the_name_and_the_raw_value() {
+        assert_eq!(
+            StatusCode::AccessDenied.to_string(),
+            "ACCESS_DENIED (0x8006)"
+        );
+        // An unrecognised code still prints as hex, never bare decimal.
+        assert_eq!(
+            StatusCode::from_raw(0x800C).to_string(),
+            "unknown status (0x800C)"
+        );
+    }
+
+    #[test]
+    fn transport_specific_codes_stay_unknown_here() {
+        // 0x800B is the reason this enum holds only the shared core: GVCP
+        // calls it NO_MSG (deprecated), GenCP calls it MSG_TIMEOUT. Decoding
+        // it here would have to pick one and be wrong for the other
+        // transport, so it is deliberately left to the transport (ADR-0020).
+        assert_eq!(StatusCode::from_raw(0x800B), StatusCode::Unknown(0x800B));
+        // Likewise the GVCP packet-resend family and the GenCP 0xA0xx range.
+        assert_eq!(StatusCode::from_raw(0x800C), StatusCode::Unknown(0x800C));
+        assert_eq!(StatusCode::from_raw(0xA001), StatusCode::Unknown(0xA001));
+        // Round-tripping an unknown code must not lose it.
+        assert_eq!(StatusCode::from_raw(0x800B).to_raw(), 0x800B);
+    }
+
+    #[test]
+    fn pending_ack_is_a_command_id_not_a_status() {
+        // The bug this constant replaces: 0x8006 was treated as "pending".
+        assert_eq!(PENDING_ACK_COMMAND, 0x0805);
+        assert_ne!(PENDING_ACK_COMMAND, StatusCode::AccessDenied.to_raw());
+        // It sits in the command-id table beside the ones we already model.
+        assert_eq!(OpCode::ReadMem.command_code(), 0x0084);
+        assert_eq!(OpCode::WriteMem.command_code(), 0x0086);
+    }
 
     #[test]
     fn encode_read_register_roundtrip() {
