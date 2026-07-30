@@ -39,8 +39,14 @@ profile (Private / Domain).
 cargo run -p viva-camctl -- list --iface 192.168.0.5
 ```
 
+If the camera's address starts with `169.254.`, it is using link-local (APIPA)
+addressing — see
+[Networking §3](./networking.md#3-link-local-apipa-cameras), which covers the
+host address and the two firewall rules that case needs.
+
 See also: [Discovery tutorial](./tutorials/discovery.md) and
-[Networking](./networking.md).
+[Networking](./networking.md). If none of it helps,
+[send us the camera's own account of itself](./reporting.md).
 
 ⸻
 
@@ -192,6 +198,14 @@ repository CI configuration for details.
 ⸻
 
 ## “Where should I report bugs or ask questions?”
+
+If the problem is that a camera does not work, start with
+[Reporting a camera we can't open](./reporting.md) — it gives you two commands
+that collect everything we need, and explains why your device is the most
+valuable evidence this project can get.
+
+Otherwise:
+
 - For bugs or feature requests, open an issue in the GitHub repository with:
     - A clear description of the problem.
     - Your OS, Rust version, and camera model.
