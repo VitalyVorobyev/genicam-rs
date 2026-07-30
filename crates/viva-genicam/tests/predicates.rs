@@ -186,3 +186,51 @@ async fn test_available_enum_entries_filters_pixel_format_by_sensor_type() {
     .await;
     assert_eq!(entries, vec!["RGB8".to_string()]);
 }
+
+/// The #45 scenario, end to end: a write the camera's own XML forbids must be
+/// refused locally and name the lock, rather than reaching the wire and coming
+/// back as a bare device status.
+///
+/// The reporter's FLIR declared `ExposureTime` with no `<AccessMode>` — so it
+/// defaulted to `RW` — and put the whole restriction in `pIsLocked`. The fake's
+/// XML wires the same shape onto the same real features.
+#[tokio::test]
+async fn writing_a_locked_exposure_time_is_refused_before_the_wire() {
+    let _cam = common::TestCamera::start().await;
+    let camera = connect_fake().await;
+
+    // ExposureAuto=Off → the lock is clear and the write lands.
+    set_feature(&camera, "ExposureAuto", "Off".into()).await;
+    let wrote = {
+        let cam = camera.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cam = cam.lock().unwrap();
+            cam.set_exposure_time_us(10_000.0)
+        })
+        .await
+        .unwrap()
+    };
+    assert!(wrote.is_ok(), "unlocked write should succeed: {wrote:?}");
+
+    // ExposureAuto=Continuous → the device reports the node locked.
+    set_feature(&camera, "ExposureAuto", "Continuous".into()).await;
+    let err = {
+        let cam = camera.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cam = cam.lock().unwrap();
+            cam.set_exposure_time_us(10_000.0)
+        })
+        .await
+        .unwrap()
+    }
+    .expect_err("a locked ExposureTime must not be written");
+
+    // The message has to be actionable: it names the node and the feature
+    // holding the lock. "access denied" alone is what sent #45's reporter to
+    // the issue tracker.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ExposureTime") && msg.contains("ExposureAutoActive"),
+        "error should name the node and its lock, got: {msg}"
+    );
+}

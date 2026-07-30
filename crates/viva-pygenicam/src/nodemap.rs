@@ -39,6 +39,48 @@ pub(crate) fn to_node_info<'py>(
     Ok(dict)
 }
 
+/// Add the device's *current* access mode to a node-info dict.
+///
+/// `access` is the value declared in the XML. That is genuinely useful — it is
+/// what an offline browser over `NullIo` can report — but it is not what the
+/// device will allow right now: a node with no `<AccessMode>` defaults to `RW`
+/// and may still be locked by `pIsLocked`. Reporting only the static value told
+/// #45's reporter their `ExposureTime` was writable while the camera was
+/// refusing every write to it.
+///
+/// Only the single-node lookup gets this. `all_node_info()` would need one
+/// predicate evaluation — and so at least one register read — per node, which
+/// on a 2 500-node description is not something an introspection call should do
+/// silently.
+///
+/// A predicate that cannot be evaluated (no device, unreadable register) leaves
+/// the field `None` rather than failing the call: introspection should degrade,
+/// not raise.
+fn add_effective_access(
+    dict: &Bound<'_, PyDict>,
+    nodemap: &NodeMap,
+    name: &str,
+    io: &dyn viva_genapi::RegisterIo,
+) -> PyResult<()> {
+    let effective = nodemap.effective_access_mode(name, io).ok();
+    dict.set_item(
+        "effective_access",
+        effective.and_then(|a| access_str(Some(a))),
+    )
+}
+
+pub(crate) fn node_info_with_state<'py>(
+    py: Python<'py>,
+    name: &str,
+    node: &Node,
+    nodemap: &NodeMap,
+    io: &dyn viva_genapi::RegisterIo,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = to_node_info(py, name, node)?;
+    add_effective_access(&dict, nodemap, name, io)?;
+    Ok(dict)
+}
+
 pub(crate) fn collect_node_names(nodemap: &NodeMap) -> Vec<String> {
     nodemap.node_names().map(|s| s.to_string()).collect()
 }

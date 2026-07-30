@@ -51,6 +51,42 @@ def test_node_introspection(camera):
     assert info is not None
     assert info.kind == "Integer"
     assert info.access in {"RW", "RO"}
+    # `access` is the XML declaration; `effective_access` is what the device
+    # permits now. Single-node lookups resolve it.
+    assert info.effective_access in {"RW", "RO", "WO"}
+
+
+def test_effective_access_reflects_the_device_lock(camera):
+    """`ExposureTime` is locked by `ExposureAuto` in the fake camera's XML.
+
+    Reporting only the static XML access mode told #45's reporter their
+    `ExposureTime` was writable while the camera refused every write to it.
+    """
+    camera.set("ExposureAuto", "Off")
+    info = camera.node_info("ExposureTime")
+    assert info is not None
+    assert info.effective_access == "RW"
+
+    camera.set("ExposureAuto", "Continuous")
+    info = camera.node_info("ExposureTime")
+    assert info is not None
+    assert info.effective_access == "RO", "a locked node must not report writable"
+    # The static declaration is unchanged -- both values are meaningful.
+    assert info.access == "RW"
+
+    # And the write itself is refused locally, naming the lock.
+    with pytest.raises(Exception) as excinfo:
+        camera.set_exposure_time_us(10_000.0)
+    assert "ExposureTime" in str(excinfo.value)
+
+    camera.set("ExposureAuto", "Off")
+
+
+def test_all_node_info_leaves_effective_access_unresolved(camera):
+    """Bulk introspection must not do a register read per node."""
+    infos = camera.all_node_info()
+    assert len(infos) > 0
+    assert all(i.effective_access is None for i in infos)
 
 
 def test_categories_non_empty(camera):

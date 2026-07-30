@@ -897,6 +897,7 @@ dependencies = [
  "tokio",
  "tracing",
  "viva-gencp",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
