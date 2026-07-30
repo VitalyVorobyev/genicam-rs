@@ -42,3 +42,7 @@ dist/
 
 # Fetched on demand by scripts/fetch-xml-corpus.sh; vendor copyright, not redistributed.
 fixtures/vendor-xml/
+
+# Session continuity note: a working draft, not project documentation. It was
+# committed once by accident (#83) — keep it out of the tree.
+docs/whereweare.md
