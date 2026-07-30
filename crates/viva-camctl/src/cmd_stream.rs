@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use tokio::time::{self, Instant, MissedTickBehavior};
 use tracing::{info, warn};
 
+use viva_genicam::genapi::RegisterIo;
 use viva_genicam::gige::gvcp::consts as gvcp_consts;
 use viva_genicam::pfnc::PixelFormat;
 use viva_genicam::{Frame, FrameStream, StreamBuilder, StreamDest};
@@ -139,18 +140,11 @@ pub async fn run(args: StreamArgs) -> Result<()> {
                 // GVSP image traffic does not refresh the GVCP control-channel
                 // timeout. Reading GevCCP is a non-mutating keepalive that also
                 // confirms the camera still reports this application as owner.
-                match camera.transport().lock_device() {
-                    Ok(mut device) => {
-                        if let Err(err) = device
-                            .read_register(gvcp_consts::CONTROL_CHANNEL_PRIVILEGE as u32)
-                            .await
-                        {
-                            warn!(error = %err, "camera control heartbeat failed");
-                        }
-                    }
-                    Err(err) => {
-                        warn!(error = %err, "failed to access camera for heartbeat");
-                    }
+                if let Err(err) = camera
+                    .transport()
+                    .read(gvcp_consts::CONTROL_CHANNEL_PRIVILEGE, 4)
+                {
+                    warn!(error = %err, "camera control heartbeat failed");
                 }
                 let snapshot = stats.snapshot();
                 println!(
