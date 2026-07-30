@@ -205,7 +205,10 @@ impl DeviceBackend for EmbeddedBackend {
 
     async fn get_feature_state(&self, name: &str) -> Result<FeatureState, String> {
         let name = name.to_string();
-        let mut guard = self.camera.lock().map_err(|_| "Camera mutex poisoned".to_string())?;
+        let mut guard = self
+            .camera
+            .lock()
+            .map_err(|_| "Camera mutex poisoned".to_string())?;
         let connected = guard.as_mut().ok_or("No camera connected".to_string())?;
         // Camera::get() calls RegisterIo::read() which uses block_on() internally.
         // block_in_place converts the current async thread to a blocking thread,
@@ -217,23 +220,25 @@ impl DeviceBackend for EmbeddedBackend {
         let value_str = json_value_to_string(value);
         let name = name.to_string();
 
-        let mut guard = self.camera.lock().map_err(|_| "Camera mutex poisoned".to_string())?;
+        let mut guard = self
+            .camera
+            .lock()
+            .map_err(|_| "Camera mutex poisoned".to_string())?;
         let connected = guard.as_mut().ok_or("No camera connected".to_string())?;
-        tokio::task::block_in_place(|| {
-            connected.camera.set(&name, &value_str)
-        })
-        .map_err(|e| format!("Failed to write feature '{name}': {e}"))
+        tokio::task::block_in_place(|| connected.camera.set(&name, &value_str))
+            .map_err(|e| format!("Failed to write feature '{name}': {e}"))
     }
 
     async fn exec_command(&self, name: &str) -> Result<(), String> {
         let name = name.to_string();
 
-        let mut guard = self.camera.lock().map_err(|_| "Camera mutex poisoned".to_string())?;
+        let mut guard = self
+            .camera
+            .lock()
+            .map_err(|_| "Camera mutex poisoned".to_string())?;
         let connected = guard.as_mut().ok_or("No camera connected".to_string())?;
-        tokio::task::block_in_place(|| {
-            connected.camera.set(&name, "")
-        })
-        .map_err(|e| format!("Failed to execute command '{name}': {e}"))
+        tokio::task::block_in_place(|| connected.camera.set(&name, ""))
+            .map_err(|e| format!("Failed to execute command '{name}': {e}"))
     }
 
     async fn bulk_read(&self, names: &[String]) -> Result<HashMap<String, NodeValueEntry>, String> {
@@ -248,7 +253,10 @@ impl DeviceBackend for EmbeddedBackend {
         &self,
         names: &[String],
     ) -> Result<HashMap<String, FeatureState>, String> {
-        let mut guard = self.camera.lock().map_err(|_| "Camera mutex poisoned".to_string())?;
+        let mut guard = self
+            .camera
+            .lock()
+            .map_err(|_| "Camera mutex poisoned".to_string())?;
         let connected = guard.as_mut().ok_or("No camera connected".to_string())?;
         let result = tokio::task::block_in_place(|| {
             let mut result = HashMap::with_capacity(names.len());
@@ -289,17 +297,20 @@ impl DeviceBackend for EmbeddedBackend {
             let cam = &mut connected.camera;
 
             tokio::task::block_in_place(move || {
-                let width = cam.get("Width")
+                let width = cam
+                    .get("Width")
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(640);
-                let height = cam.get("Height")
+                let height = cam
+                    .get("Height")
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(480);
 
                 // Get device handle for stream building.
-                let mut device_guard = cam.transport()
+                let mut device_guard = cam
+                    .transport()
                     .lock_device()
                     .map_err(|e| format!("Failed to access device: {e}"))?;
 
@@ -321,14 +332,15 @@ impl DeviceBackend for EmbeddedBackend {
                     .map_err(|e| format!("Failed to detect network interface: {e}"))?;
 
                 // StreamBuilder::build() is async — use block_on from the blocking context.
-                let stream = handle.block_on(
-                    viva_genicam::StreamBuilder::new(&mut device_guard)
-                        .iface(iface)
-                        .auto_packet_size(false)
-                        .rcvbuf_bytes(64 << 20) // 64 MiB to absorb bursty GVSP traffic
-                        .build(),
-                )
-                .map_err(|e| format!("Failed to build stream: {e}"))?;
+                let stream = handle
+                    .block_on(
+                        viva_genicam::StreamBuilder::new(&mut device_guard)
+                            .iface(iface)
+                            .auto_packet_size(false)
+                            .rcvbuf_bytes(64 << 20) // 64 MiB to absorb bursty GVSP traffic
+                            .build(),
+                    )
+                    .map_err(|e| format!("Failed to build stream: {e}"))?;
 
                 drop(device_guard);
 

@@ -409,8 +409,8 @@ pub async fn execute_command(
             Ok(reply) => match reply.result() {
                 Ok(sample) => {
                     let bytes = sample.payload().to_bytes();
-                    let resp: NodeOpResponse = serde_json::from_slice(&bytes)
-                        .map_err(|e| format!("Parse error: {e}"))?;
+                    let resp: NodeOpResponse =
+                        serde_json::from_slice(&bytes).map_err(|e| format!("Parse error: {e}"))?;
                     Ok(CommandResult {
                         ok: resp.ok,
                         error: resp.error,

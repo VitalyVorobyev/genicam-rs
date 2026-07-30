@@ -90,12 +90,10 @@ pub async fn connect_device(
             diags: vec![],
             summary,
         };
-        model.write().await.update(
-            result.xml,
-            graph,
-            vec![],
-            Some(device_id.clone()),
-        );
+        model
+            .write()
+            .await
+            .update(result.xml, graph, vec![], Some(device_id.clone()));
 
         *zenoh.connection.lock().await = ConnectionState::Connected {
             device_id,
