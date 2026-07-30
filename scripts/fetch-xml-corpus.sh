@@ -94,6 +94,7 @@ FLIR_BFLY_PGE_13E4C.xml	https://github.com/user-attachments/files/30514270/Black
 FLIR_BFLY_PGE_31S4C.xml	https://github.com/user-attachments/files/30514276/Blackfly.BFLY-PGE-31S4C_20274171_GenICam.zip	GRS_GEV_v003_292525.xml	45
 FLIR_BFS_PGE_63S4C.xml	https://github.com/user-attachments/files/30514275/BFS-PGE-63S4C_0188B042_GENICAM.zip	public_camxml.xml	45
 FLIR_BFS_PGE_70S7C.xml	https://github.com/user-attachments/files/30514267/BFS-PGE-70S7C_0188D99D_GENICAM.zip	public_camxml.xml	45
+FLIR_BFS_PGE_31S4C_C.xml	https://github.com/user-attachments/files/30541856/bfs-pge-31s4c.xml.zip	bfs-pge-31s4c.xml	45
 EOF
 )
 

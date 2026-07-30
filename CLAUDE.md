@@ -112,13 +112,16 @@ RUST_LOG=debug cargo test --workspace -- --nocapture
 Fake cameras only exercise constructs we already thought of. Real vendor
 GenApi XML is where the surprises live -- issues #45 and #35 were both a
 single vendor construct making a camera unopenable, and both reached
-users before us. The corpus test parses 35 real device descriptions
+users before us. The corpus test parses 36 real device descriptions
 (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, PCO, Point Grey, Photonic
 Science, Prosilica, SVS, Sony, TIS) plus the GenICam conformance
 document. Most are fetched from third-party projects; the Hikrobot
-MV-CS050-10GC (#35) and four FLIR Blackfly / Blackfly S descriptions
+MV-CS050-10GC (#35) and five FLIR Blackfly / Blackfly S descriptions
 (#45) were contributed by the reporters of those issues and are fetched
-from the issue attachments.
+from the issue attachments. The fifth FLIR document is the #45 reporter's
+own BFS-PGE-31S4C-C, obtained with `viva-camctl xml` after 0.3.0 fixed
+the defect that made it unopenable — so that exact model is now covered
+directly rather than by four stand-ins.
 
 ```bash
 scripts/fetch-xml-corpus.sh        # into fixtures/vendor-xml/ (gitignored)
@@ -222,6 +225,22 @@ we do ourselves after the merge. For every mechanical change requested,
 attach a one-click GitHub ```suggestion``` block (anchored to diff
 lines) so the contributor's remaining work is only the parts that need
 their judgment — or their hardware.
+
+**A suggestion block must be code we have actually run through the
+gates.** A one-click suggestion is a commit we are authoring in someone
+else's branch, so it carries our obligations, and the contributor has no
+reason to re-check it. On #72 two hand-written suggestions turned a
+passing CI red: four struct literals were written on one line, which
+rustfmt expands whenever the body exceeds `struct_lit_width` (18), and an
+`#[allow(clippy::await_holding_lock)]` was placed on a `let` statement,
+where it cannot work — that lint resolves its level at the enclosing
+coroutine body, so the attribute has to sit on the function. Apply the
+change locally, run `/quality-gate`, and paste the formatted result.
+
+**When we break a contributor's CI, we fix it — on their branch.**
+`gh pr merge` is not the only maintainer tool; `maintainerCanModify` lets
+us push the repair directly, keeping their authorship and costing them no
+round-trip. Do not ask a contributor to fix our whitespace.
 
 ### Fake camera binary
 
@@ -333,9 +352,24 @@ version while crates.io still serves the last one.
 ## Dependency Upgrades
 
 Before bumping a crate's version in any `Cargo.toml`, always check crates.io for the latest
-release — e.g. `curl -sSL https://crates.io/api/v1/crates/<name> | jq -r .crate.max_version`
-or the crate's crates.io page. Don't assume the version the user names is current; verify
-it exists and whether a newer one is available before editing manifests.
+release, or the crate's crates.io page. Don't assume the version the user names is current;
+verify it exists and whether a newer one is available before editing manifests.
+
+**Send a `User-Agent`.** crates.io enforces its API data-access policy by
+rejecting unidentified requests, and the failure is silent through `jq`:
+
+```bash
+# Returns the string "null" — an error body, not a missing version.
+curl -sSL https://crates.io/api/v1/crates/<name> | jq -r .crate.max_version
+
+# Correct.
+curl -sSL -H 'User-Agent: viva-genicam-dev' \
+  https://crates.io/api/v1/crates/<name> | jq -r .crate.max_version
+```
+
+The first form is what this file used to recommend. `null` reads as "not
+published", so it can talk you out of a correct release or into
+re-publishing one — check the raw body before believing an absence.
 
 ## Standards
 
