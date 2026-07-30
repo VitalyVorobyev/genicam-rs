@@ -6,6 +6,7 @@
 
 use pyo3::prelude::*;
 
+mod camctl;
 mod camera;
 mod discovery;
 mod errors;
@@ -24,5 +25,6 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     stream::register(m)?;
     nodemap::register(m)?;
     testing::register(py, m)?;
+    camctl::register(m)?;
     Ok(())
 }

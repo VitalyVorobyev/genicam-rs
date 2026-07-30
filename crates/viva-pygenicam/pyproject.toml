@@ -35,6 +35,11 @@ dependencies = [
     "numpy>=1.23",
 ]
 
+[project.scripts]
+# The Rust CLI, linked into the extension module rather than shipped as a
+# separate binary — one artifact, and it works on every target and from an sdist.
+viva-camctl = "viva_genicam._camctl:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7",

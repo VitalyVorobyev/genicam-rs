@@ -7,6 +7,9 @@ on:
   pull_request:
     paths:
       - 'crates/viva-pygenicam/**'
+      # The wheel installs a `viva-camctl` console script backed by this crate,
+      # so a change to the CLI can break the wheel.
+      - 'crates/viva-camctl/**'
       - 'crates/viva-genicam/**'
       - 'crates/viva-genapi*/**'
       - 'crates/viva-gige/**'
@@ -110,6 +113,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy pytest
           python -m pip install --no-index --find-links dist viva-genicam
+      - name: Console script works
+        # `pip install viva-genicam` must give the diagnostic CLI we ask
+        # reporters to run. Checked as its own step so a failure here is
+        # unambiguous rather than one line in a pytest trace.
+        run: |
+          viva-camctl --version
+          viva-camctl report --help
+
       - name: Run pytest against installed wheel
         run: python -m pytest crates/viva-pygenicam/tests -v
 

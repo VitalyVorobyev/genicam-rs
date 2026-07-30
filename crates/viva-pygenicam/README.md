@@ -6,6 +6,10 @@ Pure-Rust GenICam stack with Python bindings. Discover, control, and stream GigE
 pip install viva-genicam
 ```
 
+The install also provides `viva-camctl`, the diagnostic CLI, so
+`viva-camctl report --ip <CAMERA-IP> --out viva-report.txt` works without a Rust
+toolchain. It is the right thing to attach to a bug report.
+
 ```python
 import viva_genicam as vg
 

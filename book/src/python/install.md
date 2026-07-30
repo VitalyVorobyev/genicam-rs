@@ -18,6 +18,18 @@ libusb is statically linked into the extension module — no need to `apt instal
 
 If you are on a platform without a pre-built wheel, `pip` falls back to the sdist; you will need a Rust toolchain (`rustup`) and a C compiler installed.
 
+## The CLI comes with it
+
+The same install provides `viva-camctl`, the diagnostic CLI. It is linked into the extension module rather than shipped as a separate binary, so it is present in every wheel and in an sdist build too:
+
+```bash
+viva-camctl list
+viva-camctl report --ip 192.168.0.10 --out viva-report.txt   # bug-report bundle
+viva-camctl xml    --ip 192.168.0.10 --out camera.xml        # just the GenApi XML
+```
+
+Both `report` and `xml` stop before building the nodemap, so they work on a camera the library **cannot** open — which is the only camera anyone reports. Attach the output to a GitHub issue.
+
 ## Verify the install
 
 ```python
