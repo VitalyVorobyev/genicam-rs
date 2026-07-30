@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pip install viva-genicam` now installs the `viva-camctl` CLI.** We tell
+  reporters to run `viva-camctl report` or `viva-camctl xml` when we cannot open
+  their camera — right after telling them to pip-install — and the wheel shipped
+  no such command (#45). It is linked into the extension module rather than
+  staged as a per-target binary, so it is present in every wheel *and* in an
+  sdist build, with no Rust toolchain needed at the user's end.
+
+  `viva-camctl` gained a library entry point (`viva_camctl::run(argv) -> u8`) so
+  the binary and the console script run the same code; the binary's `main` is now
+  three lines.
+
 ### Fixed
 
 - **An idle GigE session no longer loses control of the camera.** A GigE Vision

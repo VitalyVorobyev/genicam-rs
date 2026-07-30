@@ -100,6 +100,14 @@ Pre-built wheels are published on PyPI — no C toolchain needed:
 pip install viva-genicam
 ```
 
+This also installs the [`viva-camctl`](#viva-camctl-cli) command, so the
+diagnostics below are available without a Rust toolchain:
+
+```bash
+viva-camctl list
+viva-camctl report --ip 192.168.0.10 --out viva-report.txt
+```
+
 ```python
 import viva_genicam as vg
 
@@ -156,6 +164,11 @@ cargo run -p viva-genicam --example demo_fake_camera
 ```
 
 ## viva-camctl CLI
+
+The examples below use `cargo run` from a checkout. If you would rather not
+build it, `pip install viva-genicam` installs the same CLI as a `viva-camctl`
+command — the wheel links it in, so `viva-camctl report ...` works with no Rust
+toolchain.
 
 ```bash
 # Discover GigE Vision cameras

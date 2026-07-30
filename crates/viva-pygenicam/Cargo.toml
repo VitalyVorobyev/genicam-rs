@@ -18,6 +18,9 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
 numpy = "0.28"
 viva-genicam = { path = "../viva-genicam", features = ["u3v", "u3v-usb"] }
+# The wheel installs a `viva-camctl` console script backed by this dependency,
+# so `pip install viva-genicam` provides the diagnostic CLI we ask users to run.
+viva-camctl = { path = "../viva-camctl" }
 viva-genapi = { path = "../viva-genapi" }
 viva-genapi-xml = { path = "../viva-genapi-xml" }
 viva-gige = { path = "../viva-gige" }

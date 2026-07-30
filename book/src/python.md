@@ -6,6 +6,9 @@ The `viva-genicam` Python package wraps the Rust workspace behind a NumPy-friend
 pip install viva-genicam
 ```
 
+The install also provides the `viva-camctl` CLI — see
+[Install & hello-camera](python/install.md#the-cli-comes-with-it).
+
 ```python
 import viva_genicam as vg
 
