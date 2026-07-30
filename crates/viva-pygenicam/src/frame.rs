@@ -6,7 +6,7 @@ use pyo3::types::PyBytes;
 use viva_genicam::Frame;
 use viva_pfnc::PixelFormat;
 
-use crate::errors::{IntoPyErr, parse_error};
+use crate::errors::{parse_error, IntoPyErr};
 
 #[pyclass(module = "viva_genicam._native", unsendable)]
 pub(crate) struct PyFrame {

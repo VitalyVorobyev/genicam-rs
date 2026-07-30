@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI no longer lets one failing gate hide the others.** `ci.yml` and
+  `studio-ci.yml` both ran fmt → clippy → test as sequential steps in a single
+  job, so the first failure masked everything after it. On #72 that hid a real
+  streaming regression for a day — `cargo test` never ran once across eight
+  contributor commits. Formatting and `cargo deny` moved to their own job, and
+  the remaining gates run even when an earlier one fails.
+- **`viva-pygenicam` is linted.** It sits outside the root workspace, so nothing
+  in CI had ever formatted or clippy-checked it; it had drifted out of rustfmt
+  in 35 places, carried two clippy findings, and its separate `Cargo.lock` went
+  stale for a whole PR unnoticed. `python.yml` now runs `cargo fmt --check` and
+  a `--locked` clippy over it.
 - `GigeDevice` gained `heartbeat_timeout_ms()` and `ping_control_channel()`, and
   `gvcp::consts` gained `HEARTBEAT_TIMEOUT` (`0x0938`) and
   `CCP_CONTROLLER_BITS`. `ping_control_channel` returns `Ok(false)` rather than

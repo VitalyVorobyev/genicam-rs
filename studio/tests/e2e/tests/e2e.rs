@@ -380,10 +380,15 @@ async fn test_manual_topology_frames_and_ws_stream() {
 // ── E2E-05: Sustained Streaming (heartbeat timeout regression) ─────────────
 
 /// Stream for 15 seconds and verify frames keep arriving without a gap
-/// longer than the camera's heartbeat timeout (~3 s).  This catches the
-/// regression where `refresh_connection` on macOS revokes CCP from the old
-/// socket while the heartbeat is still holding the camera mutex, starving
-/// the new socket's CCP timer.
+/// longer than the camera's heartbeat timeout (~3 s).
+///
+/// Originally this caught a regression where `refresh_connection` on macOS
+/// revoked CCP from the old socket while the service's heartbeat still held the
+/// camera mutex, starving the new socket's CCP timer. That mode is gone: SR-05
+/// moved the keepalive into `GigeRegisterIo`, where it contends for the device
+/// mutex only and retires with the connection a refresh replaces. What the test
+/// guards now is the property rather than the mechanism — a stream that outlives
+/// the heartbeat window without anything in the application refreshing it.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore] // Requires external binaries
 async fn test_sustained_streaming() {

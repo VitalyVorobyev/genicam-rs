@@ -127,8 +127,9 @@ fn discover_gige(
 
 #[pyfunction]
 fn discover_u3v(py: Python<'_>) -> PyResult<Vec<PyU3vDeviceInfo>> {
-    let devices =
-        py.detach(viva_u3v::discovery::discover).map_err(|e| transport_error(e.to_string()))?;
+    let devices = py
+        .detach(viva_u3v::discovery::discover)
+        .map_err(|e| transport_error(e.to_string()))?;
     Ok(devices.into_iter().map(PyU3vDeviceInfo::from).collect())
 }
 

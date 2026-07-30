@@ -25,7 +25,11 @@ fn pixel_format_code(name: &str) -> PyResult<u32> {
     }
 }
 
-#[pyclass(name = "FakeGigeCamera", module = "viva_genicam._native.testing", unsendable)]
+#[pyclass(
+    name = "FakeGigeCamera",
+    module = "viva_genicam._native.testing",
+    unsendable
+)]
 pub(crate) struct PyFakeGigeCamera {
     width: u32,
     height: u32,
@@ -173,7 +177,11 @@ impl PyFakeGigeCamera {
     }
 
     fn __repr__(&self) -> String {
-        let state = if self.handle.is_some() { "running" } else { "stopped" };
+        let state = if self.handle.is_some() {
+            "running"
+        } else {
+            "stopped"
+        };
         format!(
             "FakeGigeCamera({state}, {}x{} @ {} fps on {}:{}, pixel_format=0x{:08x})",
             self.width, self.height, self.fps, self.bind_ip, self.port, self.pixel_format,

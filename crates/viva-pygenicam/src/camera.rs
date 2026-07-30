@@ -6,23 +6,23 @@
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
-use if_addrs::{IfAddr, get_if_addrs};
+use if_addrs::{get_if_addrs, IfAddr};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use viva_genicam::gige::nic::Iface;
 use viva_genicam::{
-    Camera, GigeRegisterIo, U3vRegisterIo, connect_gige_with_xml, connect_u3v_with_xml,
+    connect_gige_with_xml, connect_u3v_with_xml, Camera, GigeRegisterIo, U3vRegisterIo,
 };
 use viva_u3v::usb::RusbTransfer;
 
 use crate::discovery::{PyGigeDeviceInfo, PyU3vDeviceInfo};
-use crate::errors::{IntoPyErr, parse_error};
+use crate::errors::{parse_error, IntoPyErr};
 use crate::nodemap::{
     collect_categories, collect_node_info, collect_node_names, node_info_with_state,
 };
 use crate::runtime::runtime;
-use crate::stream::{PyFrameStream, build_gige_stream, build_u3v_stream};
+use crate::stream::{build_gige_stream, build_u3v_stream, PyFrameStream};
 
 pub(crate) type GigeCamera = Camera<GigeRegisterIo>;
 pub(crate) type U3vCamera = Camera<U3vRegisterIo<RusbTransfer>>;
@@ -101,9 +101,7 @@ fn connect_gige(
 #[pyfunction]
 fn connect_u3v(py: Python<'_>, device_info: PyU3vDeviceInfo) -> PyResult<PyCamera> {
     let info = device_info.inner.clone();
-    let (camera, xml) = py
-        .detach(|| connect_u3v_with_xml(&info))
-        .into_py_err()?;
+    let (camera, xml) = py.detach(|| connect_u3v_with_xml(&info)).into_py_err()?;
     Ok(PyCamera {
         inner: CameraInner::U3v {
             device_info: device_info.inner,
@@ -136,11 +134,15 @@ impl PyCamera {
     fn get(&self, py: Python<'_>, name: &str) -> PyResult<String> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.get(name).into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.get(name).into_py_err()
             }
         })
@@ -149,11 +151,15 @@ impl PyCamera {
     fn set(&self, py: Python<'_>, name: &str, value: &str) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set(name, value).into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set(name, value).into_py_err()
             }
         })
@@ -162,11 +168,15 @@ impl PyCamera {
     fn set_exposure_time_us(&self, py: Python<'_>, value: f64) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set_exposure_time_us(value).into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set_exposure_time_us(value).into_py_err()
             }
         })
@@ -175,11 +185,15 @@ impl PyCamera {
     fn set_gain_db(&self, py: Python<'_>, value: f64) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set_gain_db(value).into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.set_gain_db(value).into_py_err()
             }
         })
@@ -188,11 +202,15 @@ impl PyCamera {
     fn acquisition_start(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.acquisition_start().into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.acquisition_start().into_py_err()
             }
         })
@@ -201,11 +219,15 @@ impl PyCamera {
     fn acquisition_stop(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.acquisition_stop().into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let mut g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.acquisition_stop().into_py_err()
             }
         })
@@ -214,11 +236,15 @@ impl PyCamera {
     fn enum_entries(&self, name: &str) -> PyResult<Vec<String>> {
         match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.enum_entries(name).into_py_err()
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 g.enum_entries(name).into_py_err()
             }
         }
@@ -227,30 +253,34 @@ impl PyCamera {
     fn nodes(&self) -> PyResult<Vec<String>> {
         match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 Ok(collect_node_names(g.nodemap()))
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 Ok(collect_node_names(g.nodemap()))
             }
         }
     }
 
-    fn node_info<'py>(
-        &self,
-        py: Python<'py>,
-        name: &str,
-    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+    fn node_info<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
         match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 let node = g.nodemap().node(name);
                 node.map(|n| node_info_with_state(py, name, n, g.nodemap(), g.transport()))
                     .transpose()
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 let node = g.nodemap().node(name);
                 node.map(|n| node_info_with_state(py, name, n, g.nodemap(), g.transport()))
                     .transpose()
@@ -261,11 +291,15 @@ impl PyCamera {
     fn all_node_info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 collect_node_info(py, g.nodemap())
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 collect_node_info(py, g.nodemap())
             }
         }
@@ -274,11 +308,15 @@ impl PyCamera {
     fn categories<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         match &self.inner {
             CameraInner::Gige { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 collect_categories(py, g.nodemap())
             }
             CameraInner::U3v { camera, .. } => {
-                let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+                let g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
                 collect_categories(py, g.nodemap())
             }
         }

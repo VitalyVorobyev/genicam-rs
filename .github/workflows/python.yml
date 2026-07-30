@@ -23,6 +23,35 @@ permissions:
   contents: read
 
 jobs:
+  # `viva-pygenicam` is excluded from the root workspace, so
+  # `cargo fmt --all` / `cargo clippy --workspace` in `ci.yml` never reach it.
+  # Nothing linted it until this job: it had drifted out of rustfmt in 35
+  # places, carried two clippy findings, and its separate `Cargo.lock` went
+  # stale for a whole PR without anything noticing (CI-02).
+  lint:
+    name: lint viva-pygenicam
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/viva-pygenicam
+
+      - name: Cargo fmt
+        working-directory: crates/viva-pygenicam
+        run: cargo fmt --check
+
+      # `--locked` is the part that catches a stale lockfile. `--all-targets`
+      # would need a Python interpreter to link the cdylib against, so lint the
+      # lib alone with the feature maturin builds it with.
+      - name: Cargo clippy
+        if: ${{ !cancelled() }}
+        working-directory: crates/viva-pygenicam
+        run: cargo clippy --locked --lib --features pyo3/extension-module -- -D warnings
+
   build:
     name: wheel ${{ matrix.target }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
