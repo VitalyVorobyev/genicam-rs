@@ -85,7 +85,10 @@ pub(crate) fn collect_node_names(nodemap: &NodeMap) -> Vec<String> {
     nodemap.node_names().map(|s| s.to_string()).collect()
 }
 
-pub(crate) fn collect_node_info<'py>(py: Python<'py>, nodemap: &NodeMap) -> PyResult<Bound<'py, PyList>> {
+pub(crate) fn collect_node_info<'py>(
+    py: Python<'py>,
+    nodemap: &NodeMap,
+) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for name in nodemap.node_names() {
         if let Some(node) = nodemap.node(name) {
@@ -95,7 +98,10 @@ pub(crate) fn collect_node_info<'py>(py: Python<'py>, nodemap: &NodeMap) -> PyRe
     Ok(list)
 }
 
-pub(crate) fn collect_categories<'py>(py: Python<'py>, nodemap: &NodeMap) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn collect_categories<'py>(
+    py: Python<'py>,
+    nodemap: &NodeMap,
+) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     for (cat, children) in nodemap.categories() {
         let list = PyList::new(py, children.iter().map(|s| s.as_str()))?;

@@ -11,7 +11,7 @@ use viva_genicam::gige::nic::Iface;
 use viva_genicam::{FrameStream, StreamBuilder, U3vFrameStream as U3vStream, U3vStreamBuilder};
 
 use crate::camera::{GigeCamera, U3vCamera};
-use crate::errors::{IntoPyErr, parse_error, transport_error};
+use crate::errors::{parse_error, transport_error, IntoPyErr};
 use crate::frame::PyFrame;
 use crate::runtime::runtime;
 
@@ -97,7 +97,9 @@ pub(crate) fn build_gige_stream(
     destination_port: Option<u16>,
 ) -> PyResult<PyFrameStream> {
     let time_sync = {
-        let g = camera.lock().map_err(|_| parse_error("camera mutex poisoned"))?;
+        let g = camera
+            .lock()
+            .map_err(|_| parse_error("camera mutex poisoned"))?;
         g.time_sync().clone()
     };
 
