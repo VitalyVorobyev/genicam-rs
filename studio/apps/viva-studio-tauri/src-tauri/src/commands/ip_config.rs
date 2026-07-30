@@ -28,7 +28,9 @@ pub async fn force_ip(
     let mac_bytes = parse_mac(&mac)?;
     let ip_addr: Ipv4Addr = ip.parse().map_err(|e| format!("Invalid IP: {e}"))?;
     let subnet_addr: Ipv4Addr = subnet.parse().map_err(|e| format!("Invalid subnet: {e}"))?;
-    let gateway_addr: Ipv4Addr = gateway.parse().map_err(|e| format!("Invalid gateway: {e}"))?;
+    let gateway_addr: Ipv4Addr = gateway
+        .parse()
+        .map_err(|e| format!("Invalid gateway: {e}"))?;
 
     viva_genicam::gige::force_ip(mac_bytes, ip_addr, subnet_addr, gateway_addr, None)
         .await
@@ -40,9 +42,7 @@ pub async fn force_ip(
 
 /// Read the network configuration of the connected GigE camera.
 #[tauri::command]
-pub async fn get_network_config(
-    backend: State<'_, BackendState>,
-) -> Result<NetworkConfig, String> {
+pub async fn get_network_config(backend: State<'_, BackendState>) -> Result<NetworkConfig, String> {
     backend.get_network_config().await
 }
 
@@ -59,7 +59,9 @@ pub async fn set_persistent_ip(
 ) -> Result<(), String> {
     let ip_addr: Ipv4Addr = ip.parse().map_err(|e| format!("Invalid IP: {e}"))?;
     let subnet_addr: Ipv4Addr = subnet.parse().map_err(|e| format!("Invalid subnet: {e}"))?;
-    let gateway_addr: Ipv4Addr = gateway.parse().map_err(|e| format!("Invalid gateway: {e}"))?;
+    let gateway_addr: Ipv4Addr = gateway
+        .parse()
+        .map_err(|e| format!("Invalid gateway: {e}"))?;
 
     backend
         .set_persistent_ip(ip_addr, subnet_addr, gateway_addr)

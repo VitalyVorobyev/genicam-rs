@@ -76,8 +76,8 @@ mod rusb_impl {
 // Mock implementation for testing
 // ---------------------------------------------------------------------------
 
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 
 /// In-memory mock of [`UsbTransfer`] for unit tests.
 ///
@@ -86,26 +86,24 @@ use std::collections::{HashMap, VecDeque};
 ///
 /// # Thread safety
 ///
-/// Uses interior mutability via `RefCell` — intended for single-threaded
-/// test contexts only. Wrap in a `Mutex` if concurrent access is needed.
+/// State lives behind a `Mutex`, so the `Send + Sync` that [`UsbTransfer`]
+/// requires is derived rather than asserted. The mock used to hold `RefCell`
+/// and claim the bounds with `unsafe impl`, which was unsound: `RefCell`'s
+/// borrow flag is not atomic, so two threads sharing one mock could hold
+/// overlapping `borrow_mut()`s and alias the same `&mut`.
 pub struct MockUsbTransfer {
     /// Queued read responses per endpoint address.
-    reads: RefCell<HashMap<u8, VecDeque<Vec<u8>>>>,
+    reads: Mutex<HashMap<u8, VecDeque<Vec<u8>>>>,
     /// Captured write payloads per endpoint address.
-    writes: RefCell<HashMap<u8, Vec<Vec<u8>>>>,
+    writes: Mutex<HashMap<u8, Vec<Vec<u8>>>>,
 }
-
-// SAFETY: MockUsbTransfer is only used in single-threaded test contexts.
-// The UsbTransfer trait requires Send + Sync, so we provide the bounds.
-unsafe impl Send for MockUsbTransfer {}
-unsafe impl Sync for MockUsbTransfer {}
 
 impl MockUsbTransfer {
     /// Create an empty mock with no pre-loaded responses.
     pub fn new() -> Self {
         Self {
-            reads: RefCell::new(HashMap::new()),
-            writes: RefCell::new(HashMap::new()),
+            reads: Mutex::new(HashMap::new()),
+            writes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -113,7 +111,8 @@ impl MockUsbTransfer {
     /// on the given `endpoint`.
     pub fn enqueue_read(&self, endpoint: u8, data: Vec<u8>) {
         self.reads
-            .borrow_mut()
+            .lock()
+            .expect("mock read queue poisoned")
             .entry(endpoint)
             .or_default()
             .push_back(data);
@@ -122,7 +121,8 @@ impl MockUsbTransfer {
     /// Return all captured write payloads for the given `endpoint`.
     pub fn take_writes(&self, endpoint: u8) -> Vec<Vec<u8>> {
         self.writes
-            .borrow_mut()
+            .lock()
+            .expect("mock write log poisoned")
             .remove(&endpoint)
             .unwrap_or_default()
     }
@@ -138,7 +138,8 @@ impl UsbTransfer for MockUsbTransfer {
     fn bulk_write(&self, endpoint: u8, data: &[u8], _timeout: Duration) -> Result<usize, U3vError> {
         let len = data.len();
         self.writes
-            .borrow_mut()
+            .lock()
+            .expect("mock write log poisoned")
             .entry(endpoint)
             .or_default()
             .push(data.to_vec());
@@ -151,7 +152,7 @@ impl UsbTransfer for MockUsbTransfer {
         buf: &mut [u8],
         _timeout: Duration,
     ) -> Result<usize, U3vError> {
-        let mut reads = self.reads.borrow_mut();
+        let mut reads = self.reads.lock().expect("mock read queue poisoned");
         let queue = reads.get_mut(&endpoint).ok_or_else(|| {
             U3vError::Protocol(format!("no queued read for endpoint {endpoint:#04x}"))
         })?;

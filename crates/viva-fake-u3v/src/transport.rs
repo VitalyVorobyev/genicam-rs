@@ -42,10 +42,6 @@ struct TransportState {
     frame_count: u64,
 }
 
-// SAFETY: TransportState is protected by Mutex, single-writer access.
-unsafe impl Send for FakeU3vTransport {}
-unsafe impl Sync for FakeU3vTransport {}
-
 impl FakeU3vTransport {
     /// Create a new fake transport with the given image dimensions.
     pub fn new(width: u32, height: u32, pixel_format: u32) -> Self {

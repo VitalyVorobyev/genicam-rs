@@ -35,7 +35,11 @@ pub async fn start_acquisition(
         acq.status.active = true;
         let _ = app.emit(
             "acquisition-status",
-            AcquisitionStatus { active: true, fps: None, dropped: 0 },
+            AcquisitionStatus {
+                active: true,
+                fps: None,
+                dropped: 0,
+            },
         );
         return Ok(info);
     }
@@ -190,7 +194,11 @@ pub async fn stop_acquisition(
         acq.ws_url = None;
         let _ = app.emit(
             "acquisition-status",
-            AcquisitionStatus { active: false, fps: None, dropped: 0 },
+            AcquisitionStatus {
+                active: false,
+                fps: None,
+                dropped: 0,
+            },
         );
         return Ok(());
     }
