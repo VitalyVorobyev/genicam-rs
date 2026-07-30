@@ -517,6 +517,50 @@ mod tests {
     }
 
     #[test]
+    fn write_to_a_locked_node_is_refused_locally() {
+        // The #45 shape: the node's static AccessMode is RW and the whole
+        // restriction lives in pIsLocked. Before GA-06 this write went to the
+        // wire and the device answered ACCESS_DENIED.
+        let mut nodemap = build_predicate_nodemap();
+        let io = predicate_io(0b11); // implemented, locked
+        let err = nodemap
+            .set_integer("Gated", 7, &io)
+            .expect_err("a locked node must not be written");
+        match err {
+            GenApiError::Locked { name, locked_by } => {
+                assert_eq!(name, "Gated");
+                // Naming the locking feature is the actionable part.
+                assert_eq!(locked_by, "GateLocked");
+            }
+            other => panic!("expected Locked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_to_an_unlocked_node_still_succeeds() {
+        let mut nodemap = build_predicate_nodemap();
+        let io = predicate_io(0b01); // implemented, unlocked
+        nodemap
+            .set_integer("Gated", 7, &io)
+            .expect("an unlocked RW node must still be writable");
+    }
+
+    #[test]
+    fn write_to_an_unimplemented_node_reports_unavailable_not_locked() {
+        // The two conditions must stay distinguishable: `effective_access_mode`
+        // collapses both into RO, which is why the setters do not use it.
+        let mut nodemap = build_predicate_nodemap();
+        let io = predicate_io(0b00); // not implemented
+        let err = nodemap
+            .set_integer("Gated", 7, &io)
+            .expect_err("an unavailable node must not be written");
+        assert!(
+            matches!(err, GenApiError::Unavailable(ref n) if n == "Gated"),
+            "expected Unavailable, got {err:?}"
+        );
+    }
+
+    #[test]
     fn predicate_effective_access_mode_rw_when_unlocked() {
         let nodemap = build_predicate_nodemap();
         // implemented, unlocked → base RW

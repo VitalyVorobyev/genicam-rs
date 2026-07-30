@@ -15,6 +15,20 @@ pub enum GenApiError {
     /// The node access mode forbids the attempted operation.
     #[error("access denied for node: {0}")]
     Access(String),
+    /// The node declares `pIsLocked` and the device currently reports it
+    /// locked, so the write was refused locally.
+    ///
+    /// Names the locking feature, because that is the actionable part: a
+    /// caller told only "access denied" has nowhere to go, whereas
+    /// "`ExposureTime` is locked by `ExposureTime_Lck`" points at the feature
+    /// to change first. See ADR-0018 and backlog GA-06.
+    #[error("node {name} is locked by {locked_by}")]
+    Locked {
+        /// The node whose write was refused.
+        name: String,
+        /// The feature named by this node's `pIsLocked`.
+        locked_by: String,
+    },
     /// The provided value violates the limits declared by the node.
     #[error("range error for node: {0}")]
     Range(String),

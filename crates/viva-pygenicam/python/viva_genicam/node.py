@@ -44,6 +44,14 @@ class NodeInfo:
     display_name: Optional[str]
     description: Optional[str]
     tooltip: Optional[str]
+    #: The access mode the device permits *right now*, as opposed to ``access``,
+    #: which is what the XML declares. They differ whenever ``pIsLocked`` is
+    #: engaged: a node with no declared ``<AccessMode>`` defaults to ``"RW"``
+    #: yet may still refuse writes.
+    #:
+    #: Only populated by :meth:`Camera.node_info`. :meth:`Camera.all_node_info`
+    #: leaves it ``None``, because resolving it needs a register read per node.
+    effective_access: Optional[Access] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "NodeInfo":
@@ -55,6 +63,7 @@ class NodeInfo:
             display_name=d.get("display_name"),
             description=d.get("description"),
             tooltip=d.get("tooltip"),
+            effective_access=d.get("effective_access"),
         )
 
     def to_dict(self) -> dict:

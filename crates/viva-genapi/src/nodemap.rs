@@ -262,7 +262,7 @@ impl NodeMap {
             return self.set_int_converter(name, value, io);
         }
         let node = self.get_integer_node(name)?;
-        ensure_writable(&node.access, name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         if let Some(ref pv) = node.pvalue {
             let pv = pv.clone();
@@ -386,7 +386,7 @@ impl NodeMap {
             _ => {}
         }
         let node = self.get_float_node(name)?;
-        ensure_writable(&node.access, name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         if let Some(ref pv) = node.pvalue {
             let pv = pv.clone();
@@ -466,7 +466,7 @@ impl NodeMap {
         io: &dyn RegisterIo,
     ) -> Result<(), GenApiError> {
         let node = self.get_enum_node(name)?;
-        ensure_writable(&node.access, name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         if let Some(ref pv) = node.pvalue {
             let pv = pv.clone();
@@ -570,6 +570,48 @@ impl NodeMap {
             .and_then(Self::selected_if_slice)
             .unwrap_or(&[]);
         self.selectors_allow(selected_if, io)
+    }
+
+    /// Refuse a write the device's current state does not permit.
+    ///
+    /// The static `<AccessMode>` is only half the picture, and for a great
+    /// many real nodes it is the less informative half: FLIR's `ExposureTime`
+    /// declares no `<AccessMode>` at all — so it defaults to `RW` — and puts
+    /// the entire restriction in `<pIsLocked>ExposureTime_Lck</pIsLocked>`, a
+    /// device register. Checking only the static mode meant we sent writes the
+    /// camera's own description said were not allowed, and the device answered
+    /// `ACCESS_DENIED` (issue #45).
+    ///
+    /// Deliberately *not* routed through [`NodeMap::effective_access_mode`]:
+    /// that function collapses "unavailable" into `RO` because it serves a UI
+    /// that has a separate availability flag. Here the distinction is the
+    /// whole value of the error, so the two conditions are checked separately.
+    ///
+    /// Reads keep the static [`AccessMode::WO`] check only. Evaluating
+    /// predicates on every `get` would add device round-trips to the hottest
+    /// path in the library for a check the subsequent read reports anyway; a
+    /// refused write, by contrast, is worth one predicate evaluation to turn a
+    /// wire error into a named local one. See backlog GA-06.
+    fn ensure_writable_now(
+        &self,
+        name: &str,
+        access: &AccessMode,
+        io: &dyn RegisterIo,
+    ) -> Result<(), GenApiError> {
+        ensure_writable(access, name)?;
+        if !self.is_available(name, io)? {
+            return Err(GenApiError::Unavailable(name.to_string()));
+        }
+        let prefs = self.predicate_refs(name)?;
+        if let Some(provider) = &prefs.p_is_locked
+            && self.eval_predicate_ref(name, provider, io)?
+        {
+            return Err(GenApiError::Locked {
+                name: name.to_string(),
+                locked_by: provider.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Return the effective [`AccessMode`] for `name` given the current
@@ -750,7 +792,7 @@ impl NodeMap {
         io: &dyn RegisterIo,
     ) -> Result<(), GenApiError> {
         let node = self.get_bool_node(name)?;
-        ensure_writable(&node.access, name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
         self.ensure_selectors(name, &node.selected_if, io)?;
         if let Some(ref pv) = node.pvalue {
             let pv = pv.clone();
@@ -1384,7 +1426,7 @@ impl NodeMap {
         io: &dyn RegisterIo,
     ) -> Result<(), GenApiError> {
         let node = self.get_string_node(name)?;
-        ensure_writable(&node.access, name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
         let (address, len) = self.resolve_address(name, &node.addressing, io)?;
         // Build byte buffer with null termination
         let mut buf = vec![0u8; len as usize];
