@@ -1,6 +1,8 @@
 import type { EnumEntry } from "../../xml_model/uigraph";
+import type { NodeValueEntry } from "../../device/types";
 import { isTauri } from "../../tauri";
 import { formatFrameCount } from "./viewerUtils";
+import { resolveLiveEnumValue } from "./triggerUtils";
 
 interface AcquisitionSectionProps {
   isConnected: boolean;
@@ -9,6 +11,7 @@ interface AcquisitionSectionProps {
   onStartAcq: () => Promise<void>;
   onStopAcq: () => Promise<void>;
   acquisitionModeEntries: EnumEntry[];
+  liveValues: Map<string, NodeValueEntry>;
 }
 
 export function AcquisitionSection({
@@ -16,6 +19,7 @@ export function AcquisitionSection({
   isAcquiring,
   frameCount,
   acquisitionModeEntries,
+  liveValues,
 }: AcquisitionSectionProps) {
   if (!isConnected) {
     return <p className="sidebar-placeholder">No device connected.</p>;
@@ -34,6 +38,7 @@ export function AcquisitionSection({
 
   const frameDisplay =
     !isAcquiring && frameCount === 0 ? "\u2014" : formatFrameCount(frameCount);
+  const acquisitionModeValue = resolveLiveEnumValue(liveValues, "AcquisitionMode");
 
   return (
     <div className="acq-section acq-section--compact">
@@ -43,8 +48,14 @@ export function AcquisitionSection({
           <select
             className="iv-auto-select"
             disabled={isAcquiring}
+            value={acquisitionModeValue ?? ""}
             onChange={handleModeChange}
           >
+            {acquisitionModeValue === null && (
+              <option value="" disabled>
+                Unavailable
+              </option>
+            )}
             {acquisitionModeEntries.map((entry) => (
               <option key={entry.name} value={entry.name}>
                 {entry.display_name ?? entry.name}

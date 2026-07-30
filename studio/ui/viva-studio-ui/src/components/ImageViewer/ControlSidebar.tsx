@@ -56,6 +56,7 @@ export function ControlSidebar({
             onStartAcq={onStartAcq}
             onStopAcq={onStopAcq}
             acquisitionModeEntries={acquisitionModeEntries}
+            liveValues={liveValues}
           />
         );
       case "exposure_gain":
