@@ -198,6 +198,31 @@ report is not a support burden, it is the highest-quality evidence the
 project can obtain. See "Vendor XML corpus" above — ask for the XML, and
 add it.
 
+### Statements to reporters and contributors
+
+The evidence hierarchy applies to **our own claims** as much as to wire
+questions. Every public statement — issue replies, PR reviews, the
+changelog, the backlog — must be grounded in evidence actually checked,
+not inferred or remembered. In particular:
+
+- No "first", "only", "confirmed" or "proven" without checking the
+  tracker for counterexamples. Several contributors have tested this
+  library on real hardware; an unearned superlative erases their work.
+- Distinguish what a reporter observed from what we inferred from their
+  artifacts, and say which is which.
+- Verify concrete claims before publishing them: parse the attached
+  capture, resolve the real comment URL, check crates.io before telling
+  anyone to install a version.
+
+**Reviews of external PRs** exist to land the contribution, not to
+showcase the review. Be concise and focused: request changes only for
+material problems — correctness, soundness, CI-blocking failures.
+Style preferences and nice-to-haves are optional notes, or follow-ups
+we do ourselves after the merge. For every mechanical change requested,
+attach a one-click GitHub ```suggestion``` block (anchored to diff
+lines) so the contributor's remaining work is only the parts that need
+their judgment — or their hardware.
+
 ### Fake camera binary
 
 For interactive testing or E2E testing with Viva Studio:
