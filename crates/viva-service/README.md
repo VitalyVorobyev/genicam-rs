@@ -2,7 +2,7 @@
 
 Zenoh bridge that discovers GigE Vision cameras and exposes them as network-accessible services.
 
-Client applications like [genicam-studio](https://github.com/VitalyVorobyev/genicam-studio) connect to the service for camera discovery, feature control, and image streaming.
+Client applications connect to the service for camera discovery, feature control, and image streaming — Viva Studio, the desktop app in [`studio/`](https://github.com/VitalyVorobyev/viva-genicam/tree/main/studio), is the reference consumer.
 
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.

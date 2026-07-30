@@ -52,6 +52,7 @@ crates/
   viva-service/        Zenoh bridge: GigE cameras -> Viva Studio
   viva-service-u3v/    Zenoh bridge: U3V cameras -> Viva Studio
   viva-camctl/         CLI binary
+  viva-pygenicam/      Python bindings (PyO3) -- own workspace, own Cargo.lock
   viva-fake-gige/      Fake GigE camera for testing
   viva-fake-u3v/       Fake U3V camera for testing
 ```
@@ -72,7 +73,7 @@ cargo add viva-genicam
 ```
 
 ```rust
-use viva_genicam::{gige, Camera};
+use viva_genicam::gige;
 use std::time::Duration;
 
 #[tokio::main]

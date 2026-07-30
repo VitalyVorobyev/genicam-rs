@@ -116,7 +116,7 @@ cargo run -p viva-genicam --example get_set_feature -- --name Gain --value 3.0
 
 The whole of it:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/get_set_feature.rs:get_set}}
 ```
 
@@ -138,7 +138,7 @@ If you have no camera to hand, the same calls work against the
 cargo run -p viva-genicam --example demo_fake_camera
 ```
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/demo_fake_camera.rs:read_features}}
 ```
 

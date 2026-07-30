@@ -21,7 +21,7 @@ cargo run -p viva-service-u3v -- --fake --width 1024 --height 768
 cargo run -p viva-service-u3v -- --fake -vv
 ```
 
-The service exposes U3V cameras over Zenoh using the same API as `viva-service`, so [genicam-studio](https://github.com/VitalyVorobyev/genicam-studio) works with both GigE and USB3 Vision cameras transparently.
+The service exposes U3V cameras over Zenoh using the same API as `viva-service`, so [Viva Studio](https://github.com/VitalyVorobyev/viva-genicam/tree/main/studio) works with both GigE and USB3 Vision cameras transparently.
 
 This binary is not published to crates.io.
 

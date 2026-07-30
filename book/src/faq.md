@@ -187,7 +187,7 @@ mdbook build book
 	- The rendered HTML will be under book/book/.
 - Rust API docs:
 	- From the repository root:
-```rust
+```bash
 cargo doc --workspace --all-features
 ```
 	- The rendered HTML will be under target/doc/.

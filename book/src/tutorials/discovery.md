@@ -89,7 +89,7 @@ knowing before you conclude your interface is broken.
 
 The part that matters is short:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/list_cameras.rs:discover}}
 ```
 

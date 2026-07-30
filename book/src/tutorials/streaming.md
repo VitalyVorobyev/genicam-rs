@@ -93,14 +93,14 @@ cargo run -p viva-genicam --example grab_gige -- --ip 192.168.0.10 --iface eth0
 
 Setup — connect, build the stream, start acquisition:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/grab_gige.rs:stream}}
 ```
 
 Then the loop. Packet reassembly, ordering and buffering all stay inside
 `FrameStream`; what you get is whole frames:
 
-```rust
+```rust,ignore
 {{#include ../../../crates/viva-genicam/examples/grab_gige.rs:frame_loop}}
 ```
 

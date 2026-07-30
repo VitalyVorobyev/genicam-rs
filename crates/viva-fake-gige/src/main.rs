@@ -1,7 +1,7 @@
 //! Standalone fake GigE Vision camera server.
 //!
 //! Starts a simulated camera on localhost and keeps it running until Ctrl+C.
-//! Useful for manual testing with `viva-service` and `genicam-studio`.
+//! Useful for manual testing with `viva-service` and Viva Studio.
 //!
 //! ```bash
 //! # Start with defaults (640x480 Mono8, 30 fps, port 3956)

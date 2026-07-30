@@ -674,8 +674,8 @@ async fn discover_gige_devices() -> Vec<DeviceInfo> {
 ///
 /// NOTE: the underlying typed readers (`get_integer`, `get_float`, etc.) may
 /// themselves be buggy in `viva-genapi` — see
-/// `docs/handoffs/2026-04-12-genapi-numeric-type-dispatch.md` — but at least
-/// we now dispatch to the right one.
+/// [ADR-0010](../../../../../docs/adrs/adr0010-feature-state-contract.md) —
+/// but at least we now dispatch to the right one.
 fn build_feature_state(
     camera: &Camera<GigeRegisterIo>,
     name: &str,
@@ -771,10 +771,10 @@ fn build_feature_state(
     };
 
     let enum_available = if matches!(node, Node::Enum(_)) {
-        // `Camera::enum_entries` forwards to the NodeMap's enumeration table.
-        // Services that implement `IsAvailable` gating will filter this list;
-        // today it returns the full set. See
-        // `docs/handoffs/2026-04-12-genapi-introspection-predicates.md`.
+        // `Camera::enum_entries` forwards to the NodeMap's enumeration table
+        // and returns the full set. `NodeMap::available_enum_entries` now
+        // exists and applies the `pIsAvailable` gating this comment used to
+        // describe as future work — switching to it is backlog ST-18.
         camera.enum_entries(name).ok()
     } else {
         None

@@ -1,4 +1,4 @@
-//! USB3 Vision Zenoh service — bridges U3V cameras to genicam-studio.
+//! USB3 Vision Zenoh service — bridges U3V cameras to Viva Studio.
 //!
 //! This is the U3V equivalent of `viva-service` (GigE Vision).
 //! Supports a `--fake` flag for testing without USB hardware.
@@ -233,7 +233,7 @@ async fn run_fake_camera(
     )
     .await;
 
-    info!("fake U3V camera service ready (use genicam-studio to connect)");
+    info!("fake U3V camera service ready (use Viva Studio to connect)");
     Ok(())
 }
 

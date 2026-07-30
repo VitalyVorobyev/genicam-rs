@@ -17,7 +17,7 @@ All error types implement `std::error::Error` and `Display`.
 The workspace uses the [`tracing`](https://docs.rs/tracing) crate for structured logging.
 Enable it with:
 
-```rust
+```rust,ignore
 tracing_subscriber::fmt::init();
 ```
 

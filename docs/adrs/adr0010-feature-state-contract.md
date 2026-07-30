@@ -53,6 +53,11 @@ Every layer in the stack is updated to produce / consume this type:
 - The `viva-genapi` nodemap has known bugs where float-backed registers are decoded through the integer path (see `docs/handoffs/2026-04-12-genapi-numeric-type-dispatch.md`). Fixing `FeatureState` dispatch surfaces those bugs rather than hiding them behind string sniffing — intentional trade-off.
 
 ## References
-- Implementation plan: `~/.claude/plans/distributed-churning-mist.md`
 - ADR-008 (the original Zenoh API contract this extends)
-- Handoffs for the `viva-genapi` follow-ups: `docs/handoffs/2026-04-12-*.md`
+
+> **Editorial note (2026-07-30).** This ADR cited two working documents,
+> `docs/handoffs/2026-04-12-*.md` and a plan file outside the repository.
+> Neither was carried into this repository, so the citations above and in
+> "Negative" resolve to nothing. The decision itself stands as recorded; only
+> the pointers are dead. Follow-up work on the numeric-dispatch bugs is tracked
+> in `docs/backlog.md`.
