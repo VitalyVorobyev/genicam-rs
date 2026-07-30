@@ -13,13 +13,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-
+  # Platform-independent gates, off the matrix. Formatting used to run three
+  # times and, being first, a whitespace nit could fail the job before any
+  # functional gate ran — see the `!cancelled()` note on `build` below.
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -30,24 +28,48 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Cargo fmt
+        run: cargo fmt --all --check
+
       - name: Install cargo-deny
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
 
       - name: Cargo deny (advisories, licenses, bans, sources)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() }}
         run: cargo deny check
 
-      - name: Cargo fmt
-        run: cargo fmt --all --check
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    # Every gate below runs even when an earlier one failed, so a review nit
+    # cannot conceal a functional failure. On #72 clippy and fmt failed first
+    # and `cargo test` never ran once across eight commits and three CI cycles,
+    # hiding a real streaming regression for a day. `!cancelled()` rather than
+    # `always()`: a cancelled run should stop, not grind through the rest.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Cargo test
+        if: ${{ !cancelled() }}
         run: cargo test --workspace
 
       - name: Cargo doc
+        if: ${{ !cancelled() }}
         run: cargo doc --no-deps --workspace

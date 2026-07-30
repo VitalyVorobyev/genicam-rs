@@ -34,15 +34,19 @@ jobs:
         with:
           workspaces: studio
 
+      # `!cancelled()` so a formatting nit cannot hide a failing test — the
+      # same masking `ci.yml` had, and the same fix.
       - name: Cargo fmt
         working-directory: studio
         run: cargo fmt --all --check
 
       - name: Cargo clippy
+        if: ${{ !cancelled() }}
         working-directory: studio
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Cargo test
+        if: ${{ !cancelled() }}
         working-directory: studio
         run: cargo test --workspace
 
