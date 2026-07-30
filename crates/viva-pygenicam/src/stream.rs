@@ -15,9 +15,12 @@ use crate::errors::{IntoPyErr, parse_error, transport_error};
 use crate::frame::PyFrame;
 use crate::runtime::runtime;
 
+/// `FrameStream` is far larger than `U3vStream` — it carries the GVSP receive
+/// buffer and reassembly state inline — so the variants are boxed to keep the
+/// enum from costing every `PyFrameStream` the GigE size regardless of transport.
 enum StreamInner {
-    Gige(FrameStream),
-    U3v(U3vStream),
+    Gige(Box<FrameStream>),
+    U3v(Box<U3vStream>),
 }
 
 #[pyclass(module = "viva_genicam._native", unsendable)]
@@ -30,14 +33,14 @@ pub(crate) struct PyFrameStream {
 impl PyFrameStream {
     fn gige(stream: FrameStream) -> Self {
         Self {
-            inner: Some(StreamInner::Gige(stream)),
+            inner: Some(StreamInner::Gige(Box::new(stream))),
             default_timeout: Duration::from_secs(5),
         }
     }
 
     fn u3v(stream: U3vStream) -> Self {
         Self {
-            inner: Some(StreamInner::U3v(stream)),
+            inner: Some(StreamInner::U3v(Box::new(stream))),
             default_timeout: Duration::from_secs(5),
         }
     }
@@ -104,7 +107,7 @@ pub(crate) fn build_gige_stream(
             .map_err(|_| parse_error("camera mutex poisoned"))?;
         let io = cam.transport();
         let mut device_guard = io.lock_device().map_err(crate::errors::to_py)?;
-        let mut builder = StreamBuilder::new(&mut *device_guard);
+        let mut builder = StreamBuilder::new(&mut device_guard);
         if let Some(iface) = iface {
             builder = builder.iface(iface);
         }
