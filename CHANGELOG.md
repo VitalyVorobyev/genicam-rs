@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-31
+
+A minor bump rather than the 0.3.2 the roadmap planned. This release removes
+`StreamBuilder::auto_packet_size` and the Python `open_stream(auto_packet_size=)`
+argument, and adds variants to two public enums. Cargo reads `^0.3` as any
+0.3.x, so shipping those as a patch would break dependents on the next
+`cargo update`. As a consequence the API consolidation the roadmap called
+"Phase 5 — 0.4.0" renumbers to 0.5.0.
+
 ### Added
 
 - **`<Register>` node support, for declarations with a plain `<Length>`**
@@ -38,6 +47,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Mono12` and `Mono14`** — the two pixel formats the Micro-Epsilon
   scanCONTROL 850050 advertises that #93 did not cover. Its `PixelFormat`
   enumeration offers ten formats; eight were named.
+
+### Changed
+
+- **`Node`, `NodeDecl`, `ChunkKind`, `ChunkValue` and `ChunkError` are now
+  `#[non_exhaustive]`**, so adding a variant to any of them stops being a
+  breaking change for downstream crates. Marking them is itself only possible in
+  a breaking release, and the `<Register>` work above is the argument for doing
+  it now: one new node type touched seven `match` sites across three workspaces.
+
+  **Deliberately not marked.** `AccessMode`, `Sign`, `ByteOrder`,
+  `FloatEncoding`, `SkOutput`, `StreamDest` and `GvspPacket` are closed sets
+  fixed by the GenICam and GigE Vision specifications — RO/RW/WO, unicast or
+  multicast, leader/payload/trailer. Marking those would cost every consumer a
+  wildcard arm forever in exchange for flexibility nobody will use.
+
+  The cost, stated plainly: `#[non_exhaustive]` binds only *other* crates, so
+  this workspace's own cross-crate matches now need wildcards, and the compiler
+  will no longer name them when a variant is added — which is exactly the help
+  that found every call site for `<Register>`. Each such arm is therefore
+  written to fail loudly rather than default silently. `build_node` returns
+  `GenApiError::Unsupported` naming the declaration kind, which surfaces the
+  node in `NodeMap::skipped()` and trips the vendor-corpus test's
+  unexpected-skip check; `Camera::get`/`set` and both service backends name the
+  node kind in their error rather than returning a bare type error or a null.
 
 ### Fixed
 
@@ -779,7 +812,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.4.0
 [0.3.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.1
 [0.3.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.0
 [0.2.8]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.8

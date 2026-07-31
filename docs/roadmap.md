@@ -15,7 +15,7 @@ construct in the vendor corpus, or point at the user report, before ranking it.
 This roadmap applies that rule throughout, which is why several items moved
 between phases relative to the previous revision.
 
-## Phase 0 — Ship 0.3.2 (immediate)
+## Phase 0 — Ship 0.4.0 (immediate)
 
 0.3.1 was tagged on 2026-07-31, once #70 confirmed #72's `#[cfg(windows)]`
 acquisition fix against a real camera — the one thing it was gated on, and
@@ -25,28 +25,33 @@ The lesson worth carrying forward is the shape of that gate, not its outcome:
 a green CI on a platform-conditional fix confirms nothing, and the release
 waited on a user with the hardware rather than on our own confidence.
 
-Two fixes landed after that tag and are already waiting in `[Unreleased]`:
-**TC-17**, the GVSP data trailer read at offset 2 of an 8-byte payload, and
-**TC-20**, a Linux link-local discovery broadcast that resolved to the host's
-own address. Ahead of the 0.3.2 tag:
+**The follow-up release is 0.4.0, not the 0.3.2 this phase used to name, and
+that question is now settled** (REL-07). Removing `StreamBuilder::auto_packet_size`
+and the Python `open_stream(auto_packet_size=)` argument, and adding variants to
+public enums, are breaking under semver; Cargo reads `^0.3` as any 0.3.x, so a
+patch would break dependents on their next `cargo update`. Phase 5 renumbers to
+0.5.0 as a consequence — see its heading below. Its contents:
 
-- **TC-19** — `viva-fake-gige` declares `ChunkModeActive` as `<Integer>` where
+- **TC-17 and TC-20**, which landed after the 0.3.1 tag: the GVSP data trailer
+  read at offset 2 of an 8-byte payload, and a Linux link-local discovery
+  broadcast that resolved to the host's own address.
+- **TC-19** — `viva-fake-gige` declared `ChunkModeActive` as `<Integer>` where
   SFNC and all 23 corpus documents that define it say `<Boolean>`, so the chunk
-  path has never run end to end against anything. That is why TC-17 was found
-  on a user's camera instead of in CI.
+  path had never run end to end against anything. That is why TC-17 was found
+  on a user's camera instead of in CI; there is now an end-to-end chunk test.
 - **DX-08 and SR-10** — both surfaced by #70's log rather than by a bug report:
-  `viva-camctl stream` refuses to run without `--iface`, which is the command
-  our own documentation tells reporters to use, and a probed 16114-byte MTU is
+  `viva-camctl stream` refused to run without `--iface`, which is the command
+  our own documentation tells reporters to use, and a probed 16114-byte MTU was
   discarded in favour of a hardcoded 1500.
-- **SR-11 and DC-01** — an unnamed pixel format is silently sized at one byte
-  per pixel, and the Zenoh bridge then truncates the frame to that fiction.
+- **SR-11 and DC-01** — an unnamed pixel format was silently sized at one byte
+  per pixel, and the Zenoh bridge then truncated the frame to that fiction.
 - **GA-09, first cut** — `<Register>` limited to a plain `<Length>`, which
   covers 42 of the corpus's 63 declarations and clears every skipped node in
   seven documents.
-
-**Decide before tagging whether 0.3.2 is a patch release at all.** GA-09 adds
-variants to two public enums that are not `#[non_exhaustive]`; that breaks any
-downstream exhaustive `match` and may force 0.4.0 instead (REL-07).
+- **`#[non_exhaustive]` on the public enums that actually grow** — `Node`,
+  `NodeDecl`, `ChunkKind`, `ChunkValue`, `ChunkError` — so the next node type is
+  not another breaking release. Only possible in a breaking release, which is
+  why it rides along with this one.
 
 Retest status is now settled and should not be restated more favourably than it
 is: **#45 and #57 confirmed on 0.3.0; #35 was asked and never answered.**
@@ -73,7 +78,7 @@ outstanding. Per-item status lives in `backlog.md`'s `TC` section.
   camera, and the frame-error check read the trailer's reserved word while the
   real status word was examined nowhere. Found on real hardware (#70), and
   notable as the one case so far where the fake camera was correct and only the
-  client was wrong. *Fixed (TC-17); ships in 0.3.2.*
+  client was wrong. *Fixed (TC-17); ships in 0.4.0.*
 
 ACTION and EVENT are now implemented by `viva-fake-gige` (TC-07), so both are
 exercised by tests. **Still open in this phase**: TC-04 (spec-derived GVSP and
@@ -187,9 +192,11 @@ rather than inferred about hardware is scheduled. The rest wait for the thing
 the evidence hierarchy actually values: somebody streaming one of these devices
 and telling us what came off the wire.
 
-## Phase 5 — 0.4.0 API consolidation (breaking)
+## Phase 5 — 0.5.0 API consolidation (breaking)
 
-One deliberate breaking release to pay down surface-area debt.
+One deliberate breaking release to pay down surface-area debt. It was numbered
+0.4.0 until that number was spent on Phase 0 — see there for why the follow-up
+to 0.3.1 had to break.
 
 - Typed accessors on `Camera`. Everything currently round-trips through
   `String` even though `NodeMap` one layer down already has
@@ -200,8 +207,9 @@ One deliberate breaking release to pay down surface-area debt.
 - Single frame-reassembly implementation shared by all paths.
 - Curated public surfaces: kill blanket `pub mod`; re-export currently
   unnameable public types; stop exposing node cache internals.
-- Error source chains everywhere (no `String` payloads); `#[non_exhaustive]`
-  policy for public enums.
+- Error source chains everywhere (no `String` payloads). The
+  `#[non_exhaustive]` half of this landed in 0.4.0 for the five enums that
+  grow; what remains is deciding the policy for enums added after it.
 - Dedupe viva-service vs viva-service-u3v behind a `StreamSource` trait.
 - Fakes import register constants from the transport crates.
 - viva-pfnc as the single `PixelFormat` authority.
