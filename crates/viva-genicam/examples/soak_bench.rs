@@ -32,7 +32,7 @@ struct Args {
     ttl: u32,
     loopback: bool,
     stream_idx: u32,
-    auto: bool,
+    packet_size: Option<u32>,
     json: Option<PathBuf>,
 }
 
@@ -50,7 +50,7 @@ struct BenchReport {
 
 fn print_usage() {
     eprintln!(
-        "usage: soak_bench --duration <Ns> --iface <IPv4> --dest <unicast|multicast> [--group <IPv4> --port <n>] [--ttl <n>] [--loopback] [--stream-idx <n>] [--auto] [--json <path>]"
+        "usage: soak_bench --duration <Ns> --iface <IPv4> --dest <unicast|multicast> [--group <IPv4> --port <n>] [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--json <path>]"
     );
 }
 
@@ -81,7 +81,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut ttl: u32 = 1;
     let mut loopback = false;
     let mut stream_idx = 0u32;
-    let mut auto = false;
+    let mut packet_size: Option<u32> = None;
     let mut json = None;
 
     while let Some(arg) = args.next() {
@@ -138,7 +138,12 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     .ok_or_else(|| "--stream-idx requires a value".to_string())?;
                 stream_idx = value.parse()?;
             }
-            "--auto" => auto = true,
+            "--packet-size" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--packet-size requires a value in bytes".to_string())?;
+                packet_size = Some(value.parse()?);
+            }
             "--json" => {
                 let value = args
                     .next()
@@ -172,7 +177,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         ttl,
         loopback,
         stream_idx,
-        auto,
+        packet_size,
         json,
     })
 }
@@ -208,8 +213,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("  loopback: {}", if args.loopback { "on" } else { "off" });
     println!("  stream index: {}", args.stream_idx);
     println!(
-        "  auto packet negotiation: {}",
-        if args.auto { "on" } else { "off" }
+        "  packet size: {}",
+        match args.packet_size {
+            Some(size) => format!("{size} (override)"),
+            None => "from probed MTU".to_string(),
+        }
     );
 
     let timeout = Duration::from_millis(500);
@@ -276,8 +284,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .iface(iface.clone())
         .dest(dest)
         .channel(args.stream_idx);
-    if !args.auto {
-        builder = builder.auto_packet_size(false);
+    if let Some(size) = args.packet_size {
+        builder = builder.packet_size(size);
     }
     let stream = builder.build().await?;
 

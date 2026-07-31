@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -27,15 +27,25 @@ fn parse_events(csv: &str) -> Vec<String> {
 pub async fn run(
     ip: Option<Ipv4Addr>,
     index: Option<usize>,
-    iface: Ipv4Addr,
+    iface: Option<Ipv4Addr>,
     port: u16,
     enable: String,
     count: u32,
     json: bool,
 ) -> Result<()> {
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(ip, index, Some(iface), timeout).await?;
-    info!(ip = %device.ip, port, "configuring events");
+    let device = common::select_device(ip, index, iface, timeout).await?;
+
+    // The camera sends events *to* this address, so it must be the host's, not
+    // the camera's. With no --iface, probe which local interface routes there
+    // rather than refusing to run (backlog DX-08).
+    let local_ip = match iface {
+        Some(ip) => ip,
+        None => common::resolve_receive_iface(None, device.ip)?
+            .ipv4()
+            .ok_or_else(|| anyhow!("interface routing to {} has no IPv4 address", device.ip))?,
+    };
+    info!(ip = %device.ip, %local_ip, port, "configuring events");
     let mut camera = common::open_camera(&device)
         .await
         .context("open camera for events")?;
@@ -43,11 +53,11 @@ pub async fn run(
     let enable_list = parse_events(&enable);
     let enable_refs: Vec<&str> = enable_list.iter().map(|s| s.as_str()).collect();
     camera
-        .configure_events(iface, port, &enable_refs)
+        .configure_events(local_ip, port, &enable_refs)
         .await
         .context("configure event channel")?;
     let stream = camera
-        .open_event_stream(iface, port)
+        .open_event_stream(local_ip, port)
         .await
         .context("open event stream")?;
     if let Ok(addr) = stream.local_addr() {

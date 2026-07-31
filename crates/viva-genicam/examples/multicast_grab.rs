@@ -25,13 +25,13 @@ struct Args {
     ttl: u32,
     loopback: bool,
     stream_idx: u32,
-    auto: bool,
+    packet_size: Option<u32>,
     save: usize,
 }
 
 fn print_usage() {
     eprintln!(
-        "usage: multicast_grab --iface <IPv4> --group <IPv4> --port <n> [--ttl <n>] [--loopback] [--stream-idx <n>] [--auto] [--save <n>]"
+        "usage: multicast_grab --iface <IPv4> --group <IPv4> --port <n> [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--save <n>]"
     );
 }
 
@@ -43,7 +43,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut ttl: u32 = 1;
     let mut loopback = false;
     let mut stream_idx = 0u32;
-    let mut auto = false;
+    let mut packet_size: Option<u32> = None;
     let mut save = 0usize;
 
     while let Some(arg) = args.next() {
@@ -79,7 +79,12 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     .ok_or_else(|| "--stream-idx requires a value".to_string())?;
                 stream_idx = value.parse()?;
             }
-            "--auto" => auto = true,
+            "--packet-size" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--packet-size requires a value in bytes".to_string())?;
+                packet_size = Some(value.parse()?);
+            }
             "--save" => {
                 let value = args
                     .next()
@@ -108,7 +113,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         ttl,
         loopback,
         stream_idx,
-        auto,
+        packet_size,
         save,
     })
 }
@@ -138,8 +143,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("  loopback: {}", if args.loopback { "on" } else { "off" });
     println!("  stream index: {}", args.stream_idx);
     println!(
-        "  auto packet negotiation: {}",
-        if args.auto { "on" } else { "off" }
+        "  packet size: {}",
+        match args.packet_size {
+            Some(size) => format!("{size} (override)"),
+            None => "from probed MTU".to_string(),
+        }
     );
     println!("  save frames: {}", args.save);
 
@@ -194,8 +202,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             ttl: args.ttl,
         })
         .channel(args.stream_idx);
-    if !args.auto {
-        builder = builder.auto_packet_size(false);
+    if let Some(size) = args.packet_size {
+        builder = builder.packet_size(size);
     }
     let stream = builder.build().await?;
 

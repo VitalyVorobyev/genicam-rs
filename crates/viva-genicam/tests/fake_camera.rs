@@ -528,7 +528,11 @@ async fn setup_stream_owned(
     let iface = loopback_iface();
     let stream = viva_genicam::StreamBuilder::new(&mut device)
         .iface(iface)
-        .auto_packet_size(false)
+        // Pin the packet size so reassembly is exercised over ~200 packets.
+        // Loopback reports a jumbo MTU, which would reduce a 640x480 frame
+        // to a handful of datagrams and stop testing the stride arithmetic
+        // that #34 got wrong.
+        .packet_size(1500)
         .build()
         .await
         .expect("build stream");

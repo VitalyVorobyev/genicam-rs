@@ -15,6 +15,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`viva-camctl stream`, `bench` and `events` no longer refuse to run without
+  `--iface`.** They returned `streaming requires --iface or global --iface`
+  before touching the network, while `list`, `xml`, `report`, `get`, `set` and
+  `set-ip` all fall back to broadcast discovery. That is not merely
+  inconsistent: `viva-camctl stream --ip <IP>` is the command this project's own
+  documentation hands to anyone reporting a camera we cannot open, and the first
+  person given it had to diagnose and work around the failure themselves (#70).
+  Worse, `Iface::from_remote_ipv4` — the route probe added by #72 *for exactly
+  this case*, and produced by that very issue — had no caller in `viva-camctl`
+  at all. When `--iface` is absent the local interface is now found by asking
+  the OS which one routes to the camera, which also makes `--index` work without
+  `--iface` (backlog `DX-08`).
+- **A probed MTU is no longer discarded in favour of a hardcoded 1500.**
+  `StreamBuilder` had an `auto_packet_size` flag whose `false` branch fell back
+  to `best_packet_size(1500)` — throwing away the MTU it had just measured — and
+  `viva-camctl`, the studio's embedded backend and every streaming example
+  defaulted that flag to **false**. On the 16114-byte link in #70 that turned a
+  3.1 MB frame into roughly 2 100 packets instead of 200. The flag is gone; the
+  packet size follows the probed MTU unless the caller sets an explicit one, and
+  the same rule now applies to `viva-camctl`, `viva-service`, the studio and the
+  examples alike (backlog `SR-10`).
+
+  **Breaking:** `StreamBuilder::auto_packet_size` is removed, as is the
+  `auto_packet_size` argument of the Python `Camera.open_stream`. Use
+  `packet_size(u32)` / `packet_size=` to override, or omit it to follow the
+  link. `viva-camctl stream --auto` becomes `--packet-size <BYTES>`, and the
+  three streaming examples make the same swap.
+
+  Note the effect is invisible on macOS until `TC-11` lands: `nic::mtu` probes
+  only on Linux and Windows and returns 1500 elsewhere, so a macOS host gets the
+  old number for a new reason.
 - **Chunk data can be enabled against the fake camera, so the chunk path has an
   end-to-end test for the first time.** `viva-fake-gige` declared
   `ChunkModeActive` and `ChunkEnable` as `<Integer>`; SFNC defines both as

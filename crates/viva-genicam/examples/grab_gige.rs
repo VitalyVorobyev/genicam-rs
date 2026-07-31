@@ -20,7 +20,7 @@ use viva_genicam::{Frame, FrameStream, StreamBuilder, connect_gige};
 #[derive(Debug, Clone)]
 struct Args {
     iface: Option<Iface>,
-    auto: bool,
+    packet_size: Option<u32>,
     multicast: Option<Ipv4Addr>,
     port: Option<u16>,
     save: usize,
@@ -29,14 +29,14 @@ struct Args {
 
 fn print_usage() {
     eprintln!(
-        "usage: grab_gige --iface <name> [--auto] [--multicast <ip>] [--port <n>] [--save <n>] [--rgb]"
+        "usage: grab_gige --iface <name> [--packet-size <bytes>] [--multicast <ip>] [--port <n>] [--save <n>] [--rgb]"
     );
 }
 
 fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let mut iface = None;
-    let mut auto = false;
+    let mut packet_size: Option<u32> = None;
     let mut multicast = None;
     let mut port = None;
     let mut save = 1usize;
@@ -50,7 +50,12 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     .ok_or_else(|| "--iface requires an argument".to_string())?;
                 iface = Some(Iface::from_system(&name)?);
             }
-            "--auto" => auto = true,
+            "--packet-size" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--packet-size requires a value in bytes".to_string())?;
+                packet_size = Some(value.parse()?);
+            }
             "--multicast" => {
                 let ip = args
                     .next()
@@ -82,7 +87,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
 
     Ok(Args {
         iface,
-        auto,
+        packet_size,
         multicast,
         port,
         save,
@@ -140,8 +145,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(port) = args.port {
         builder = builder.destination_port(port);
     }
-    if !args.auto {
-        builder = builder.auto_packet_size(false);
+    if let Some(size) = args.packet_size {
+        builder = builder.packet_size(size);
     }
     let stream = builder.build().await?;
 

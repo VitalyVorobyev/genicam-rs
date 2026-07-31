@@ -19,7 +19,7 @@ pub struct StreamArgs {
     pub mode: String,
     pub group: Option<Ipv4Addr>,
     pub port: u16,
-    pub auto: bool,
+    pub packet_size: Option<u32>,
     pub save: usize,
     pub rgb: bool,
     pub duration_s: u64,
@@ -32,18 +32,14 @@ pub struct StreamArgs {
 // lock across an await.
 #[allow(clippy::await_holding_lock)]
 pub async fn run(args: StreamArgs) -> Result<()> {
-    let iface_ip = args
-        .iface
-        .ok_or_else(|| anyhow!("streaming requires --iface or global --iface"))?;
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(args.ip, args.index, Some(iface_ip), timeout).await?;
+    let device = common::select_device(args.ip, args.index, args.iface, timeout).await?;
     info!(ip = %device.ip, "opening camera for streaming");
     let mut camera = common::open_camera(&device)
         .await
         .context("open camera for stream")?;
 
-    let iface = common::resolve_iface(Some(iface_ip))?
-        .ok_or_else(|| anyhow!("failed to resolve capture interface"))?;
+    let iface = common::resolve_receive_iface(args.iface, device.ip)?;
     let host_ip = iface
         .ipv4()
         .ok_or_else(|| anyhow!("interface {} has no IPv4 address", iface.name()))?;
@@ -98,8 +94,8 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             .iface(iface.clone())
             .dest(dest)
             .rcvbuf_bytes(64 << 20);
-        if !args.auto {
-            builder = builder.auto_packet_size(false);
+        if let Some(size) = args.packet_size {
+            builder = builder.packet_size(size);
         }
         if args.port != 0 {
             builder = builder.destination_port(args.port);

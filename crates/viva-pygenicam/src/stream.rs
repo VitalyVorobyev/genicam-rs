@@ -92,7 +92,7 @@ pub(crate) fn build_gige_stream(
     py: Python<'_>,
     camera: Arc<Mutex<GigeCamera>>,
     iface: Option<Iface>,
-    auto_packet_size: Option<bool>,
+    packet_size: Option<u32>,
     multicast: Option<Ipv4Addr>,
     destination_port: Option<u16>,
 ) -> PyResult<PyFrameStream> {
@@ -113,8 +113,8 @@ pub(crate) fn build_gige_stream(
         if let Some(iface) = iface {
             builder = builder.iface(iface);
         }
-        if let Some(enabled) = auto_packet_size {
-            builder = builder.auto_packet_size(enabled);
+        if let Some(size) = packet_size {
+            builder = builder.packet_size(size);
         }
         if let Some(port) = destination_port {
             builder = builder.destination_port(port);
