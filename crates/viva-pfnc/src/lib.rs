@@ -10,7 +10,13 @@ use core::fmt;
 #[repr(u32)]
 pub enum PixelFormat {
     Mono8 = 0x0108_0001,
+    Mono10 = 0x0110_0003,
     Mono16 = 0x0110_0007,
+    Confidence8 = 0x0108_00C6,
+    Coord3DC32f = 0x0120_00BF,
+    Coord3DAC16 = 0x0220_00BB,
+    Coord3DAC32f = 0x0240_00C2,
+    Coord3DABC32f = 0x0260_00C0,
     BayerRG8 = 0x0108_0009,
     BayerGB8 = 0x0108_000A,
     BayerBG8 = 0x0108_000B,
@@ -30,7 +36,13 @@ impl PixelFormat {
     pub const fn from_code(code: u32) -> PixelFormat {
         match code {
             0x0108_0001 => PixelFormat::Mono8,
+            0x0110_0003 => PixelFormat::Mono10,
             0x0110_0007 => PixelFormat::Mono16,
+            0x0108_00C6 => PixelFormat::Confidence8,
+            0x0120_00BF => PixelFormat::Coord3DC32f,
+            0x0220_00BB => PixelFormat::Coord3DAC16,
+            0x0240_00C2 => PixelFormat::Coord3DAC32f,
+            0x0260_00C0 => PixelFormat::Coord3DABC32f,
             0x0108_0009 => PixelFormat::BayerRG8,
             0x0108_000A => PixelFormat::BayerGB8,
             0x0108_000B => PixelFormat::BayerBG8,
@@ -49,7 +61,13 @@ impl PixelFormat {
     pub const fn code(self) -> u32 {
         match self {
             PixelFormat::Mono8 => 0x0108_0001,
+            PixelFormat::Mono10 => 0x0110_0003,
             PixelFormat::Mono16 => 0x0110_0007,
+            PixelFormat::Confidence8 => 0x0108_00C6,
+            PixelFormat::Coord3DC32f => 0x0120_00BF,
+            PixelFormat::Coord3DAC16 => 0x0220_00BB,
+            PixelFormat::Coord3DAC32f => 0x0240_00C2,
+            PixelFormat::Coord3DABC32f => 0x0260_00C0,
             PixelFormat::BayerRG8 => 0x0108_0009,
             PixelFormat::BayerGB8 => 0x0108_000A,
             PixelFormat::BayerBG8 => 0x0108_000B,
@@ -68,7 +86,12 @@ impl PixelFormat {
     pub const fn bytes_per_pixel(self) -> Option<usize> {
         match self {
             PixelFormat::Mono8 => Some(1),
-            PixelFormat::Mono16 => Some(2),
+            PixelFormat::Mono10 | PixelFormat::Mono16 => Some(2),
+            PixelFormat::Confidence8 => Some(1),
+            PixelFormat::Coord3DC32f => Some(4),
+            PixelFormat::Coord3DAC16 => Some(4),
+            PixelFormat::Coord3DAC32f => Some(8),
+            PixelFormat::Coord3DABC32f => Some(12),
             PixelFormat::RGB8Packed | PixelFormat::BGR8Packed => Some(3),
             PixelFormat::BayerRG8
             | PixelFormat::BayerGB8
@@ -88,7 +111,13 @@ impl PixelFormat {
     pub fn from_name(name: &str) -> PixelFormat {
         match name {
             "Mono8" => PixelFormat::Mono8,
+            "Mono10" => PixelFormat::Mono10,
             "Mono16" => PixelFormat::Mono16,
+            "Confidence8" => PixelFormat::Confidence8,
+            "Coord3D_C32f" => PixelFormat::Coord3DC32f,
+            "Coord3D_AC16" => PixelFormat::Coord3DAC16,
+            "Coord3D_AC32f" => PixelFormat::Coord3DAC32f,
+            "Coord3D_ABC32f" => PixelFormat::Coord3DABC32f,
             "BayerRG8" => PixelFormat::BayerRG8,
             "BayerGB8" => PixelFormat::BayerGB8,
             "BayerBG8" => PixelFormat::BayerBG8,
@@ -138,7 +167,13 @@ impl fmt::Display for PixelFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PixelFormat::Mono8 => f.write_str("Mono8"),
+            PixelFormat::Mono10 => f.write_str("Mono10"),
             PixelFormat::Mono16 => f.write_str("Mono16"),
+            PixelFormat::Confidence8 => f.write_str("Confidence8"),
+            PixelFormat::Coord3DC32f => f.write_str("Coord3D_C32f"),
+            PixelFormat::Coord3DAC16 => f.write_str("Coord3D_AC16"),
+            PixelFormat::Coord3DAC32f => f.write_str("Coord3D_AC32f"),
+            PixelFormat::Coord3DABC32f => f.write_str("Coord3D_ABC32f"),
             PixelFormat::BayerRG8 => f.write_str("BayerRG8"),
             PixelFormat::BayerGB8 => f.write_str("BayerGB8"),
             PixelFormat::BayerBG8 => f.write_str("BayerBG8"),
@@ -162,7 +197,13 @@ mod tests {
     fn roundtrip_known_codes() {
         let formats = [
             PixelFormat::Mono8,
+            PixelFormat::Mono10,
             PixelFormat::Mono16,
+            PixelFormat::Confidence8,
+            PixelFormat::Coord3DC32f,
+            PixelFormat::Coord3DAC16,
+            PixelFormat::Coord3DAC32f,
+            PixelFormat::Coord3DABC32f,
             PixelFormat::BayerRG8,
             PixelFormat::BayerGB8,
             PixelFormat::BayerBG8,
@@ -192,12 +233,35 @@ mod tests {
     #[test]
     fn bytes_per_pixel_matches_expectations() {
         assert_eq!(PixelFormat::Mono8.bytes_per_pixel(), Some(1));
+        assert_eq!(PixelFormat::Mono10.bytes_per_pixel(), Some(2));
         assert_eq!(PixelFormat::Mono16.bytes_per_pixel(), Some(2));
+        assert_eq!(PixelFormat::Confidence8.bytes_per_pixel(), Some(1));
+        assert_eq!(PixelFormat::Coord3DC32f.bytes_per_pixel(), Some(4));
+        assert_eq!(PixelFormat::Coord3DAC16.bytes_per_pixel(), Some(4));
+        assert_eq!(PixelFormat::Coord3DAC32f.bytes_per_pixel(), Some(8));
+        assert_eq!(PixelFormat::Coord3DABC32f.bytes_per_pixel(), Some(12));
         assert_eq!(PixelFormat::RGB8Packed.bytes_per_pixel(), Some(3));
         assert_eq!(PixelFormat::BayerRG8.bytes_per_pixel(), Some(1));
         assert_eq!(PixelFormat::BayerRG16.bytes_per_pixel(), Some(2));
         assert_eq!(PixelFormat::BayerGR16.bytes_per_pixel(), Some(2));
         assert_eq!(PixelFormat::Unknown(0).bytes_per_pixel(), None);
+    }
+
+    #[test]
+    fn scancontrol_names_resolve_to_known_formats() {
+        let formats = [
+            ("Mono10", PixelFormat::Mono10),
+            ("Confidence8", PixelFormat::Confidence8),
+            ("Coord3D_C32f", PixelFormat::Coord3DC32f),
+            ("Coord3D_AC16", PixelFormat::Coord3DAC16),
+            ("Coord3D_AC32f", PixelFormat::Coord3DAC32f),
+            ("Coord3D_ABC32f", PixelFormat::Coord3DABC32f),
+        ];
+
+        for (name, format) in formats {
+            assert_eq!(PixelFormat::from_name(name), format);
+            assert_eq!(format.to_string(), name);
+        }
     }
 
     #[test]
