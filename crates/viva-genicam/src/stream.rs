@@ -695,6 +695,7 @@ fn windows_frame_receiver(
                     packet_id,
                     status,
                     chunk_data,
+                    ..
                 } => {
                     let Some(mut frame) = active.take() else {
                         continue;
@@ -987,6 +988,7 @@ impl FrameStream {
                         packet_id,
                         status,
                         chunk_data,
+                        ..
                     } => {
                         let Some(mut active) = self.active.take() else {
                             continue;
