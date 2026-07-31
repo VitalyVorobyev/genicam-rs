@@ -169,7 +169,14 @@ pub enum GvspPacket {
     Trailer {
         block_id: u64,
         packet_id: u32,
+        /// GVSP status from the packet *header* (offset 0), not from the
+        /// trailer payload — the payload's first two bytes are `reserved`.
         status: u16,
+        /// Payload type the device is closing off, from the trailer payload.
+        /// Carries the chunk flag (`0x4001`) that the leader's copy loses.
+        payload_type: u16,
+        /// Actual number of lines delivered, for variable-height payloads.
+        size_y: u32,
         chunk_data: Bytes,
     },
 }
@@ -230,12 +237,16 @@ pub fn parse_packet(payload: &[u8]) -> Result<GvspPacket, GvspError> {
         (block_id, packet_id, GVSP_HEADER_SIZE)
     };
 
-    let payload_type = (u16::from_be_bytes([payload[0], payload[1]]) >> 4) as u8;
+    // Bytes 0-1 of every GVSP header are the status word (see the table
+    // above). They were previously shifted right by four and passed down as a
+    // "payload type", which the leader parser then discarded — so the real
+    // status was never examined anywhere in the receive path.
+    let status = u16::from_be_bytes([payload[0], payload[1]]);
 
     match packet_format {
-        0x01 => parse_leader(packet_id, block_id, payload_type, &payload[data_offset..]),
+        0x01 => parse_leader(packet_id, block_id, &payload[data_offset..]),
         0x03 => parse_payload(packet_id, block_id, &payload[data_offset..]),
-        0x02 => parse_trailer(packet_id, block_id, &payload[data_offset..]),
+        0x02 => parse_trailer(packet_id, block_id, status, &payload[data_offset..]),
         _ => Err(GvspError::Unsupported("packet format")),
     }
 }
@@ -252,12 +263,7 @@ pub fn parse_packet(payload: &[u8]) -> Result<GvspPacket, GvspError> {
 /// |     12 |    4 | Pixel format |
 /// |     16 |    4 | Width        |
 /// |     20 |    4 | Height       |
-fn parse_leader(
-    packet_id: u32,
-    block_id: u64,
-    _payload_type_header: u8,
-    payload: &[u8],
-) -> Result<GvspPacket, GvspError> {
+fn parse_leader(packet_id: u32, block_id: u64, payload: &[u8]) -> Result<GvspPacket, GvspError> {
     if payload.len() < 24 {
         return Err(GvspError::Invalid("leader payload truncated"));
     }
@@ -290,21 +296,60 @@ fn parse_payload(packet_id: u32, block_id: u64, payload: &[u8]) -> Result<GvspPa
     })
 }
 
-fn parse_trailer(packet_id: u32, block_id: u64, payload: &[u8]) -> Result<GvspPacket, GvspError> {
+/// Parse a GVSP Data Trailer packet.
+///
+/// Trailer payload layout (8 bytes):
+///
+/// | Offset | Size | Field        |
+/// |--------|------|--------------|
+/// |      0 |    2 | Reserved     |
+/// |      2 |    2 | Payload type |
+/// |      4 |    4 | Size Y       |
+/// |      8 |    * | Chunk data   |
+///
+/// Chunk data begins at offset **8**. Reading it from offset 2 — as this
+/// function used to — feeds `payload_type` and `size_y` to the chunk parser
+/// as if they were a chunk header, which is where the per-frame
+/// `chunk header truncated remaining=6` came from: those six bytes *are* the
+/// two fields. With chunk mode on it is worse than noise, because the 6-byte
+/// prefix desynchronises every chunk that follows.
+///
+/// `status` comes from the packet header, not from here; the first two bytes
+/// of this payload are reserved and carry no status.
+fn parse_trailer(
+    packet_id: u32,
+    block_id: u64,
+    status: u16,
+    payload: &[u8],
+) -> Result<GvspPacket, GvspError> {
     if payload.len() < 2 {
         return Err(GvspError::Invalid("trailer truncated"));
     }
     let mut cursor = payload;
-    let status = cursor.get_u16();
-    let chunk_data = if payload.len() > 2 {
-        Bytes::copy_from_slice(&payload[2..])
+    let _reserved = cursor.get_u16();
+
+    // The specification fixes this payload at 8 bytes. A device that sends
+    // fewer still gets its frame delivered — we simply have no chunk region
+    // to report — rather than having the short read treated as chunk data.
+    let (payload_type, size_y, chunk_data) = if payload.len() >= 8 {
+        let payload_type = cursor.get_u16();
+        let size_y = cursor.get_u32();
+        (payload_type, size_y, Bytes::copy_from_slice(&payload[8..]))
     } else {
-        Bytes::new()
+        debug!(
+            block_id,
+            len = payload.len(),
+            "trailer payload shorter than the specified 8 bytes"
+        );
+        (0, 0, Bytes::new())
     };
+
     Ok(GvspPacket::Trailer {
         block_id,
         packet_id,
         status,
+        payload_type,
+        size_y,
         chunk_data,
     })
 }
@@ -659,6 +704,109 @@ mod tests {
         let payload = vec![0u8; 6];
         let chunks = parse_chunks(&payload);
         assert!(chunks.is_empty());
+    }
+
+    /// A GVSP data trailer, assembled from the specification rather than from
+    /// what our own parser or fake camera happen to produce (ADR-0019).
+    ///
+    /// Standard header (8 bytes): `status(2) | block_id(2) | format(1) |
+    /// packet_id(3)`, then the trailer payload (8 bytes): `reserved(2) |
+    /// payload_type(2) | size_y(4)`, then any chunk region.
+    fn golden_trailer(status: u16, payload_type: u16, size_y: u32, chunks: &[u8]) -> Vec<u8> {
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&status.to_be_bytes());
+        pkt.extend_from_slice(&0x0007u16.to_be_bytes()); // block_id
+        pkt.push(0x02); // packet format: trailer
+        pkt.extend_from_slice(&[0x00, 0x00, 0x42]); // packet_id (24-bit)
+        pkt.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        pkt.extend_from_slice(&payload_type.to_be_bytes());
+        pkt.extend_from_slice(&size_y.to_be_bytes());
+        pkt.extend_from_slice(chunks);
+        pkt
+    }
+
+    /// The regression behind the per-frame `chunk header truncated
+    /// remaining=6` a JAI produced on issue #70. A trailer closing a plain
+    /// image block carries no chunk region at all — the six bytes previously
+    /// reported as a truncated chunk header were `payload_type` and `size_y`.
+    #[test]
+    fn trailer_without_chunks_yields_no_chunk_region() {
+        let pkt = golden_trailer(0, PAYLOAD_TYPE_IMAGE as u16, 1536, &[]);
+        assert_eq!(pkt.len(), 16, "8-byte header + 8-byte trailer payload");
+
+        let GvspPacket::Trailer {
+            block_id,
+            packet_id,
+            status,
+            payload_type,
+            size_y,
+            chunk_data,
+        } = parse_packet(&pkt).expect("parse trailer")
+        else {
+            panic!("expected a trailer");
+        };
+
+        assert_eq!(block_id, 0x0007);
+        assert_eq!(packet_id, 0x42);
+        assert_eq!(status, 0);
+        assert_eq!(payload_type, 0x0001);
+        assert_eq!(size_y, 1536);
+        assert!(
+            chunk_data.is_empty(),
+            "chunk region begins at offset 8, so a plain image trailer has none"
+        );
+        assert!(parse_chunks(&chunk_data).is_empty());
+    }
+
+    /// With chunk mode on the same six bytes desynchronised every chunk that
+    /// followed, so `ChunkTimestamp` could not decode on a real camera.
+    #[test]
+    fn trailer_chunk_region_starts_after_the_payload_header() {
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(&0x0001u16.to_be_bytes()); // ChunkTimestamp
+        chunks.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        chunks.extend_from_slice(&8u32.to_be_bytes()); // length
+        chunks.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_be_bytes());
+
+        // 0x4001 — Image Extended Chunk, the payload type real cameras use to
+        // deliver chunks.
+        let pkt = golden_trailer(0, 0x4001, 1536, &chunks);
+
+        let GvspPacket::Trailer {
+            payload_type,
+            chunk_data,
+            ..
+        } = parse_packet(&pkt).expect("parse trailer")
+        else {
+            panic!("expected a trailer");
+        };
+
+        assert_eq!(payload_type, 0x4001);
+        let parsed = parse_chunks(&chunk_data);
+        assert_eq!(
+            parsed.len(),
+            1,
+            "exactly one chunk, not a desynchronised run"
+        );
+        assert_eq!(parsed[0].id, 0x0001);
+        assert_eq!(
+            parsed[0].data.as_ref(),
+            &0x0123_4567_89AB_CDEFu64.to_be_bytes()
+        );
+    }
+
+    /// The status word lives in the packet header, not in the trailer payload
+    /// whose first two bytes are reserved. Reading it from the payload meant
+    /// the receiver's `status != 0` frame check tested the wrong field.
+    #[test]
+    fn trailer_status_comes_from_the_packet_header() {
+        // A non-zero header status with an all-zero (reserved) payload prefix:
+        // the old code read the payload and saw success.
+        let pkt = golden_trailer(0x8004, PAYLOAD_TYPE_IMAGE as u16, 0, &[]);
+        let GvspPacket::Trailer { status, .. } = parse_packet(&pkt).expect("parse trailer") else {
+            panic!("expected a trailer");
+        };
+        assert_eq!(status, 0x8004);
     }
 
     #[test]
