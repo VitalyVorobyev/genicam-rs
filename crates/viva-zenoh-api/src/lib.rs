@@ -109,7 +109,8 @@ pub struct NumericRange {
 ///
 /// - `kind` is a plain string matching `viva_genapi::Node::kind_name` values
 ///   ("Integer", "Float", "Enumeration", "Boolean", "Command", "Category",
-///   "SwissKnife", "Converter", "IntConverter", "StringReg"). Clients should
+///   "SwissKnife", "Converter", "IntConverter", "StringReg", "Register").
+///   Clients should
 ///   tolerate unknown kinds.
 /// - `access_mode` uses GenICam spelling: `"RO"`, `"RW"`, `"WO"`, `"NA"`.
 /// - `is_implemented` and `is_available` default to `true` for deserialization

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`<Register>` node support, for declarations with a plain `<Length>`**
+  (backlog `GA-09`, first cut). `<Register>` is the base register type — an
+  address, a byte count and no interpretation of the bytes — and it was dropped
+  entirely, taking `FileAccessBuffer` with it on two vendors' hardware
+  (a JAI on #70, a Micro-Epsilon scanCONTROL) and prompting the
+  `NodeMap::register_address` request in #92. `NodeMap::get_register` and
+  `set_register` read and write the raw bytes; `RegisterNode` is re-exported.
+
+  **`<pLength>` — a length resolved from another node at runtime — is
+  deliberately still unsupported**, and says so: such a node is recorded in
+  `NodeMap::skipped()` with an error naming `<pLength>`, rather than parsed and
+  read at the wrong size. That covers 42 of the vendor corpus's 63 `<Register>`
+  declarations, clearing every skipped node in seven documents; the remaining 21
+  are concentrated in three vendors. The row previously claimed 56 declarations
+  with only 5 usable — see the correction in #101.
+
+  `set_register` refuses a slice that is not exactly the declared length rather
+  than zero-padding as `set_string` does: padding a 100 000-byte file-transfer
+  buffer because the caller supplied twelve bytes is data loss.
+
+  A register bound to a non-device `<pPort>` — the scanCONTROL's three
+  `Chunk*Results` blocks — is parsed and listed but **cannot be read**. Its
+  address is relative to a port we do not route, and all three sit at `0x0`, so
+  a device-port read would return GVCP bootstrap registers dressed as
+  measurement data. Port routing is `GA-12`.
+
 - **`Mono12` and `Mono14`** — the two pixel formats the Micro-Epsilon
   scanCONTROL 850050 advertises that #93 did not cover. Its `PixelFormat`
   enumeration offers ten formats; eight were named.

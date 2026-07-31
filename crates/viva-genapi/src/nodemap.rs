@@ -16,7 +16,7 @@ use crate::conversions::{
 };
 use crate::nodes::{
     BooleanNode, CategoryNode, CommandNode, ConverterNode, EnumMapping, EnumNode, FloatNode,
-    IntConverterNode, IntegerNode, Node, SkNode, StringNode,
+    IntConverterNode, IntegerNode, Node, RegisterNode, SkNode, StringNode,
 };
 use crate::swissknife::{
     AstNode as SkAst, EvalError as SkEvalError, EvalMode, Value as SkValue, collect_identifiers,
@@ -66,6 +66,34 @@ fn ensure_readable(access: &AccessMode, name: &str) -> Result<(), GenApiError> {
         return Err(GenApiError::Access(name.to_string()));
     }
     Ok(())
+}
+
+/// Refuse a register bound to a port we do not route.
+///
+/// `<pPort>` selects which port a register's address is relative to. Absent, or
+/// `"Device"`, means the device's own register space; anything else — a chunk
+/// port, an event port, a serial port — is a different address space entirely.
+///
+/// Reading such a node through the device port would not fail. It would return
+/// whatever happens to live at that address: the Micro-Epsilon scanCONTROL's
+/// three `Chunk*Results` registers all sit at address `0x0`, so a device-port
+/// read hands back GVCP bootstrap registers dressed as measurement data. That
+/// is the silent-wrong-answer failure ADR-0018 exists to refuse, so the node is
+/// parsed and listed but not readable until GA-12 routes ports properly.
+///
+/// This is deliberately stricter than the ~200 `IntReg`/`FloatReg`/`StringReg`
+/// nodes on non-device ports that this crate already exposes without a guard.
+/// The asymmetry is GA-12's debt, not a new inconsistency: new code conforms,
+/// and the old code is on the list.
+fn ensure_device_port(name: &str, port: Option<&str>) -> Result<(), GenApiError> {
+    match port {
+        None => Ok(()),
+        Some(p) if p.eq_ignore_ascii_case("Device") => Ok(()),
+        Some(p) => Err(GenApiError::Unavailable(format!(
+            "register '{name}' is bound to port '{p}'; \
+             non-device ports are not routed yet (GA-12)"
+        ))),
+    }
 }
 
 fn ensure_writable(access: &AccessMode, name: &str) -> Result<(), GenApiError> {
@@ -1029,6 +1057,7 @@ impl NodeMap {
             Node::Enum(node) => node.addressing.as_ref(),
             Node::Boolean(node) => node.addressing.as_ref(),
             Node::String(node) => Some(&node.addressing),
+            Node::Register(node) => Some(&node.addressing),
             _ => None,
         }
         .ok_or_else(|| {
@@ -1320,6 +1349,14 @@ impl NodeMap {
         }
     }
 
+    fn get_register_node(&self, name: &str) -> Result<&RegisterNode, GenApiError> {
+        match self.nodes.get(name) {
+            Some(Node::Register(node)) => Ok(node),
+            Some(_) => Err(GenApiError::Type(name.to_string())),
+            None => Err(GenApiError::NodeNotFound(name.to_string())),
+        }
+    }
+
     /// Read a Converter feature value (float) using the provided transport.
     pub fn get_converter(&self, name: &str, io: &dyn RegisterIo) -> Result<f64, GenApiError> {
         let node = self.get_converter_node(name)?;
@@ -1473,6 +1510,59 @@ impl NodeMap {
             .replace(Some((value.to_string(), self.generation.get())));
         self.invalidate_dependents(name);
         debug!(node = %name, value = %value, "set_string");
+        Ok(())
+    }
+
+    /// Read a `<Register>` node's bytes using the provided transport.
+    ///
+    /// Returns the full declared length. For a large block — the Micro-Epsilon
+    /// scanCONTROL declares `FileAccessBuffer` as 100 000 bytes — that is
+    /// hundreds of chunked reads; use [`NodeMap::register_address`] and the
+    /// transport directly when a partial read is what you want.
+    pub fn get_register(&self, name: &str, io: &dyn RegisterIo) -> Result<Vec<u8>, GenApiError> {
+        let node = self.get_register_node(name)?;
+        ensure_readable(&node.access, name)?;
+        ensure_device_port(name, node.port.as_deref())?;
+        if let Some((ref value, generation)) = *node.cache.borrow()
+            && generation == self.generation.get()
+        {
+            return Ok(value.clone());
+        }
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
+        let raw = io.read(address, len as usize)?;
+        node.cache
+            .replace(Some((raw.clone(), self.generation.get())));
+        debug!(node = %name, len = raw.len(), "get_register");
+        Ok(raw)
+    }
+
+    /// Write a `<Register>` node's bytes using the provided transport.
+    ///
+    /// `data` must be exactly the declared length. Unlike [`NodeMap::set_string`],
+    /// which pads with NULs, a short slice is refused: zero-padding a
+    /// file-transfer buffer to 100 000 bytes because the caller supplied 12 is
+    /// data loss, not a convenience.
+    pub fn set_register(
+        &self,
+        name: &str,
+        data: &[u8],
+        io: &dyn RegisterIo,
+    ) -> Result<(), GenApiError> {
+        let node = self.get_register_node(name)?;
+        self.ensure_writable_now(name, &node.access, io)?;
+        ensure_device_port(name, node.port.as_deref())?;
+        let (address, len) = self.resolve_address(name, &node.addressing, io)?;
+        if data.len() != len as usize {
+            return Err(GenApiError::Range(format!(
+                "register '{name}' is {len} bytes; got {}",
+                data.len()
+            )));
+        }
+        io.write(address, data)?;
+        node.cache
+            .replace(Some((data.to_vec(), self.generation.get())));
+        self.invalidate_dependents(name);
+        debug!(node = %name, len = data.len(), "set_register");
         Ok(())
     }
 
@@ -1950,6 +2040,21 @@ fn build_node(
                 cache: std::cell::RefCell::new(None),
             };
             Ok((name, Node::String(node)))
+        }
+        NodeDecl::Register(decl) => {
+            let name = decl.name;
+            register_addressing_dependency(dependents, &name, &decl.addressing);
+            register_predicate_dependencies(dependents, &name, &decl.predicates);
+            let node = RegisterNode {
+                name: name.clone(),
+                meta: decl.meta,
+                addressing: decl.addressing,
+                access: decl.access,
+                port: decl.port,
+                predicates: decl.predicates,
+                cache: std::cell::RefCell::new(None),
+            };
+            Ok((name, Node::Register(node)))
         }
     }
 }

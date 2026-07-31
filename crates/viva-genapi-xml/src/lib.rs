@@ -21,8 +21,8 @@ use thiserror::Error;
 
 use parsers::{
     parse_boolean, parse_category, parse_category_empty, parse_command, parse_command_empty,
-    parse_converter, parse_enum, parse_float, parse_int_converter, parse_integer, parse_string,
-    parse_struct_reg, parse_swissknife,
+    parse_converter, parse_enum, parse_float, parse_int_converter, parse_integer, parse_register,
+    parse_string, parse_struct_reg, parse_swissknife,
 };
 use util::{attribute_value, skip_element};
 
@@ -573,6 +573,35 @@ pub struct StringDecl {
     pub predicates: PredicateRefs,
 }
 
+/// Declaration of a `<Register>` node — raw byte-array register access.
+///
+/// The base register type: an address, a byte count, and no interpretation of
+/// the bytes at all. `<StringReg>` is this plus UTF-8/NUL decoding.
+///
+/// The length lives in [`Addressing`] rather than in a field here, because a
+/// bare `<pIndex>` strides by the register's length and address resolution
+/// already reads it from there. When `<pLength>` lands (GA-09 phase two) it
+/// gains a length that overrides that value *after* the address resolves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterDecl {
+    /// Feature name exposed to clients.
+    pub name: String,
+    /// Shared metadata.
+    pub meta: NodeMeta,
+    /// Addressing metadata for the register block, including its byte length.
+    pub addressing: Addressing,
+    /// Access privileges. An absent `<AccessMode>` means read-only.
+    pub access: AccessMode,
+    /// `<pPort>` target, verbatim; `None` when the element was absent.
+    ///
+    /// Anything other than `None` or `"Device"` is not routed yet — see GA-12.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+    /// Predicate refs gating implementation / availability / lock state.
+    #[serde(default, skip_serializing_if = "PredicateRefs::is_empty")]
+    pub predicates: PredicateRefs,
+}
+
 /// Declaration of a node extracted from the GenICam XML description.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeDecl {
@@ -719,6 +748,8 @@ pub enum NodeDecl {
     IntConverter(IntConverterDecl),
     /// StringReg for string-typed register access.
     String(StringDecl),
+    /// Raw byte-array register access.
+    Register(RegisterDecl),
 }
 
 impl NodeDecl {
@@ -735,6 +766,7 @@ impl NodeDecl {
             NodeDecl::Converter(decl) => &decl.name,
             NodeDecl::IntConverter(decl) => &decl.name,
             NodeDecl::String(decl) => &decl.name,
+            NodeDecl::Register(decl) => &decl.name,
         }
     }
 
@@ -756,6 +788,7 @@ impl NodeDecl {
             NodeDecl::Converter(_) => "Converter",
             NodeDecl::IntConverter(_) => "IntConverter",
             NodeDecl::String(_) => "String",
+            NodeDecl::Register(_) => "Register",
         }
     }
 }
@@ -852,6 +885,7 @@ fn is_node_tag(tag: &[u8]) -> bool {
             | b"Category"
             | b"Converter"
             | b"IntConverter"
+            | b"Register"
             | b"StringReg"
             | b"String"
             | b"StructReg"
@@ -901,6 +935,7 @@ fn parse_node(
         b"Category" => parse_category(reader, start)?,
         b"Converter" => parse_converter(reader, start)?,
         b"IntConverter" => parse_int_converter(reader, start)?,
+        b"Register" => parse_register(reader, start)?,
         b"StringReg" | b"String" => parse_string(reader, start)?,
         b"StructReg" => return parse_struct_reg(reader, start),
         other => {

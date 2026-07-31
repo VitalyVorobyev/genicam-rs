@@ -343,6 +343,15 @@ fn build_feature_state(
             .get_string(name, transport)
             .map(serde_json::Value::String)
             .map_err(|e| format!("Failed to read string '{name}': {e}"))?,
+        // Report the size, not the bytes. A `<Register>` can be very large --
+        // the Micro-Epsilon scanCONTROL declares a 100 000-byte
+        // `FileAccessBuffer` -- and this state is polled by the UI, so
+        // base64-ing the payload into every refresh would be a poor trade for
+        // a value nothing renders.
+        Node::Register(reg) => serde_json::json!({
+            "kind": "register",
+            "length": reg.declared_len(),
+        }),
         Node::SwissKnife(sk) => match sk.output {
             SkOutput::Float => nodemap
                 .get_float(name, transport)
