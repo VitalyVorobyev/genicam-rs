@@ -38,6 +38,7 @@ by a real register comes out zero, so read structure from it, not data.
 | `Node::Converter` | `Converter` |
 | `Node::IntConverter` | `IntConverter` |
 | `Node::String` | `StringReg` |
+| `Node::Register` | `Register` (plain `<Length>` only; `<pLength>` is not supported yet) |
 
 `Node::kind_name()` returns the GenICam name, `name()` the feature name, and
 `access_mode()` the declared mode — which is not the same as the effective one,

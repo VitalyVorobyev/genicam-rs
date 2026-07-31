@@ -14,7 +14,7 @@ pub use io::{NullIo, RegisterIo};
 pub use nodemap::NodeMap;
 pub use nodes::{
     BooleanNode, CategoryNode, CommandNode, EnumNode, FloatNode, IntegerNode, Node, NodeMeta,
-    Representation, SkNode, Visibility,
+    RegisterNode, Representation, SkNode, Visibility,
 };
 pub use swissknife::{AstNode, EvalMode, Value};
 pub use viva_genapi_xml::{AccessMode, SkOutput, SkippedNode};
@@ -254,21 +254,22 @@ mod tests {
     /// camera does not have.
     #[test]
     fn an_unsupported_node_type_is_visible_in_the_nodemap() {
-        const WITH_REGISTER: &str = r#"
+        // `<ConfRom>` is a real GenICam node type we do not implement.
+        // This test used `<Register>` until GA-09 landed support for it.
+        const WITH_UNKNOWN: &str = r#"
             <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">
                 <Integer Name="Width">
                     <Address>0x100</Address>
                     <Length>4</Length>
                     <AccessMode>RW</AccessMode>
                 </Integer>
-                <Register Name="LUTBlock">
+                <ConfRom Name="DeviceConfRom">
                     <Address>0x2000</Address>
                     <Length>512</Length>
-                    <AccessMode>RW</AccessMode>
-                </Register>
+                </ConfRom>
             </RegisterDescription>
         "#;
-        let model = viva_genapi_xml::parse(WITH_REGISTER).expect("parse");
+        let model = viva_genapi_xml::parse(WITH_UNKNOWN).expect("parse");
         assert_eq!(model.skipped.len(), 1, "XML layer records the unknown tag");
 
         let nodemap = NodeMap::try_from_xml(model).expect("build nodemap");
@@ -277,8 +278,183 @@ mod tests {
 
         let skipped = nodemap.skipped();
         assert_eq!(skipped.len(), 1, "and the nodemap carries it forward");
-        assert_eq!(skipped[0].tag, "Register");
-        assert_eq!(skipped[0].name.as_deref(), Some("LUTBlock"));
+        assert_eq!(skipped[0].tag, "ConfRom");
+        assert_eq!(skipped[0].name.as_deref(), Some("DeviceConfRom"));
+    }
+
+    /// `<Register>` fixture covering the three shapes GA-09's first cut cares
+    /// about: a readable/writable block on the device port, one on a chunk
+    /// port, and one whose length is resolved at runtime.
+    const REGISTER_FIXTURE: &str = r#"
+        <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">
+            <Register Name="FileAccessBuffer">
+                <Address>0x2000</Address>
+                <Length>8</Length>
+                <AccessMode>RW</AccessMode>
+            </Register>
+            <Register Name="DeviceSerialBlock">
+                <Address>0x3000</Address>
+                <Length>4</Length>
+                <AccessMode>RO</AccessMode>
+                <pPort>Device</pPort>
+            </Register>
+            <Register Name="ChunkMeasurementResults">
+                <Address>0x0</Address>
+                <Length>4</Length>
+                <AccessMode>RO</AccessMode>
+                <pPort>Chunk4007</pPort>
+            </Register>
+            <Register Name="DynamicBlock">
+                <Address>0x4000</Address>
+                <pLength>BlockLength</pLength>
+            </Register>
+            <StringReg Name="DeviceVendorName">
+                <Address>0x5000</Address>
+                <Length>4</Length>
+                <AccessMode>RO</AccessMode>
+            </StringReg>
+        </RegisterDescription>
+    "#;
+
+    fn build_register_nodemap() -> NodeMap {
+        let model = viva_genapi_xml::parse(REGISTER_FIXTURE).expect("parse register fixture");
+        NodeMap::try_from_xml(model).expect("build nodemap")
+    }
+
+    #[test]
+    fn register_reads_and_writes_raw_bytes() {
+        let nodemap = build_register_nodemap();
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let io = MockIo::with_registers(&[(0x2000, payload.clone())]);
+
+        assert_eq!(
+            nodemap
+                .get_register("FileAccessBuffer", &io)
+                .expect("read register"),
+            payload
+        );
+
+        let replacement = vec![9u8; 8];
+        nodemap
+            .set_register("FileAccessBuffer", &replacement, &io)
+            .expect("write register");
+        assert_eq!(
+            nodemap
+                .get_register("FileAccessBuffer", &io)
+                .expect("re-read register"),
+            replacement
+        );
+    }
+
+    /// A short write must be refused, not padded.
+    ///
+    /// `set_string` zero-pads to the declared length, which is right for a
+    /// string. Doing the same to a file-transfer buffer would silently zero
+    /// the rest of the block — data loss dressed as a convenience.
+    #[test]
+    fn register_write_of_the_wrong_length_is_refused() {
+        let nodemap = build_register_nodemap();
+        let io = MockIo::with_registers(&[(0x2000, vec![0u8; 8])]);
+
+        let err = nodemap
+            .set_register("FileAccessBuffer", &[1, 2, 3], &io)
+            .expect_err("a 3-byte write into an 8-byte register must fail");
+        assert!(
+            matches!(err, GenApiError::Range(_)),
+            "expected a range error, got {err:?}"
+        );
+        assert_eq!(
+            io.read(0x2000, 8).expect("register untouched"),
+            vec![0u8; 8],
+            "the refused write must not have reached the device"
+        );
+    }
+
+    /// A chunk-port register is listed but cannot be read.
+    ///
+    /// Its address is relative to a port we do not route. Reading it through
+    /// the device port would not error — it would return whatever lives at
+    /// that address, which for a scanCONTROL's `0x0` is the GVCP bootstrap
+    /// area. Silent wrong answers are what ADR-0018 exists to refuse (GA-12).
+    #[test]
+    fn register_on_a_non_device_port_is_listed_but_not_readable() {
+        let nodemap = build_register_nodemap();
+        let io = MockIo::with_registers(&[(0x0, vec![1, 2, 3, 4])]);
+
+        assert!(
+            nodemap.node_names().any(|n| n == "ChunkMeasurementResults"),
+            "the node must still be visible for introspection"
+        );
+
+        let err = nodemap
+            .get_register("ChunkMeasurementResults", &io)
+            .expect_err("a chunk-port register must not be read through the device port");
+        let text = err.to_string();
+        assert!(
+            text.contains("Chunk4007") && text.contains("GA-12"),
+            "the error must name the port and the reason: {text}"
+        );
+
+        // An explicit <pPort>Device</pPort> is the device port and reads fine.
+        let io = MockIo::with_registers(&[(0x3000, vec![5, 6, 7, 8])]);
+        assert_eq!(
+            nodemap
+                .get_register("DeviceSerialBlock", &io)
+                .expect("explicit Device port reads"),
+            vec![5, 6, 7, 8]
+        );
+    }
+
+    /// `register_address` (#92) keeps working, and now covers `<Register>`.
+    #[test]
+    fn register_address_resolves_for_a_register_node() {
+        let nodemap = build_register_nodemap();
+        let io = MockIo::default();
+        assert_eq!(
+            nodemap
+                .register_address("FileAccessBuffer", &io)
+                .expect("resolve address"),
+            (0x2000, 8)
+        );
+    }
+
+    #[test]
+    fn register_accessors_reject_the_wrong_node_type() {
+        let nodemap = build_register_nodemap();
+        let io = MockIo::with_registers(&[(0x5000, b"AVT\0".to_vec())]);
+
+        assert!(matches!(
+            nodemap.get_register("DeviceVendorName", &io),
+            Err(GenApiError::Type(_))
+        ));
+        assert!(matches!(
+            nodemap.get_register("NoSuchNode", &io),
+            Err(GenApiError::NodeNotFound(_))
+        ));
+    }
+
+    /// The deferred half of GA-09 must name itself in the skip reason.
+    ///
+    /// The corpus allowlist matches on this substring to tell a known gap from
+    /// a regression, so the wording is load-bearing, not cosmetic.
+    #[test]
+    fn a_register_with_p_length_is_skipped_and_says_why() {
+        let nodemap = build_register_nodemap();
+        let skipped = nodemap.skipped();
+
+        let entry = skipped
+            .iter()
+            .find(|s| s.name.as_deref() == Some("DynamicBlock"))
+            .expect("a <pLength> register must be recorded, not silently dropped");
+        assert_eq!(entry.tag, "Register");
+        assert!(
+            entry.error.contains("<pLength>"),
+            "the skip reason must name <pLength>: {}",
+            entry.error
+        );
+
+        // The other four nodes still built.
+        assert_eq!(nodemap.node_names().count(), 4);
     }
 
     /// Structural elements are not features and must not be reported as lost.

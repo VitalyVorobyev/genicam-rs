@@ -33,6 +33,8 @@ pub enum Node {
     IntConverter(IntConverterNode),
     /// StringReg for string-typed register access.
     String(StringNode),
+    /// Raw byte-array register access.
+    Register(RegisterNode),
 }
 
 impl Node {
@@ -49,6 +51,7 @@ impl Node {
             Node::Converter(_) => "Converter",
             Node::IntConverter(_) => "IntConverter",
             Node::String(_) => "StringReg",
+            Node::Register(_) => "Register",
         }
     }
 
@@ -65,6 +68,7 @@ impl Node {
             Node::Converter(_) => Some(viva_genapi_xml::AccessMode::RO),
             Node::IntConverter(_) => Some(viva_genapi_xml::AccessMode::RO),
             Node::String(n) => Some(n.access),
+            Node::Register(n) => Some(n.access),
         }
     }
 
@@ -81,6 +85,7 @@ impl Node {
             Node::Converter(n) => &n.name,
             Node::IntConverter(n) => &n.name,
             Node::String(n) => &n.name,
+            Node::Register(n) => &n.name,
         }
     }
 
@@ -97,6 +102,7 @@ impl Node {
             Node::Converter(n) => &n.meta,
             Node::IntConverter(n) => &n.meta,
             Node::String(n) => &n.meta,
+            Node::Register(n) => &n.meta,
         }
     }
 
@@ -139,6 +145,7 @@ impl Node {
             Node::Converter(n) => &n.predicates,
             Node::IntConverter(n) => &n.predicates,
             Node::String(n) => &n.predicates,
+            Node::Register(n) => &n.predicates,
         }
     }
 
@@ -166,6 +173,9 @@ impl Node {
                 node.cache.replace(None);
             }
             Node::String(node) => {
+                node.cache.replace(None);
+            }
+            Node::Register(node) => {
                 node.cache.replace(None);
             }
             Node::Command(_) | Node::Category(_) => {}
@@ -439,4 +449,45 @@ pub struct StringNode {
     pub predicates: PredicateRefs,
     /// Cached string value alongside the generation it was computed in.
     pub cache: RefCell<Option<(String, u64)>>,
+}
+
+/// `<Register>` node: raw byte-array access to a register block.
+///
+/// The base register type — an address, a byte count, and no interpretation of
+/// the bytes. `StringNode` is this plus UTF-8/NUL decoding.
+#[derive(Debug)]
+pub struct RegisterNode {
+    /// Unique feature name.
+    pub name: String,
+    /// Shared metadata (visibility, description, tooltip, etc.).
+    pub meta: NodeMeta,
+    /// Register addressing metadata, including the block length.
+    pub addressing: Addressing,
+    /// Declared access rights.
+    pub access: AccessMode,
+    /// `<pPort>` target; `None` or `"Device"` means the device port.
+    ///
+    /// Any other port is parsed and listed but cannot be read — see GA-12.
+    pub port: Option<String>,
+    /// Predicate refs gating implementation / availability / lock state.
+    pub predicates: PredicateRefs,
+    /// Cached payload alongside the generation it was read in.
+    pub cache: RefCell<Option<(Vec<u8>, u64)>>,
+}
+
+impl RegisterNode {
+    /// Declared length of the register block in bytes.
+    ///
+    /// `None` for a selector-mapped block, whose length depends on the current
+    /// selector value and therefore needs a transport to resolve — use
+    /// `NodeMap::register_address` for that.
+    ///
+    /// This exists so a consumer can report a register's size without naming
+    /// `Addressing`, which is not re-exported (backlog `API-02`).
+    pub fn declared_len(&self) -> Option<u32> {
+        match &self.addressing {
+            Addressing::Sum { len, .. } => Some(*len),
+            Addressing::BySelector { .. } => None,
+        }
+    }
 }

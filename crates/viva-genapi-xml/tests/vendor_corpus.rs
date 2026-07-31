@@ -38,18 +38,21 @@ const EXPECTED_SKIPS: &[(&str, &str)] = &[
     ("Baumer_HXG20.xml", "ChunkImageLength"),
 ];
 
-/// Node *types* we have not implemented, expected to be skipped everywhere.
+/// Node types we cannot represent yet, as `(tag, required error substring)`.
 ///
 /// Distinct from [`EXPECTED_SKIPS`], which allows one named declaration we
-/// cannot parse. An entry here says the tag itself is unimplemented, so every
-/// declaration of it is a known gap rather than a regression. A tag *not*
-/// listed here still fails the test — which is the whole point of recording
-/// unknown tags in the first place.
-const EXPECTED_SKIP_TAGS: &[&str] = &[
-    // GA-09: `<Register>`, the raw-byte base register type — 56 declarations
-    // across 14 corpus documents. Silently dropped until GA-02 made unknown
-    // tags visible.
-    "Register",
+/// cannot parse. An entry here says a tag is unimplemented *for a specific
+/// stated reason*, and the substring is what pins the reason down: a
+/// `<Register>` skipped because of `<pLength>` is a known gap, while a
+/// `<Register>` skipped for anything else is a regression this test must still
+/// catch. A tag not listed here fails outright.
+///
+/// Use `""` as the substring to allow a tag unconditionally.
+const EXPECTED_SKIP_REASONS: &[(&str, &str)] = &[
+    // GA-09 phase two: `<pLength>`, a register length resolved from another
+    // node at runtime. 21 of the corpus's 63 `<Register>` declarations use it;
+    // the other 42 are supported and must now build.
+    ("Register", "<pLength>"),
 ];
 
 fn corpus_dir() -> PathBuf {
@@ -62,8 +65,10 @@ fn corpus_dir() -> PathBuf {
         .join(DEFAULT_CORPUS)
 }
 
-fn is_expected_skip(document: &str, tag: &str, node: Option<&str>) -> bool {
-    EXPECTED_SKIP_TAGS.contains(&tag)
+fn is_expected_skip(document: &str, tag: &str, node: Option<&str>, error: &str) -> bool {
+    EXPECTED_SKIP_REASONS
+        .iter()
+        .any(|(t, reason)| *t == tag && (reason.is_empty() || error.contains(reason)))
         || EXPECTED_SKIPS
             .iter()
             .any(|(doc, name)| *doc == document && Some(*name) == node)
@@ -115,7 +120,12 @@ fn vendor_xml_corpus_parses() {
                     .skipped
                     .iter()
                     .filter(|skipped| {
-                        !is_expected_skip(&document, &skipped.tag, skipped.name.as_deref())
+                        !is_expected_skip(
+                            &document,
+                            &skipped.tag,
+                            skipped.name.as_deref(),
+                            &skipped.error,
+                        )
                     })
                     .collect();
                 if unexpected.is_empty() {

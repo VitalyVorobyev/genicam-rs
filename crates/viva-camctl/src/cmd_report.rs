@@ -439,16 +439,15 @@ mod tests {
     fn skipped_features_are_listed() {
         const XML: &str = r#"
             <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0">
-                <Register Name="LUTBlock">
+                <ConfRom Name="DeviceConfRom">
                     <Address>0x2000</Address>
                     <Length>512</Length>
-                    <AccessMode>RW</AccessMode>
-                </Register>
+                </ConfRom>
             </RegisterDescription>
         "#;
         let mut out = String::new();
         genapi(&mut out, XML, true);
-        assert!(out.contains("<Register> LUTBlock"), "{out}");
+        assert!(out.contains("<ConfRom> DeviceConfRom"), "{out}");
         assert!(out.contains("cannot expose"), "{out}");
     }
 

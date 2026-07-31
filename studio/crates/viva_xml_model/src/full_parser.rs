@@ -552,6 +552,30 @@ fn node_decl_to_ui_node(decl: &NodeDecl, nodemap: &NodeMap) -> (String, UiNode) 
                 int_inc: None,
             },
         ),
+        NodeDecl::Register(r) => (
+            r.name.clone(),
+            UiNode {
+                name: r.name.clone(),
+                kind: UiNodeKind::Register,
+                display_name: r.meta.display_name.clone(),
+                comment: None,
+                tooltip: r.meta.tooltip.clone(),
+                description: r.meta.description.clone(),
+                visibility: visibility_str(&r.meta),
+                access_mode: Some(access_mode_str(r.access)),
+                unit: None,
+                representation: representation_str(&r.meta),
+                constraints: None,
+                enum_entries: vec![],
+                raw: empty_raw("Register"),
+                dependencies: vec![],
+                dependents,
+                expression: None,
+                int_min: None,
+                int_max: None,
+                int_inc: None,
+            },
+        ),
     }
 }
 
@@ -879,6 +903,27 @@ fn node_decl_to_ui_node_simple(decl: &NodeDecl) -> UiNode {
             int_max: None,
             int_inc: None,
         },
+        NodeDecl::Register(r) => UiNode {
+            name: r.name.clone(),
+            kind: UiNodeKind::Register,
+            display_name: r.meta.display_name.clone(),
+            comment: None,
+            tooltip: r.meta.tooltip.clone(),
+            description: r.meta.description.clone(),
+            visibility: visibility_str(&r.meta),
+            access_mode: Some(access_mode_str(r.access)),
+            unit: None,
+            representation: representation_str(&r.meta),
+            constraints: None,
+            enum_entries: vec![],
+            raw: empty_raw("Register"),
+            dependencies: vec![],
+            dependents: empty_nodemap_dependents,
+            expression: None,
+            int_min: None,
+            int_max: None,
+            int_inc: None,
+        },
     }
 }
 
@@ -894,6 +939,7 @@ fn decl_name(decl: &NodeDecl) -> String {
         NodeDecl::Converter(cv) => cv.name.clone(),
         NodeDecl::IntConverter(cv) => cv.name.clone(),
         NodeDecl::String(s) => s.name.clone(),
+        NodeDecl::Register(r) => r.name.clone(),
     }
 }
 

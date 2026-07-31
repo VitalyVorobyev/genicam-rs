@@ -227,6 +227,14 @@ impl<T: RegisterIo> Camera<T> {
             Some(Node::Command(_)) => {
                 Err(GenicamError::GenApi(GenApiError::Type(name.to_string())))
             }
+            // A `<Register>` is a byte array with no declared interpretation.
+            // Rendering it into this `String`-typed API would mean inventing an
+            // encoding — hex? base64? — that nothing asked for and no caller
+            // could rely on. Raw access goes through
+            // `nodemap().get_register(name, transport)`.
+            Some(Node::Register(_)) => {
+                Err(GenicamError::GenApi(GenApiError::Type(name.to_string())))
+            }
             Some(Node::Category(_)) => Ok(String::new()),
             None => Err(GenApiError::NodeNotFound(name.to_string()).into()),
         }
@@ -278,6 +286,9 @@ impl<T: RegisterIo> Camera<T> {
                 .nodemap
                 .exec_command(name, &self.transport)
                 .map_err(Into::into),
+            // See the matching arm in `get`: a byte array has no string form
+            // this API could parse back. Use `nodemap().set_register(...)`.
+            Some(Node::Register(_)) => Err(GenApiError::Type(name.to_string()).into()),
             Some(Node::Category(_)) => Err(GenApiError::Type(name.to_string()).into()),
             None => Err(GenApiError::NodeNotFound(name.to_string()).into()),
         }

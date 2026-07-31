@@ -43,15 +43,21 @@ const EXPECTED_SKIPS: &[(&str, &str)] = &[
     ("Baumer_HXG20.xml", "ChunkImageLength"),
 ];
 
-/// Node *types* we have not implemented, expected to be skipped everywhere.
+/// Node types we cannot represent yet, as `(tag, required error substring)`.
 ///
-/// Distinct from [`EXPECTED_SKIPS`], which allows one named declaration. An
-/// entry here says the tag itself is unimplemented; a tag *not* listed still
-/// fails the test.
-const EXPECTED_SKIP_TAGS: &[&str] = &[
-    // GA-09: `<Register>`, the raw-byte base register type — 56 declarations
-    // across 14 corpus documents.
-    "Register",
+/// Distinct from [`EXPECTED_SKIPS`], which allows one named declaration we
+/// cannot parse. An entry here says a tag is unimplemented *for a specific
+/// stated reason*, and the substring is what pins the reason down: a
+/// `<Register>` skipped because of `<pLength>` is a known gap, while a
+/// `<Register>` skipped for anything else is a regression this test must still
+/// catch. A tag not listed here fails outright.
+///
+/// Use `""` as the substring to allow a tag unconditionally.
+const EXPECTED_SKIP_REASONS: &[(&str, &str)] = &[
+    // GA-09 phase two: `<pLength>`, a register length resolved from another
+    // node at runtime. 21 of the corpus's 63 `<Register>` declarations use it;
+    // the other 42 are supported and must now build.
+    ("Register", "<pLength>"),
 ];
 
 fn corpus_dir() -> PathBuf {
@@ -64,8 +70,10 @@ fn corpus_dir() -> PathBuf {
         .join(DEFAULT_CORPUS)
 }
 
-fn is_expected_skip(document: &str, tag: &str, node: Option<&str>) -> bool {
-    EXPECTED_SKIP_TAGS.contains(&tag)
+fn is_expected_skip(document: &str, tag: &str, node: Option<&str>, error: &str) -> bool {
+    EXPECTED_SKIP_REASONS
+        .iter()
+        .any(|(t, reason)| *t == tag && (reason.is_empty() || error.contains(reason)))
         || EXPECTED_SKIPS
             .iter()
             .any(|(doc, name)| *doc == document && Some(*name) == node)
@@ -151,7 +159,12 @@ fn vendor_xml_corpus_builds_nodemaps() {
 
         // 1. Nothing should have been dropped on the way to the nodemap.
         for skipped in nodemap.skipped() {
-            if is_expected_skip(&document, &skipped.tag, skipped.name.as_deref()) {
+            if is_expected_skip(
+                &document,
+                &skipped.tag,
+                skipped.name.as_deref(),
+                &skipped.error,
+            ) {
                 continue;
             }
             println!(
