@@ -15,21 +15,20 @@ construct in the vendor corpus, or point at the user report, before ranking it.
 This roadmap applies that rule throughout, which is why several items moved
 between phases relative to the previous revision.
 
-## Phase 0 — Ship 0.3.1 (immediate)
+## Phase 0 — Ship 0.3.2 (immediate)
 
-0.3.0 was tagged and published on 2026-07-30, after #70 supplied the hardware
-confirmation that #57's APIPA discovery fixes were waiting for. 0.3.1 is
-code-complete and was gated on one thing only: whether #72's `#[cfg(windows)]`
-acquisition fix worked against a real camera, which no machine here can test.
-It does — re-validated on a JAI over Windows APIPA on 2026-07-31 with zero
-drops (backlog `REL-04`, `REL-05`).
-
-- **Tag and publish 0.3.1** (`v0.3.1` + `py-v0.3.1`).
-- **#35 still owes a retest** against 0.3.0; #45 and #57 have both confirmed.
+0.3.1 was tagged on 2026-07-31, once #70 confirmed #72's `#[cfg(windows)]`
+acquisition fix against a real camera — the one thing it was gated on, and
+the one thing no machine here can test.
 
 The lesson worth carrying forward is the shape of that gate, not its outcome:
 a green CI on a platform-conditional fix confirms nothing, and the release
 waited on a user with the hardware rather than on our own confidence.
+
+- **`TC-17` is the first 0.3.2 fix** and is already open: the GVSP data
+  trailer was read at offset 2 of an 8-byte payload, so chunks cannot decode
+  on a conforming camera and the frame-status check tested a reserved word.
+- **#35 still owes a retest** against 0.3.0; #45 and #57 have both confirmed.
 
 ## Phase 1 — Transport conformance (ADR-0019)
 
