@@ -523,6 +523,7 @@ impossible to open. **Anyone on 0.2.6 should upgrade.**
 
 ### Fixed
 
+- **Every GVSP frame was reassembled at the wrong stride, and short frames were delivered as if complete** ([#34](https://github.com/VitalyVorobyev/viva-genicam/pull/34), thanks [@Katze719](https://github.com/Katze719)). The per-packet payload stride is `GevSCPSPacketSize` minus 36 bytes of overhead (IP 20 + UDP 8 + GVSP 8), not minus 8, so every packet after the first was written to the wrong offset; the expected-packet count was off by one for payloads that divide evenly; and `is_complete()` was never consulted, so a frame missing packets was handed to the caller as a valid image rather than dropped. *(Entry added retroactively on 2026-07-31: this shipped in 0.2.6 — `69c6c80` is an ancestor of `v0.2.6` — but was omitted from the changelog at the time.)*
 - Cap decompressed GenICam XML at 64 MiB to prevent memory exhaustion from malicious or corrupt ZIP metadata served by a device.
 - **GigE connect fails on Hikrobot cameras with `InvalidParameter`** (#35) -- two independent fixes:
   - `read_mem` now rounds every READMEM byte count up to a multiple of 4 as GVCP requires and drops the padding; strict cameras (Hikrobot) reject unaligned counts, which broke the final partial block of the XML download.
