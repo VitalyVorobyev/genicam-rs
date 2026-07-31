@@ -91,9 +91,9 @@ impl PixelFormat {
     /// Number of bytes used to encode a single pixel.
     ///
     /// For a format this enumeration does not name, the answer is derived from
-    /// the PFNC code itself — see [`PixelFormat::bytes_from_code`]. `None` means
-    /// the pixel genuinely has no whole-byte size, not that we failed to look
-    /// it up.
+    /// bits 23-16 of the PFNC code, which carry the pixel's bit depth. `None`
+    /// means the pixel genuinely has no whole-byte size — a packed format — not
+    /// that we failed to look it up.
     pub const fn bytes_per_pixel(self) -> Option<usize> {
         match self {
             PixelFormat::Mono8 => Some(1),

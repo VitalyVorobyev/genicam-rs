@@ -592,6 +592,139 @@ async fn test_stream_receives_frames() {
     .unwrap();
 }
 
+/// Chunk data survives the whole round trip: enable it through GenApi, receive
+/// a frame, decode the trailer.
+///
+/// Nothing exercised this path before. `Camera::configure_chunks` calls
+/// `set_bool` on `ChunkModeActive` — correct, SFNC defines it as IBoolean — but
+/// `viva-fake-gige` declared it as `<Integer>`, so the call failed with a type
+/// mismatch and the only camera the project can test against could not turn
+/// chunks on. That is why TC-17, which made chunks undecodable on *every*
+/// conforming camera, was found in a user's log rather than here (backlog
+/// TC-19).
+///
+/// What this proves, precisely: `ChunkModeActive`/`ChunkEnable` are writable as
+/// booleans, the trailer's chunk region is located at the offset TC-17 fixed,
+/// and two chunk entries decode into typed values. What it does **not** prove
+/// is the byte order of a chunk *value* — the fake writes them little-endian
+/// and `chunks.rs` reads them little-endian, so the two agree with each other
+/// and a real camera is not consulted. That is TC-06, and it needs the spec or
+/// hardware, not this test.
+#[tokio::test]
+async fn test_chunk_data_round_trips_through_genapi() {
+    use viva_genicam::{ChunkConfig, ChunkKind, ChunkValue};
+
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let (mut frame_stream, camera) = setup_stream(&device_info).await;
+
+    // Turn chunk mode on through the nodemap, exactly as an application would.
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.configure_chunks(&ChunkConfig {
+            selectors: vec!["Timestamp".to_string(), "ExposureTime".to_string()],
+            active: true,
+        })
+        .expect("configure chunks");
+        cam.acquisition_start().expect("start acquisition");
+    })
+    .await
+    .unwrap();
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame())
+        .await
+        .expect("timeout waiting for frame")
+        .expect("frame error")
+        .expect("stream ended without a frame");
+
+    // The image itself must be unaffected by the chunk region that follows it.
+    assert_eq!(
+        frame.payload.len(),
+        (frame.width * frame.height) as usize,
+        "chunk mode must not change the image payload length for Mono8"
+    );
+
+    let chunks = frame
+        .chunks
+        .as_ref()
+        .expect("frame carried no chunk map with chunk mode active");
+
+    match frame.chunk(ChunkKind::Timestamp) {
+        Some(ChunkValue::U64(ts)) => assert!(*ts > 0, "timestamp chunk should be non-zero"),
+        other => panic!("expected a U64 timestamp chunk, got {other:?}"),
+    }
+    match frame.chunk(ChunkKind::ExposureTime) {
+        Some(ChunkValue::F64(us)) => {
+            assert!(
+                us.is_finite() && *us > 0.0,
+                "exposure chunk should be a positive finite value, got {us}"
+            );
+        }
+        other => panic!("expected an F64 exposure chunk, got {other:?}"),
+    }
+
+    // A desynchronised chunk region decodes as a run of `Unknown` ids rather
+    // than failing outright, which is how TC-17 stayed invisible for so long.
+    let unknown: Vec<_> = chunks
+        .keys()
+        .filter(|k| matches!(k, ChunkKind::Unknown(_)))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "chunk region parsed at the wrong offset: unexpected ids {unknown:?}"
+    );
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_stop().expect("stop acquisition");
+    })
+    .await
+    .unwrap();
+}
+
+/// With chunk mode off, the trailer carries no chunk region at all.
+///
+/// The negative control for the test above: it is what makes a passing
+/// `test_chunk_data_round_trips_through_genapi` mean chunks were *enabled*
+/// rather than always present.
+#[tokio::test]
+async fn test_no_chunks_when_chunk_mode_is_off() {
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let (mut frame_stream, camera) = setup_stream(&device_info).await;
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_start().expect("start acquisition");
+    })
+    .await
+    .unwrap();
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame())
+        .await
+        .expect("timeout waiting for frame")
+        .expect("frame error")
+        .expect("stream ended without a frame");
+
+    assert!(
+        frame.chunks.as_ref().is_none_or(|c| c.is_empty()),
+        "chunk mode is off, so the trailer must carry no chunk entries"
+    );
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_stop().expect("stop acquisition");
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn test_frame_dimensions_match() {
     let _cam = common::TestCamera::start().await;

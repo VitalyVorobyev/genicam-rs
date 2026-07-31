@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Chunk data can be enabled against the fake camera, so the chunk path has an
+  end-to-end test for the first time.** `viva-fake-gige` declared
+  `ChunkModeActive` and `ChunkEnable` as `<Integer>`; SFNC defines both as
+  IBoolean, and of the 23 vendor-corpus documents that declare
+  `ChunkModeActive`, 23 use `<Boolean>` over a backing `<IntReg>` and none uses
+  `<Integer>`. `Camera::configure_chunks` calls `set_bool`, which is right, so
+  the call failed with a type mismatch and the only camera the project can test
+  against could not turn chunks on. The fake is fixed, not the library. The
+  consequence was larger than one command: **no test anywhere exercised chunk
+  acquisition**, which is why the trailer-offset defect above was found in a
+  user's log rather than in CI (backlog `TC-19`).
 - **A pixel format we cannot name is no longer treated as one byte per pixel.**
   Bits 23-16 of every PFNC code are the pixel's bit depth, so
   `PixelFormat::bytes_per_pixel` now derives a size for `Unknown(code)` instead
