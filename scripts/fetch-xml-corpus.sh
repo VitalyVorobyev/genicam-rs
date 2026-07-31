@@ -65,12 +65,18 @@ for path in "${ARAVIS_FILES[@]}"; do
 done
 
 # Documents contributed by users on the issue tracker, hosted as GitHub issue
-# attachments. Each one is a camera we could not open until it was reported;
-# keeping it here is what stops that bug from coming back.
+# attachments or as a gist. Each one is a camera we could not open until it was
+# reported, or a device class we had never seen; keeping it here is what stops
+# that bug from coming back.
+#
+# Gist URLs are pinned to a revision SHA. The bare `/raw` form follows the
+# latest revision, so an edit upstream would silently change what the corpus
+# tests run against.
 #   name<TAB>url<TAB>issue
 USER_CONTRIBUTED=$(
   cat <<'EOF'
 Hikrobot_MV-CS050-10GC.xml	https://github.com/user-attachments/files/30513169/xml.raw.xml	35
+MicroEpsilon_scanCONTROL_850050.xml	https://gist.githubusercontent.com/Katze719/f1116fda94ff1f424fc7bf5955c86952/raw/9e3153952c8fab3b64e60268c4a6119fcc70f39d/scancontrol-device.xml	93
 EOF
 )
 
