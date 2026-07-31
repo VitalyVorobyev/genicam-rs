@@ -11,6 +11,8 @@ use core::fmt;
 pub enum PixelFormat {
     Mono8 = 0x0108_0001,
     Mono10 = 0x0110_0003,
+    Mono12 = 0x0110_0005,
+    Mono14 = 0x0110_0025,
     Mono16 = 0x0110_0007,
     Confidence8 = 0x0108_00C6,
     Coord3DC32f = 0x0120_00BF,
@@ -37,6 +39,8 @@ impl PixelFormat {
         match code {
             0x0108_0001 => PixelFormat::Mono8,
             0x0110_0003 => PixelFormat::Mono10,
+            0x0110_0005 => PixelFormat::Mono12,
+            0x0110_0025 => PixelFormat::Mono14,
             0x0110_0007 => PixelFormat::Mono16,
             0x0108_00C6 => PixelFormat::Confidence8,
             0x0120_00BF => PixelFormat::Coord3DC32f,
@@ -62,6 +66,8 @@ impl PixelFormat {
         match self {
             PixelFormat::Mono8 => 0x0108_0001,
             PixelFormat::Mono10 => 0x0110_0003,
+            PixelFormat::Mono12 => 0x0110_0005,
+            PixelFormat::Mono14 => 0x0110_0025,
             PixelFormat::Mono16 => 0x0110_0007,
             PixelFormat::Confidence8 => 0x0108_00C6,
             PixelFormat::Coord3DC32f => 0x0120_00BF,
@@ -82,11 +88,17 @@ impl PixelFormat {
         }
     }
 
-    /// Number of bytes used to encode a single pixel for well-known formats.
+    /// Number of bytes used to encode a single pixel.
+    ///
+    /// For a format this enumeration does not name, the answer is derived from
+    /// the PFNC code itself — see [`PixelFormat::bytes_from_code`]. `None` means
+    /// the pixel genuinely has no whole-byte size, not that we failed to look
+    /// it up.
     pub const fn bytes_per_pixel(self) -> Option<usize> {
         match self {
             PixelFormat::Mono8 => Some(1),
-            PixelFormat::Mono10 | PixelFormat::Mono16 => Some(2),
+            PixelFormat::Mono10 | PixelFormat::Mono12 | PixelFormat::Mono14 => Some(2),
+            PixelFormat::Mono16 => Some(2),
             PixelFormat::Confidence8 => Some(1),
             PixelFormat::Coord3DC32f => Some(4),
             PixelFormat::Coord3DAC16 => Some(4),
@@ -101,8 +113,33 @@ impl PixelFormat {
             | PixelFormat::BayerRG16
             | PixelFormat::BayerGB16
             | PixelFormat::BayerBG16 => Some(2),
-            PixelFormat::Unknown(_) => None,
+            PixelFormat::Unknown(code) => PixelFormat::bytes_from_code(code),
         }
+    }
+
+    /// Bytes per pixel read straight out of a PFNC code.
+    ///
+    /// Bits 23-16 of every PFNC value are the pixel's bit depth, so a format
+    /// this enumeration has no variant for still has a usable size. That is the
+    /// difference between a receiver sizing a `Coord3D_ABC32f` frame at twelve
+    /// bytes per pixel and sizing it at one: callers overwhelmingly write
+    /// `bytes_per_pixel().unwrap_or(1)`, and a `None` there is not a neutral
+    /// answer, it is a wrong one.
+    ///
+    /// Returns `None` when the depth is not a whole number of bytes, because
+    /// then no `usize` is correct. **Packed formats are the reason this check
+    /// exists**: `Mono12Packed`, `Mono10Packed`, `YUV411Packed`,
+    /// `BayerGR12Packed` and `BayerRG12Packed` all declare 12 bits, and eleven
+    /// of the 37 vendor-corpus documents offer at least one of them. Rounding
+    /// 12 bits up to 2 bytes overstates a frame by a third, which a length
+    /// check downstream reads as a *short payload* — a confidently wrong size
+    /// is worse than an absent one.
+    const fn bytes_from_code(code: u32) -> Option<usize> {
+        let bits = (code >> 16) & 0xFF;
+        if bits == 0 || !bits.is_multiple_of(8) {
+            return None;
+        }
+        Some((bits / 8) as usize)
     }
 
     /// Convert a PFNC name string to a [`PixelFormat`].
@@ -112,6 +149,8 @@ impl PixelFormat {
         match name {
             "Mono8" => PixelFormat::Mono8,
             "Mono10" => PixelFormat::Mono10,
+            "Mono12" => PixelFormat::Mono12,
+            "Mono14" => PixelFormat::Mono14,
             "Mono16" => PixelFormat::Mono16,
             "Confidence8" => PixelFormat::Confidence8,
             "Coord3D_C32f" => PixelFormat::Coord3DC32f,
@@ -168,6 +207,8 @@ impl fmt::Display for PixelFormat {
         match self {
             PixelFormat::Mono8 => f.write_str("Mono8"),
             PixelFormat::Mono10 => f.write_str("Mono10"),
+            PixelFormat::Mono12 => f.write_str("Mono12"),
+            PixelFormat::Mono14 => f.write_str("Mono14"),
             PixelFormat::Mono16 => f.write_str("Mono16"),
             PixelFormat::Confidence8 => f.write_str("Confidence8"),
             PixelFormat::Coord3DC32f => f.write_str("Coord3D_C32f"),
@@ -198,6 +239,8 @@ mod tests {
         let formats = [
             PixelFormat::Mono8,
             PixelFormat::Mono10,
+            PixelFormat::Mono12,
+            PixelFormat::Mono14,
             PixelFormat::Mono16,
             PixelFormat::Confidence8,
             PixelFormat::Coord3DC32f,
@@ -245,6 +288,93 @@ mod tests {
         assert_eq!(PixelFormat::BayerRG16.bytes_per_pixel(), Some(2));
         assert_eq!(PixelFormat::BayerGR16.bytes_per_pixel(), Some(2));
         assert_eq!(PixelFormat::Unknown(0).bytes_per_pixel(), None);
+    }
+
+    /// Every named format must agree with the size encoded in its own code,
+    /// which is what makes the `Unknown` derivation trustworthy.
+    #[test]
+    fn named_formats_agree_with_their_own_pfnc_code() {
+        let formats = [
+            PixelFormat::Mono8,
+            PixelFormat::Mono10,
+            PixelFormat::Mono12,
+            PixelFormat::Mono14,
+            PixelFormat::Mono16,
+            PixelFormat::Confidence8,
+            PixelFormat::Coord3DC32f,
+            PixelFormat::Coord3DAC16,
+            PixelFormat::Coord3DAC32f,
+            PixelFormat::Coord3DABC32f,
+            PixelFormat::BayerRG8,
+            PixelFormat::BayerGB8,
+            PixelFormat::BayerBG8,
+            PixelFormat::BayerGR8,
+            PixelFormat::BayerGR16,
+            PixelFormat::BayerRG16,
+            PixelFormat::BayerGB16,
+            PixelFormat::BayerBG16,
+            PixelFormat::RGB8Packed,
+            PixelFormat::BGR8Packed,
+        ];
+
+        for fmt in formats {
+            // Keep the size nibble, replace the unique ID with one no format
+            // uses, so `from_code` yields `Unknown` and the size has to be
+            // derived rather than looked up.
+            let disguised = PixelFormat::from_code((fmt.code() & 0xFFFF_0000) | 0xFFFF);
+            assert!(
+                matches!(disguised, PixelFormat::Unknown(_)),
+                "{fmt}: the disguise resolved to a named format"
+            );
+            assert_eq!(
+                fmt.bytes_per_pixel(),
+                disguised.bytes_per_pixel(),
+                "{fmt}: the hardcoded size disagrees with bits 23-16 of its own code"
+            );
+        }
+    }
+
+    /// A format we have no variant for still gets a size, so callers stop
+    /// falling back to one byte per pixel.
+    #[test]
+    fn unknown_formats_are_sized_from_their_code() {
+        // Real PFNC codes we deliberately do not enumerate.
+        // RGBa8: 32 bits. RGB16: 48 bits. Coord3D_ABC32: 96 bits.
+        assert_eq!(
+            PixelFormat::from_code(0x0220_0016).bytes_per_pixel(),
+            Some(4)
+        );
+        assert_eq!(
+            PixelFormat::from_code(0x0230_0033).bytes_per_pixel(),
+            Some(6)
+        );
+        assert_eq!(
+            PixelFormat::from_code(0x0260_00C1).bytes_per_pixel(),
+            Some(12)
+        );
+    }
+
+    /// Packed formats have a fractional byte size, and no `usize` is right.
+    ///
+    /// These five all appear in the vendor XML corpus — `Mono12Packed` in
+    /// eleven of its 37 documents. Rounding 12 bits up to 2 bytes would
+    /// overstate a frame by a third and make a length check downstream reject
+    /// it as short.
+    #[test]
+    fn packed_formats_report_no_whole_byte_size() {
+        for (name, code) in [
+            ("Mono10Packed", 0x010C_0004_u32),
+            ("Mono12Packed", 0x010C_0006),
+            ("YUV411Packed", 0x020C_001E),
+            ("BayerGR12Packed", 0x010C_002C),
+            ("BayerRG12Packed", 0x010C_002D),
+        ] {
+            assert_eq!(
+                PixelFormat::from_code(code).bytes_per_pixel(),
+                None,
+                "{name} declares 12 bits per pixel and must not be rounded"
+            );
+        }
     }
 
     #[test]
