@@ -25,32 +25,60 @@ The lesson worth carrying forward is the shape of that gate, not its outcome:
 a green CI on a platform-conditional fix confirms nothing, and the release
 waited on a user with the hardware rather than on our own confidence.
 
-- **`TC-17` is the first 0.3.2 fix** and is already open: the GVSP data
-  trailer was read at offset 2 of an 8-byte payload, so chunks cannot decode
-  on a conforming camera and the frame-status check tested a reserved word.
-- **#35 still owes a retest** against 0.3.0; #45 and #57 have both confirmed.
+Two fixes landed after that tag and are already waiting in `[Unreleased]`:
+**TC-17**, the GVSP data trailer read at offset 2 of an 8-byte payload, and
+**TC-20**, a Linux link-local discovery broadcast that resolved to the host's
+own address. Ahead of the 0.3.2 tag:
+
+- **TC-19** — `viva-fake-gige` declares `ChunkModeActive` as `<Integer>` where
+  SFNC and all 23 corpus documents that define it say `<Boolean>`, so the chunk
+  path has never run end to end against anything. That is why TC-17 was found
+  on a user's camera instead of in CI.
+- **DX-08 and SR-10** — both surfaced by #70's log rather than by a bug report:
+  `viva-camctl stream` refuses to run without `--iface`, which is the command
+  our own documentation tells reporters to use, and a probed 16114-byte MTU is
+  discarded in favour of a hardcoded 1500.
+- **SR-11 and DC-01** — an unnamed pixel format is silently sized at one byte
+  per pixel, and the Zenoh bridge then truncates the frame to that fiction.
+- **GA-09, first cut** — `<Register>` limited to a plain `<Length>`, which
+  covers 42 of the corpus's 63 declarations and clears every skipped node in
+  seven documents.
+
+**Decide before tagging whether 0.3.2 is a patch release at all.** GA-09 adds
+variants to two public enums that are not `#[non_exhaustive]`; that breaks any
+downstream exhaustive `match` and may force 0.4.0 instead (REL-07).
+
+Retest status is now settled and should not be restated more favourably than it
+is: **#45 and #57 confirmed on 0.3.0; #35 was asked and never answered.**
 
 ## Phase 1 — Transport conformance (ADR-0019)
 
 ADR-0018 audited the GenApi layer against the specification and found eight
-defects. The same audit has never been run on GVCP/GVSP, and the wire layer
-turns out to carry the same class of error:
+defects. The same audit had never been run on GVCP/GVSP, and the wire layer
+carried the same class of error. **Most of what this phase named is now fixed**
+— the list is kept because the pattern is the point, not because the work is
+outstanding. Per-item status lives in `backlog.md`'s `TC` section.
 
-- `PENDING_ACK` (0x0089) is not handled anywhere, so a camera answering a slow
-  WRITEMEM/READMEM with a pending-ack produces a hard failure. Flash writes and
-  mode changes are exactly what cameras use it for.
-- `ACTION_COMMAND` is defined as 0x0080 — the same opcode as `READREG`.
-- The event channel keys on 0x000D, which is not a GVCP opcode at all.
-- The GVSP data trailer is read at the wrong offset — two bytes of an
-  eight-byte payload — so `payload_type` and `size_y` are fed to the chunk
-  parser as if they were chunk data. Chunks cannot decode on any conforming
-  camera, and the frame-error check reads the trailer's reserved word while
-  the real status word is examined nowhere. Found on real hardware (#70), and
-  notable as the one case so far where the fake camera was correct and only
-  the client was wrong.
+- `PENDING_ACK` (0x0089) was handled nowhere, so a camera answering a slow
+  WRITEMEM/READMEM with a pending-ack produced a hard failure — and flash
+  writes and mode changes are exactly what cameras use it for. *Fixed (TC-01)
+  for GVCP; the field width is still unsettled against hardware (TC-12).*
+- `ACTION_COMMAND` was defined as 0x0080 — the same opcode as `READREG`.
+  *Fixed (TC-02).*
+- The event channel keyed on 0x000D, which is not a GVCP opcode at all.
+  *Fixed (TC-03).*
+- The GVSP data trailer was read at the wrong offset — two bytes of an
+  eight-byte payload — so `payload_type` and `size_y` were fed to the chunk
+  parser as if they were chunk data. Chunks could not decode on any conforming
+  camera, and the frame-error check read the trailer's reserved word while the
+  real status word was examined nowhere. Found on real hardware (#70), and
+  notable as the one case so far where the fake camera was correct and only the
+  client was wrong. *Fixed (TC-17); ships in 0.3.2.*
 
-Neither ACTION nor EVENT is implemented by `viva-fake-gige`, so neither has
-ever been exercised by a test.
+ACTION and EVENT are now implemented by `viva-fake-gige` (TC-07), so both are
+exercised by tests. **Still open in this phase**: TC-04 (spec-derived GVSP and
+GenCP fixtures), TC-05 (the payload types cameras actually send), TC-06 (chunk
+trailer layout), TC-16 (per-transport status-code types) and TC-19.
 
 **The structural half of this phase matters more than any single fix.**
 Issue #57's MAC offset is the *third* time the fake camera and the client have
@@ -71,12 +99,20 @@ produce those artifacts — `viva-camctl` has no XML dump, and the Python
 retrieval snippet given in #45 had to be retracted and corrected.
 
 - `viva-camctl` gains an XML dump and a single-command diagnostic bundle
-  (discovery raw bytes, bootstrap registers, XML, environment).
+  (discovery raw bytes, bootstrap registers, XML, environment). *Done —
+  `viva-camctl xml` and `viva-camctl report`, both of which work on a camera we
+  cannot open, which is the only camera anyone reports.*
 - `NodeMap::skipped()` is surfaced through camctl, the Python bindings and
-  Studio, rather than only appearing in a log line.
+  Studio, rather than only appearing in a log line. *Done for camctl (DX-03);
+  Python and Studio still open (DX-05).*
 - Discovery reports the fields it currently discards — serial number and
   user-defined name — so users and Studio can identify a camera the way its
-  label does.
+  label does. *Done (DX-04).*
+
+The loop keeps paying out, and not only through bug reports: **DX-08 and DX-09
+were both found by reading a log a reporter attached for an unrelated reason**,
+and DX-08 turned out to be our own diagnostic instruction failing on the first
+person we gave it to.
 
 ## Phase 3 — Streaming reliability
 
@@ -91,18 +127,27 @@ The features that make the library trustworthy on a factory floor.
   exist, are tested, and have no production callers. Either wire them or delete
   them; the README currently advertises them as shipping.
 - **Library-owned heartbeat keepalive** — consumers lose CCP after ~3 s idle.
+  *Done (SR-05).*
 - **Honest streaming telemetry** — five `StreamStats` counters are permanently
   zero because nothing calls their recorders, and every GVSP parse error is
   swallowed at `trace` level and counted nowhere.
 - **Fix unsound `unsafe impl Sync` on `MockUsbTransfer`** — a soundness bug in
-  a type that is `pub` in a published crate.
+  a type that is `pub` in a published crate. *Done (SR-06); every `unsafe impl`
+  is now gone from both workspaces.*
+- **Size a frame correctly even when the format is unnamed** — an unknown PFNC
+  code reports no size, callers fall back to one byte per pixel, and the Zenoh
+  bridge truncates the payload to match (SR-11, DC-01).
 
 ## Phase 4 — GenApi conformance, round 2
 
 What ADR-0018 did not reach, ordered by corpus frequency rather than by how
 interesting it looks. The counts below were measured against the corpus as it
-stood at 35 documents and have not been re-run since; they are here to rank
-work, not to be quoted as current:
+stood at 35 documents; it now holds **37**, and they have not been re-run. They
+are here to rank work, not to be quoted as current — and when one of them starts
+carrying an argument, re-measure it first. `<Register>`'s count was wrong by
+seven declarations and its `<pLength>` split wrong by a factor of eight, because
+a line-based `grep` cannot count elements in the single-line XML that FLIR and
+PGR ship.
 
 - `pInvalidator` — **18 502 occurrences across 32 of 35 documents**, entirely
   unparsed. Cache invalidation currently fires only on writes made through the
@@ -115,15 +160,32 @@ work, not to be quoted as current:
   never read; range checks use the static limits.
 - `ImposedAccessMode` (2 709 / 28), `Streamable` (1 700 / 18), `Slope`
   (632 / 29), `pInc` (333 / 25) — unparsed.
-- `<Register>` (56 / 14) — dropped *silently*, because the node-tag gate sits in
-  front of the error-isolation path. Unknown node types never reach
-  `XmlModel::skipped`, so the corpus test's allowlist can never catch a wholly
-  missing node type.
+- `<Register>` (**63 / 16**, re-measured 2026-07-31) — the raw-byte base
+  register type, still dropped. No longer dropped *silently*: GA-02 moved
+  unknown node tags into `XmlModel::skipped`, so the corpus allowlist now sees
+  them. Two vendors' hardware and an outside contributor's API request all
+  point at the same node, `FileAccessBuffer`. Taking the 42 plain-`<Length>`
+  declarations first leaves only 21, concentrated in three vendors.
 - GenApi chunk adapter, to replace the hardcoded 4-entry chunk table.
 
 **Also in scope: make the corpus test prove more.** Its `viva-genapi` stage
 evaluates every node against `NullIo`, which returns zeros — it demonstrates
 that nothing panics, not that any value is correct.
+
+## Not a phase — device classes beyond area-scan
+
+Every assumption in this codebase is an area-scan camera's. On 2026-07-31 a
+Micro-Epsilon scanCONTROL 850050 — a laser profile scanner — became the first
+non-area-scan device in the corpus, contributed by the same person who added
+its `Coord3D_*` pixel formats. The formats now exist in `viva-pfnc`; the device
+class does not exist anywhere above it. A `Coord3D_ABC32f` frame reaching the
+Zenoh bridge today is truncated to a twelfth of itself and published as valid.
+
+This is deliberately not a numbered phase. The concrete defects are tracked in
+`backlog.md`'s `DC` section, and only the one that is verified against code
+rather than inferred about hardware is scheduled. The rest wait for the thing
+the evidence hierarchy actually values: somebody streaming one of these devices
+and telling us what came off the wire.
 
 ## Phase 5 — 0.4.0 API consolidation (breaking)
 
