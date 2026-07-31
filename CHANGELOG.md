@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Mono12` and `Mono14`** — the two pixel formats the Micro-Epsilon
+  scanCONTROL 850050 advertises that #93 did not cover. Its `PixelFormat`
+  enumeration offers ten formats; eight were named.
+
 ### Fixed
+
+- **A pixel format we cannot name is no longer treated as one byte per pixel.**
+  Bits 23-16 of every PFNC code are the pixel's bit depth, so
+  `PixelFormat::bytes_per_pixel` now derives a size for `Unknown(code)` instead
+  of returning `None`. That `None` mattered because essentially every caller
+  writes `.unwrap_or(1)`: the Windows receive path truncated frames to
+  `width * height` bytes and the U3V builder under-allocated its payload buffer
+  by the same factor. It still returns `None` when the depth is not a whole
+  number of bytes — `Mono12Packed`, `Mono10Packed`, `YUV411Packed` and the two
+  packed Bayer formats all declare 12 bits, and eleven of the 37 vendor-corpus
+  documents offer at least one of them. Rounding those up would overstate a
+  frame by a third, which a length check reads as a *short* payload; a
+  confidently wrong size is worse than an absent one (backlog `SR-11`).
+- **The Zenoh bridge no longer truncates a frame whose format it cannot name.**
+  It sized every frame through `pfnc_to_zenoh`, which collapses anything the
+  wire enum does not carry to `Unknown` — and `Unknown` reports 1.0 bytes per
+  pixel. A `Coord3D_ABC32f` profile was therefore cut to **one twelfth of
+  itself** and published as valid, with the "trimming trailing bytes" warning
+  emitted once and every later frame corrupted in silence. Frames are now sized
+  from the camera's own PFNC code, and a format with no whole-byte size is
+  published unmodified with a warning naming it, because an expected length we
+  cannot compute must not become a length we enforce. Not specific to 3D:
+  `Mono10`, `Mono12` and `Confidence8` all took the same path (backlog `DC-01`).
+  The arithmetic also moves from `f32` to integers, which no longer loses
+  precision above 2^24 bytes.
 
 - **The GVSP data trailer is read at the offset the specification gives it.**
   The trailer payload is eight bytes — `reserved(2) | payload_type(2) |

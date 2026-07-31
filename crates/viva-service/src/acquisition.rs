@@ -14,7 +14,7 @@ use viva_zenoh_api::{
 use zenoh::Session;
 
 use crate::device::DeviceHandle;
-use crate::pixel_format::pfnc_to_zenoh;
+use crate::pixel_format::{expected_payload_len, pfnc_to_zenoh};
 
 /// Run the acquisition control queryable and frame streaming loop.
 pub async fn run(
@@ -259,6 +259,7 @@ async fn frame_loop(
     let mut logged_first_gvsp_frame = false;
     let mut logged_first_image_publish = false;
     let mut logged_payload_trim = false;
+    let mut logged_unsized_format = false;
 
     loop {
         tokio::select! {
@@ -278,31 +279,48 @@ async fn frame_loop(
                         }
 
                         let zenoh_pf = pfnc_to_zenoh(frame.pixel_format);
-                        let expected_payload_len =
-                            ((frame.width as f32 * frame.height as f32) * zenoh_pf.bytes_per_pixel())
-                                as usize;
-                        let image_bytes = if frame.payload.len() < expected_payload_len {
+                        let expected = expected_payload_len(
+                            frame.pixel_format,
+                            frame.width,
+                            frame.height,
+                        );
+
+                        if expected.is_none() && !logged_unsized_format {
                             warn!(
                                 device_id,
-                                seq,
-                                actual = frame.payload.len(),
-                                expected = expected_payload_len,
-                                "dropping undersized frame payload"
+                                pixel_format = %frame.pixel_format,
+                                "pixel format has no whole-byte pixel size; publishing \
+                                 frames unmodified and without a length check"
                             );
-                            continue;
-                        } else if frame.payload.len() > expected_payload_len {
-                            if !logged_payload_trim {
+                            logged_unsized_format = true;
+                        }
+
+                        let image_bytes = match expected {
+                            Some(expected) if frame.payload.len() < expected => {
                                 warn!(
                                     device_id,
+                                    seq,
                                     actual = frame.payload.len(),
-                                    expected = expected_payload_len,
-                                    "trimming trailing bytes from frame payload before Zenoh publish"
+                                    expected,
+                                    "dropping undersized frame payload"
                                 );
-                                logged_payload_trim = true;
+                                continue;
                             }
-                            &frame.payload[..expected_payload_len]
-                        } else {
-                            frame.payload.as_ref()
+                            Some(expected) if frame.payload.len() > expected => {
+                                if !logged_payload_trim {
+                                    warn!(
+                                        device_id,
+                                        actual = frame.payload.len(),
+                                        expected,
+                                        "trimming trailing bytes from frame payload before Zenoh publish"
+                                    );
+                                    logged_payload_trim = true;
+                                }
+                                &frame.payload[..expected]
+                            }
+                            // Either the length is exactly right, or we have no
+                            // business claiming to know it. Publish it whole.
+                            _ => frame.payload.as_ref(),
                         };
 
                         let header = FrameHeader {
