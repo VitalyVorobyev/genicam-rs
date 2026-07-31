@@ -1098,6 +1098,19 @@ mod tests {
         ]);
 
         assert_eq!(nodemap.get_integer("Gain", &io).expect("read gain"), 77);
+
+        // The same addressing, reached by name for raw register access.
+        assert_eq!(
+            nodemap
+                .register_address("Gain", &io)
+                .expect("resolve summed address"),
+            (0x3008, 4)
+        );
+        // An unknown name is a named error, not a panic.
+        assert!(matches!(
+            nodemap.register_address("NoSuchNode", &io),
+            Err(GenApiError::NodeNotFound(_))
+        ));
     }
 
     /// `<pIndex Offset="N">` scales an index node into the address. AVT Manta

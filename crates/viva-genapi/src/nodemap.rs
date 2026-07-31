@@ -1002,6 +1002,41 @@ impl NodeMap {
         }
     }
 
+    /// Resolve the device register address and length backing a feature.
+    ///
+    /// This is the addressing half of typed feature access, exposed for
+    /// callers that need raw register I/O through [`RegisterIo`] — a
+    /// file-transfer buffer, for instance, whose address the XML supplies
+    /// through `<pAddress>` and which no typed accessor covers. Address
+    /// terms, `<pIndex>` scaling and selector blocks resolve exactly as they
+    /// do for `get_integer` and friends, so a caller does not have to
+    /// reimplement GenICam addressing.
+    ///
+    /// Returns [`GenApiError::Unavailable`] for a node that has no addressing
+    /// of its own because it delegates through `<pValue>`, and for a
+    /// selector-mapped node whose current selector value has no block.
+    pub fn register_address(
+        &self,
+        name: &str,
+        io: &dyn RegisterIo,
+    ) -> Result<(u64, u32), GenApiError> {
+        let node = self
+            .node(name)
+            .ok_or_else(|| GenApiError::NodeNotFound(name.to_string()))?;
+        let addressing = match node {
+            Node::Integer(node) => node.addressing.as_ref(),
+            Node::Float(node) => node.addressing.as_ref(),
+            Node::Enum(node) => node.addressing.as_ref(),
+            Node::Boolean(node) => node.addressing.as_ref(),
+            Node::String(node) => Some(&node.addressing),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            GenApiError::Unavailable(format!("node '{name}' has no register addressing"))
+        })?;
+        self.resolve_address(name, addressing, io)
+    }
+
     fn resolve_address(
         &self,
         node_name: &str,
