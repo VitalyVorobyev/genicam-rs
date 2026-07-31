@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -110,8 +110,9 @@ pub enum Cmd {
         group: Option<Ipv4Addr>,
         #[arg(long, default_value_t = 10040)]
         port: u16,
+        /// Override the GVSP packet size. Defaults to the interface's probed MTU.
         #[arg(long)]
-        auto: bool,
+        packet_size: Option<u32>,
         #[arg(long, default_value_t = 1)]
         save: usize,
         #[arg(long)]
@@ -302,7 +303,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             mode,
             group,
             port,
-            auto,
+            packet_size,
             save,
             rgb,
             duration_s,
@@ -314,7 +315,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 mode,
                 group,
                 port,
-                auto,
+                packet_size,
                 save,
                 rgb,
                 duration_s,
@@ -328,12 +329,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             port,
             enable,
             count,
-        } => {
-            let iface = cmd_iface.or(iface).ok_or_else(|| {
-                anyhow!("events require --iface or a global --iface IPv4 address")
-            })?;
-            cmd_events::run(ip, index, iface, port, enable, count, json).await?
-        }
+        } => cmd_events::run(ip, index, cmd_iface.or(iface), port, enable, count, json).await?,
         Cmd::Chunks {
             ip,
             index,

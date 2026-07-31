@@ -127,6 +127,34 @@ pub async fn open_control(device: &DeviceInfo) -> Result<GigeDevice> {
         .with_context(|| format!("connect GVCP control channel at {}", device.ip))
 }
 
+/// Resolve the local interface that will receive packets from `camera_ip`.
+///
+/// `--iface` names a **host** interface address, so it can only be resolved
+/// with [`Iface::from_ipv4`]. Without it, ask the OS which local interface
+/// routes to the camera instead of refusing to run: `list`, `xml`, `report`,
+/// `get`, `set` and `set-ip` all tolerate a missing `--iface` and fall back to
+/// broadcast discovery, and `stream`, `bench` and `events` were the exceptions.
+///
+/// That mattered beyond consistency. `viva-camctl stream --ip <IP>` is the
+/// command our own documentation hands to anyone reporting a camera we cannot
+/// open, and it exited before touching the network. Meanwhile
+/// [`Iface::from_remote_ipv4`] — the route probe added by #72 *for this exact
+/// case*, and produced by that very issue — had no caller in this crate
+/// (backlog `DX-08`).
+pub fn resolve_receive_iface(iface_ip: Option<Ipv4Addr>, camera_ip: Ipv4Addr) -> Result<Iface> {
+    match iface_ip {
+        Some(ip) => {
+            Iface::from_ipv4(ip).with_context(|| format!("resolve host interface with IPv4 {ip}"))
+        }
+        None => Iface::from_remote_ipv4(camera_ip).with_context(|| {
+            format!(
+                "probe which local interface routes to {camera_ip} \
+                 (pass --iface <HOST-IP> to choose one explicitly)"
+            )
+        }),
+    }
+}
+
 pub fn resolve_iface(ip: Option<Ipv4Addr>) -> Result<Option<Iface>> {
     if let Some(ip) = ip {
         let iface = Iface::from_ipv4(ip).context("resolve interface from IPv4 address")?;

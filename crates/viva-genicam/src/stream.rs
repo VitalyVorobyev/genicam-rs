@@ -92,7 +92,6 @@ pub struct StreamBuilder<'a> {
     iface: Option<Iface>,
     dest: Option<StreamDest>,
     rcvbuf_bytes: Option<usize>,
-    auto_packet_size: bool,
     target_mtu: Option<u32>,
     packet_size: Option<u32>,
     packet_delay: Option<u32>,
@@ -108,7 +107,6 @@ impl<'a> StreamBuilder<'a> {
             iface: None,
             dest: None,
             rcvbuf_bytes: None,
-            auto_packet_size: true,
             target_mtu: None,
             packet_size: None,
             packet_delay: None,
@@ -129,25 +127,21 @@ impl<'a> StreamBuilder<'a> {
         self
     }
 
-    /// Enable or disable automatic packet-size negotiation.
-    pub fn auto_packet_size(mut self, enable: bool) -> Self {
-        self.auto_packet_size = enable;
-        self
-    }
-
-    /// Target MTU used when computing the optimal GVSP packet size.
+    /// Cap the MTU used when computing the GVSP packet size.
+    ///
+    /// The interface's own MTU is probed either way; this only lowers it.
     pub fn target_mtu(mut self, mtu: u32) -> Self {
         self.target_mtu = Some(mtu);
         self
     }
 
-    /// Override the GVSP packet size when automatic negotiation is disabled.
+    /// Override the GVSP packet size, ignoring the probed MTU.
     pub fn packet_size(mut self, size: u32) -> Self {
         self.packet_size = Some(size);
         self
     }
 
-    /// Override the GVSP packet delay when automatic negotiation is disabled.
+    /// Override the GVSP inter-packet delay.
     pub fn packet_delay(mut self, delay: u32) -> Self {
         self.packet_delay = Some(delay);
         self
@@ -239,22 +233,22 @@ impl<'a> StreamBuilder<'a> {
         let mtu = self
             .target_mtu
             .map_or(iface_mtu, |limit| limit.min(iface_mtu));
-        let packet_size = if self.auto_packet_size {
-            nic::best_packet_size(mtu)
-        } else {
-            self.packet_size
-                .unwrap_or_else(|| nic::best_packet_size(1500))
-        };
-        let packet_delay = if self.auto_packet_size {
-            if mtu <= 1500 {
-                const DELAY_NS: u32 = 2_000;
-                DELAY_NS / 80
-            } else {
-                0
-            }
-        } else {
-            self.packet_delay.unwrap_or(0)
-        };
+        // The packet size follows the link we just probed, unless the caller
+        // states one. There used to be an `auto_packet_size` flag whose `false`
+        // branch fell back to `best_packet_size(1500)` — discarding the MTU it
+        // had just measured. On the 16114-byte link in #70 that turned a 3.1 MB
+        // frame into ~2 100 packets instead of ~200, and the flag defaulted to
+        // `false` in `viva-camctl`, so that was the normal path (backlog SR-10).
+        let packet_size = self
+            .packet_size
+            .unwrap_or_else(|| nic::best_packet_size(mtu));
+
+        // A 1500-byte link needs inter-packet spacing to survive a burst; a
+        // jumbo link sends few enough packets that it does not.
+        let packet_delay = self.packet_delay.unwrap_or({
+            const DELAY_NS: u32 = 2_000;
+            if mtu <= 1500 { DELAY_NS / 80 } else { 0 }
+        });
 
         match &dest {
             StreamDest::Unicast { dst_ip, dst_port } => {

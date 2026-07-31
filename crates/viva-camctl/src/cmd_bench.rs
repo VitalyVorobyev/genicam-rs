@@ -49,11 +49,8 @@ struct BlockState {
 }
 
 pub async fn run(args: BenchArgs, emit_json: bool) -> Result<()> {
-    let iface_ip = args
-        .iface
-        .ok_or_else(|| anyhow!("bench requires --iface or global --iface"))?;
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(args.ip, args.index, Some(iface_ip), timeout).await?;
+    let device = common::select_device(args.ip, args.index, args.iface, timeout).await?;
     info!(ip = %device.ip, "opening camera for benchmark");
     let mut camera = common::open_camera(&device)
         .await
@@ -62,8 +59,7 @@ pub async fn run(args: BenchArgs, emit_json: bool) -> Result<()> {
         .await
         .context("open control channel for bench")?;
 
-    let iface = common::resolve_iface(Some(iface_ip))?
-        .ok_or_else(|| anyhow!("failed to resolve capture interface"))?;
+    let iface = common::resolve_receive_iface(args.iface, device.ip)?;
     let host_ip = iface
         .ipv4()
         .ok_or_else(|| anyhow!("interface {} has no IPv4 address", iface.name()))?;

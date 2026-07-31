@@ -340,7 +340,6 @@ impl DeviceBackend for EmbeddedBackend {
                     .block_on(
                         viva_genicam::StreamBuilder::new(&mut device_guard)
                             .iface(iface)
-                            .auto_packet_size(false)
                             .rcvbuf_bytes(64 << 20) // 64 MiB to absorb bursty GVSP traffic
                             .build(),
                     )

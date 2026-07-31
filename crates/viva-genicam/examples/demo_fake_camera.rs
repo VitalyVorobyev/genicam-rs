@@ -106,7 +106,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iface = gige::nic::Iface::from_system(iface_name)?;
     let stream = viva_genicam::StreamBuilder::new(&mut device)
         .iface(iface)
-        .auto_packet_size(false)
+        // Force the multi-packet path: loopback would otherwise hand us a
+        // jumbo MTU and a frame this size would fit in a couple of packets.
+        .packet_size(1500)
         .build()
         .await?;
     let mut frame_stream = viva_genicam::FrameStream::new(stream, None);
