@@ -880,19 +880,22 @@ impl GigeDevice {
         opcode: OpCode,
         payload: BytesMut,
     ) -> Result<GenCpAck, GigeError> {
+        // Retries resend the same transaction. A device may finish a slow,
+        // non-idempotent command after our first receive deadline; assigning a
+        // new ID would turn its delayed acknowledgement into a mismatch and
+        // could execute the command again.
+        let request_id = self.next_request_id();
+        let payload_bytes = payload.freeze();
+        let header = GvcpRequestHeader {
+            flags: CommandFlags::ACK_REQUIRED,
+            command: opcode.command_code(),
+            length: payload_bytes.len() as u16,
+            request_id,
+        };
+        let encoded = header.encode(&payload_bytes);
         let mut attempt = 0usize;
-        let mut payload = payload;
-        loop {
+        'retry: loop {
             attempt += 1;
-            let request_id = self.next_request_id();
-            let payload_bytes = payload.clone().freeze();
-            let header = GvcpRequestHeader {
-                flags: CommandFlags::ACK_REQUIRED,
-                command: opcode.command_code(),
-                length: payload_bytes.len() as u16,
-                request_id,
-            };
-            let encoded = header.encode(&payload_bytes);
             trace!(request_id, opcode = ?opcode, bytes = encoded.len(), attempt, "sending GVCP command");
             if let Err(err) = self.socket.send(&encoded).await {
                 if attempt >= consts::MAX_RETRIES {
@@ -900,8 +903,7 @@ impl GigeDevice {
                 }
                 warn!(request_id, ?opcode, attempt, "send failed, retrying");
                 self.backoff(attempt).await;
-                payload = BytesMut::from(&payload_bytes[..]);
-                continue;
+                continue 'retry;
             }
 
             let mut buf = vec![
@@ -910,61 +912,73 @@ impl GigeDevice {
                     + consts::GENCP_MAX_BLOCK
                     + consts::GENCP_WRITE_OVERHEAD
             ];
-            match self.recv_absorbing_pending(&mut buf, request_id).await {
-                AckRecv::Received(len) => {
-                    trace!(request_id, bytes = len, attempt, "received GenCP ack");
-                    let ack = decode_ack(&buf[..len])?;
-                    if ack.header.request_id != request_id {
-                        debug!(
-                            request_id,
-                            got = ack.header.request_id,
-                            attempt,
-                            "acknowledgement id mismatch"
-                        );
-                        if attempt >= consts::MAX_RETRIES {
-                            return Err(GigeError::Protocol("acknowledgement id mismatch".into()));
-                        }
-                        self.backoff(attempt).await;
-                        payload = BytesMut::from(&payload_bytes[..]);
-                        continue;
-                    }
-                    if ack.header.opcode != opcode {
-                        return Err(GigeError::Protocol(
-                            "unexpected opcode in acknowledgement".into(),
-                        ));
-                    }
-                    match ack.header.status {
-                        StatusCode::Success => return Ok(ack),
-                        // Only `BUSY` (0x8007) is congestion. This used to
-                        // match `DeviceBusy`, which was mapped to 0x8004 —
-                        // `WRITE_PROTECT` — so the retry loop burned its
-                        // budget on a read-only register that could never
-                        // accept the write, and gave up immediately on the
-                        // one status retrying is for.
-                        status if status.is_retryable() && attempt < consts::MAX_RETRIES => {
-                            warn!(request_id, attempt, %status, "device busy, retrying");
+            let mut mismatched_acks = 0usize;
+            loop {
+                match self.recv_absorbing_pending(&mut buf, request_id).await {
+                    AckRecv::Received(len) => {
+                        trace!(request_id, bytes = len, attempt, "received GenCP ack");
+                        let ack = decode_ack(&buf[..len])?;
+                        if ack.header.request_id != request_id {
+                            debug!(
+                                request_id,
+                                got = ack.header.request_id,
+                                attempt,
+                                "acknowledgement id mismatch"
+                            );
+                            // A delayed acknowledgement from an earlier command is
+                            // normal on devices that process file operations
+                            // asynchronously. Keep waiting for this request, but
+                            // bound the number of unrelated datagrams before
+                            // restarting the same transaction.
+                            mismatched_acks += 1;
+                            if mismatched_acks < consts::MAX_RETRIES {
+                                continue;
+                            }
+                            if attempt >= consts::MAX_RETRIES {
+                                return Err(GigeError::Protocol(
+                                    "acknowledgement id mismatch".into(),
+                                ));
+                            }
                             self.backoff(attempt).await;
-                            payload = BytesMut::from(&payload_bytes[..]);
-                            continue;
+                            continue 'retry;
                         }
-                        other => return Err(GigeError::Status(other)),
+                        if ack.header.opcode != opcode {
+                            return Err(GigeError::Protocol(
+                                "unexpected opcode in acknowledgement".into(),
+                            ));
+                        }
+                        match ack.header.status {
+                            StatusCode::Success => return Ok(ack),
+                            // Only `BUSY` (0x8007) is congestion. This used to
+                            // match `DeviceBusy`, which was mapped to 0x8004 —
+                            // `WRITE_PROTECT` — so the retry loop burned its
+                            // budget on a read-only register that could never
+                            // accept the write, and gave up immediately on the
+                            // one status retrying is for.
+                            status if status.is_retryable() && attempt < consts::MAX_RETRIES => {
+                                warn!(request_id, attempt, %status, "device busy, retrying");
+                                self.backoff(attempt).await;
+                                continue 'retry;
+                            }
+                            other => return Err(GigeError::Status(other)),
+                        }
                     }
-                }
-                AckRecv::Io(err) => {
-                    if attempt >= consts::MAX_RETRIES {
-                        return Err(err.into());
+                    AckRecv::Io(err) => {
+                        if attempt >= consts::MAX_RETRIES {
+                            return Err(err.into());
+                        }
+                        warn!(request_id, ?opcode, attempt, "receive error, retrying");
+                        self.backoff(attempt).await;
+                        continue 'retry;
                     }
-                    warn!(request_id, ?opcode, attempt, "receive error, retrying");
-                    self.backoff(attempt).await;
-                    payload = BytesMut::from(&payload_bytes[..]);
-                }
-                AckRecv::TimedOut => {
-                    if attempt >= consts::MAX_RETRIES {
-                        return Err(GigeError::Timeout);
+                    AckRecv::TimedOut => {
+                        if attempt >= consts::MAX_RETRIES {
+                            return Err(GigeError::Timeout);
+                        }
+                        warn!(request_id, ?opcode, attempt, "command timeout, retrying");
+                        self.backoff(attempt).await;
+                        continue 'retry;
                     }
-                    warn!(request_id, ?opcode, attempt, "command timeout, retrying");
-                    self.backoff(attempt).await;
-                    payload = BytesMut::from(&payload_bytes[..]);
                 }
             }
         }
@@ -1508,6 +1522,7 @@ mod tests {
     async fn pending_ack_device(
         pending: usize,
         wait_ms: u16,
+        stale_ack: bool,
     ) -> (SocketAddr, tokio::task::JoinHandle<usize>) {
         let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
         let addr = sock.local_addr().expect("addr");
@@ -1521,6 +1536,15 @@ mod tests {
             for _ in 0..pending {
                 let ack = golden_pending_ack(request_id, wait_ms);
                 sock.send_to(&ack, peer).await.expect("send pending");
+            }
+            if stale_ack {
+                let mut ack = Vec::new();
+                ack.extend_from_slice(&0u16.to_be_bytes());
+                ack.extend_from_slice(&0x0081u16.to_be_bytes());
+                ack.extend_from_slice(&4u16.to_be_bytes());
+                ack.extend_from_slice(&request_id.wrapping_add(1).to_be_bytes());
+                ack.extend_from_slice(&0xDEADBEEFu32.to_be_bytes());
+                sock.send_to(&ack, peer).await.expect("send stale ack");
             }
             // The real READREG ack: one 4-byte register value.
             let mut ack = Vec::new();
@@ -1543,7 +1567,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_ack_extends_the_deadline_without_resending() {
-        let (addr, server) = pending_ack_device(1, 300).await;
+        let (addr, server) = pending_ack_device(1, 300, false).await;
         let mut device = GigeDevice::open(addr).await.expect("open");
         let value = device.read_register(0x0a00).await.expect("read register");
         assert_eq!(value, 0xCAFEBABE);
@@ -1554,7 +1578,16 @@ mod tests {
     async fn repeated_pending_acks_are_all_honoured() {
         // A flash write can take several rounds. Each one restarts the clock;
         // the command is still sent exactly once.
-        let (addr, server) = pending_ack_device(3, 200).await;
+        let (addr, server) = pending_ack_device(3, 200, false).await;
+        let mut device = GigeDevice::open(addr).await.expect("open");
+        let value = device.read_register(0x0a00).await.expect("read register");
+        assert_eq!(value, 0xCAFEBABE);
+        assert_eq!(server.await.expect("join"), 1, "command must not be resent");
+    }
+
+    #[tokio::test]
+    async fn stale_acknowledgement_is_ignored_without_resending() {
+        let (addr, server) = pending_ack_device(0, 0, true).await;
         let mut device = GigeDevice::open(addr).await.expect("open");
         let value = device.read_register(0x0a00).await.expect("read register");
         assert_eq!(value, 0xCAFEBABE);
