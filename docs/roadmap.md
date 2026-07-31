@@ -100,7 +100,9 @@ The features that make the library trustworthy on a factory floor.
 ## Phase 4 — GenApi conformance, round 2
 
 What ADR-0018 did not reach, ordered by corpus frequency rather than by how
-interesting it looks. The counts are from the 35-document vendor corpus:
+interesting it looks. The counts below were measured against the corpus as it
+stood at 35 documents and have not been re-run since; they are here to rank
+work, not to be quoted as current:
 
 - `pInvalidator` — **18 502 occurrences across 32 of 35 documents**, entirely
   unparsed. Cache invalidation currently fires only on writes made through the

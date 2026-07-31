@@ -15,7 +15,7 @@
 
 > **Status -- not production-ready.** Under active development, pre-1.0, API
 > changes between releases. The protocols are implemented and well tested
-> against simulators and 35 real vendor XML descriptions, but barely tested
+> against simulators and 34 real vendor XML descriptions, but barely tested
 > against physical cameras -- we have none. We are working towards production
 > readiness one reported camera at a time, and **reports are genuinely welcome**.
 
