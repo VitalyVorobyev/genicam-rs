@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
 ### Added
 
+- **Six pixel formats used by Micro-Epsilon scanCONTROL 8500/8200 laser
+  profile scanners** — `Mono10`, `Confidence8`, `Coord3D_C32f`,
+  `Coord3D_AC16`, `Coord3D_AC32f` and `Coord3D_ABC32f`, with codes, names and
+  `bytes_per_pixel` (#93, thanks @Katze719). The `Coord3D_*` group is the first
+  3D point-cloud format family in `viva-pfnc`, and a profile scanner is a
+  device class the project had had no report from.
+- **`NodeMap::register_address(name, io)`** — resolves the device register
+  address and length backing a feature, so a caller doing raw register I/O
+  through `RegisterIo` does not have to reimplement GenICam addressing (#92,
+  thanks @Katze719). Address terms, `<pIndex>` scaling and selector blocks
+  resolve exactly as they do for `get_integer`. The motivating case is a
+  file-transfer buffer, whose address the XML supplies through `<pAddress>` and
+  which no typed accessor covers — the same gap that leaves `<Register>` nodes
+  unsupported (backlog `GA-09`). The addressing types themselves stay private,
+  so that model can still change without a breaking release.
 - **`pip install viva-genicam` now installs the `viva-camctl` CLI.** We tell
   reporters to run `viva-camctl report` or `viva-camctl xml` when we cannot open
   their camera — right after telling them to pip-install — and the wheel shipped
@@ -26,6 +43,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GigE acquisition works on a Windows APIPA link.** Streaming resolved the
+  receiving interface by passing the *camera's* IP to `Iface::from_ipv4`, which
+  expects a host interface address — so on any real network it failed with
+  `no interface with IPv4 <camera>`, and it only ever appeared to work against
+  the loopback fake, where the two addresses coincide. `Iface::from_remote_ipv4`
+  now asks the OS which local interface serves the camera. The GVSP socket also
+  binds to that interface rather than `0.0.0.0`, Windows reads its real MTU via
+  `GetIfEntry2`, and a `#[cfg(windows)]` blocking receive thread delivers frames
+  the async path did not. Reported, fixed and confirmed on hardware by
+  @InsuJeong496 (#70, #72) — a JAI on a 169.254.0.0/16 link now streams
+  2048×1536 at 75 Mbit/s with no drops.
+
+  This is the fix the release waited on. Every gate CI can run was green on
+  merge day; none of them says anything about a `#[cfg(windows)]` path against a
+  camera, so 0.3.1 was held until a user with the hardware said it worked.
+- **A slow GVCP command is no longer executed twice** (#91, thanks @Katze719).
+  Each retry allocated a *fresh* request ID, so a device answering after the
+  first receive deadline replied with the ID we had stopped listening for; the
+  late acknowledgement was discarded as unmatched and the command was sent
+  again. For a non-idempotent operation — a file write, a flash commit — that
+  means it ran a second time. Retries now keep the original request ID, so a
+  delayed answer still matches its transaction, and stale or unrelated
+  acknowledgements are discarded while waiting rather than ending the wait.
+  Covered by a UDP regression test that delivers a stale acknowledgement ahead
+  of the real reply and asserts the command is not resent.
 - **An idle GigE session no longer loses control of the camera.** A GigE Vision
   device revokes control privilege if it receives no GVCP command within
   `GevHeartbeatTimeout` (3 000 ms is typical), and GVSP image traffic does not
@@ -608,7 +650,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.1
 [0.3.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.0
 [0.2.8]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.8
 [0.2.7]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.2.7
