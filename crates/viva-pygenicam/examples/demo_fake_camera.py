@@ -39,7 +39,7 @@ def main() -> None:
         print(f"   readback: {cam.get('ExposureTime')}")
 
         print("6. Streaming 5 frames ...")
-        with cam.stream(auto_packet_size=False) as frames:
+        with cam.stream(packet_size=1500) as frames:
             for i, frame in enumerate(frames, 1):
                 arr = frame.to_numpy()
                 print(

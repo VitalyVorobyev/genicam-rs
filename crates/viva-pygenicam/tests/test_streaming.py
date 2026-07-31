@@ -16,7 +16,7 @@ def camera(fake_gige, loopback_iface):
 
 
 def test_single_frame(camera):
-    with camera.stream(auto_packet_size=False) as frames:
+    with camera.stream(packet_size=1500) as frames:
         frame = frames.next_frame(timeout_ms=5000)
         assert frame is not None
         assert frame.width > 0
@@ -27,7 +27,7 @@ def test_single_frame(camera):
 def test_frame_to_numpy_shape(camera):
     expected_w = int(camera.get("Width"))
     expected_h = int(camera.get("Height"))
-    with camera.stream(auto_packet_size=False) as frames:
+    with camera.stream(packet_size=1500) as frames:
         frame = frames.next_frame(timeout_ms=5000)
         arr = frame.to_numpy()
         assert isinstance(arr, np.ndarray)
@@ -41,7 +41,7 @@ def test_frame_to_numpy_shape(camera):
 
 def test_iterate_multiple_frames(camera):
     received = 0
-    with camera.stream(auto_packet_size=False) as frames:
+    with camera.stream(packet_size=1500) as frames:
         for frame in frames:
             received += 1
             if received >= 3:
@@ -58,6 +58,6 @@ def test_stream_auto_iface_for_loopback(fake_gige):
     cams = vg.discover(timeout_ms=1500, all=True)
     cam_info = next(c for c in cams if c.ip.startswith("127."))
     cam = vg.connect_gige(cam_info)  # no iface
-    with cam.stream(auto_packet_size=False) as frames:
+    with cam.stream(packet_size=1500) as frames:
         frame = frames.next_frame(timeout_ms=5000)
         assert frame is not None

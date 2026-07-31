@@ -711,6 +711,12 @@ fn build_feature_state(
             .get_string(name, transport)
             .map(serde_json::Value::String)
             .map_err(|e| format!("Failed to read string '{name}': {e}"))?,
+        // Report the size, not the bytes: a `<Register>` can be very large and
+        // this state is polled by the UI. Mirrors `viva-service`'s handling.
+        Node::Register(reg) => serde_json::json!({
+            "kind": "register",
+            "length": reg.declared_len(),
+        }),
         Node::SwissKnife(sk) => match sk.output {
             viva_genicam::genapi::SkOutput::Float => nodemap
                 .get_float(name, transport)

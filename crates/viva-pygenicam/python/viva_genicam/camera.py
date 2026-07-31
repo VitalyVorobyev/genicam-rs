@@ -97,16 +97,18 @@ class Camera:
     def stream(
         self,
         iface: Optional[str] = None,
-        auto_packet_size: Optional[bool] = None,
+        packet_size: Optional[int] = None,
         multicast: Optional[str] = None,
         destination_port: Optional[int] = None,
     ) -> FrameStream:
         """Open a frame stream (context-manager yielding ``Frame`` objects).
 
-        GigE-only parameters are ignored for U3V cameras.
+        ``packet_size`` overrides the GVSP packet size in bytes; omit it to
+        follow the interface's probed MTU. GigE-only parameters are ignored for
+        U3V cameras.
         """
         native = self._native.open_stream(
-            iface, auto_packet_size, multicast, destination_port
+            iface, packet_size, multicast, destination_port
         )
         return FrameStream(native, self)
 

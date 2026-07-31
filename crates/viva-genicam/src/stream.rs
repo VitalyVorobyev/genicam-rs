@@ -242,6 +242,19 @@ impl<'a> StreamBuilder<'a> {
         let packet_size = self
             .packet_size
             .unwrap_or_else(|| nic::best_packet_size(mtu));
+        // A zero or absurdly small packet size configures the camera to send
+        // nothing and the caller then waits out a receive timeout with no clue
+        // why. This is not hypothetical: renaming the Python binding's
+        // `auto_packet_size` argument to `packet_size` turned a `False` into
+        // `Some(0)` -- Python's `bool` is an `int` -- and every wheel streaming
+        // test failed with `timeout waiting for frame`.
+        const MIN_PACKET_SIZE: u32 = 576; // the IPv4 minimum reassembly buffer
+        if packet_size < MIN_PACKET_SIZE {
+            return Err(GenicamError::transport(format!(
+                "GVSP packet size {packet_size} is below the {MIN_PACKET_SIZE}-byte minimum; \
+                 pass a real size or omit it to follow the interface MTU"
+            )));
+        }
 
         // A 1500-byte link needs inter-packet spacing to survive a burst; a
         // jumbo link sends few enough packets that it does not.
