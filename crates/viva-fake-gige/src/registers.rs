@@ -659,16 +659,16 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
        Chunk Data Control
        ════════════════════════════════════════════════════════════════════ -->
 
-  <Integer Name="ChunkModeActive" NameSpace="Standard">
+  <!-- SFNC defines ChunkModeActive and ChunkEnable as IBoolean, and all 23
+       vendor-corpus documents that declare ChunkModeActive use <Boolean> over
+       a backing <IntReg> - none uses <Integer>. Declaring them as <Integer>
+       here made Camera::configure_chunks, which correctly calls set_bool,
+       fail against the only camera we can test with. -->
+  <Boolean Name="ChunkModeActive" NameSpace="Standard">
     <ToolTip>Enable chunk data in image frames</ToolTip>
-    <Address>0x20080</Address>
-    <Length>4</Length>
-    <AccessMode>RW</AccessMode>
-    <Min>0</Min>
-    <Max>1</Max>
-    <Sign>Unsigned</Sign>
-    <Endianess>BigEndian</Endianess>
-  </Integer>
+    <pValue>ChunkModeActiveReg</pValue>
+  </Boolean>
+  <IntReg Name="ChunkModeActiveReg"><Address>0x20080</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
   <Enumeration Name="ChunkSelector" NameSpace="Standard">
     <ToolTip>Select which chunk feature to configure</ToolTip>
@@ -679,16 +679,11 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   </Enumeration>
   <IntReg Name="ChunkSelectorReg"><Address>0x20084</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
-  <Integer Name="ChunkEnable" NameSpace="Standard">
+  <Boolean Name="ChunkEnable" NameSpace="Standard">
     <ToolTip>Enable the selected chunk feature</ToolTip>
-    <Address>0x20088</Address>
-    <Length>4</Length>
-    <AccessMode>RW</AccessMode>
-    <Min>0</Min>
-    <Max>1</Max>
-    <Sign>Unsigned</Sign>
-    <Endianess>BigEndian</Endianess>
-  </Integer>
+    <pValue>ChunkEnableReg</pValue>
+  </Boolean>
+  <IntReg Name="ChunkEnableReg"><Address>0x20088</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
   <!-- Event delivery is selected through GenApi, not through a bootstrap
        register: EventSelector picks a GigE Vision event id and
