@@ -493,7 +493,7 @@ async fn discover_impl(
                           "skipping interface: SO_BROADCAST failed");
                     return Vec::new();
                 }
-                let broadcast = v4.broadcast.unwrap_or(Ipv4Addr::BROADCAST);
+                let broadcast = directed_broadcast(v4.ip, v4.netmask);
                 SocketAddr::new(IpAddr::V4(broadcast), consts::PORT)
             };
 
@@ -563,6 +563,18 @@ async fn discover_impl(
     let mut devices: Vec<_> = seen.into_values().collect();
     devices.sort_by_key(|d| d.ip);
     Ok(devices)
+}
+
+/// Derive an IPv4 directed-broadcast address from an interface address and
+/// netmask.
+///
+/// On Linux an address added without an explicit `brd` value can make
+/// `getifaddrs(3)` report the address itself through the broadcast union. That
+/// turns discovery into a unicast request, notably for a manually configured
+/// `169.254.0.0/16` address. The netmask remains authoritative, so calculate
+/// the broadcast address ourselves instead of trusting that optional field.
+fn directed_broadcast(ip: Ipv4Addr, netmask: Ipv4Addr) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(ip) | !u32::from(netmask))
 }
 
 /// Decode one datagram received on the discovery socket.
@@ -1460,6 +1472,21 @@ mod tests {
         assert!(parse_discovery_ack(&ack(0, 0x0081, 0x0100), 0x0100).is_none());
         assert!(parse_discovery_ack(&ack(0x8002, consts::DISCOVERY_ACK, 0x0100), 0x0100).is_none());
         assert!(parse_discovery_ack(&[0u8; 4], 0x0100).is_none());
+    }
+
+    #[test]
+    fn directed_broadcast_uses_netmask_for_link_local_address() {
+        // Linux reports no `brd` field for an address added as
+        // `169.254.1.10/16`; `if-addrs` then exposes the local address as the
+        // broadcast destination. Deriving it from the netmask must still
+        // reach every APIPA peer on the link.
+        assert_eq!(
+            directed_broadcast(
+                Ipv4Addr::new(169, 254, 1, 10),
+                Ipv4Addr::new(255, 255, 0, 0),
+            ),
+            Ipv4Addr::new(169, 254, 255, 255)
+        );
     }
 
     /// A PENDING_ACK written out from the specification's field table:
