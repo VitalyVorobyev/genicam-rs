@@ -2056,6 +2056,17 @@ fn build_node(
             };
             Ok((name, Node::Register(node)))
         }
+        // `NodeDecl` is `#[non_exhaustive]`, so this crate can no longer match
+        // it exhaustively and the compiler will not point at this function when
+        // a variant is added. Fail loudly rather than defaulting: a node type
+        // the XML layer understands but this one silently drops is precisely
+        // the class of defect GA-02 existed to end.
+        other => Err(GenApiError::Unsupported(format!(
+            "node '{}' has declaration kind '{}', which this nodemap cannot build; \
+             viva-genapi-xml understands it but viva-genapi has no arm for it",
+            other.name(),
+            other.kind()
+        ))),
     }
 }
 

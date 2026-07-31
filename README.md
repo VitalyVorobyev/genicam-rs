@@ -48,7 +48,7 @@ crates/
   viva-genicam/        Public API facade (start here)
   viva-pfnc/           Pixel Format Naming Convention tables
   viva-sfnc/           Standard Feature Naming Convention constants
-  viva-zenoh-api/      Shared Zenoh wire types (no Zenoh dependency)
+  viva-zenoh-api/      Message payloads and topic names for the services
   viva-service/        Zenoh bridge: GigE cameras -> Viva Studio
   viva-service-u3v/    Zenoh bridge: U3V cameras -> Viva Studio
   viva-camctl/         CLI binary

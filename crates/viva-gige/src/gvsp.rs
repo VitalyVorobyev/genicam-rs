@@ -92,6 +92,7 @@ pub struct StreamConfig {
 
 /// Errors raised while handling GVSP packets.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum GvspError {
     #[error("unsupported packet type: {0}")]
     Unsupported(&'static str),

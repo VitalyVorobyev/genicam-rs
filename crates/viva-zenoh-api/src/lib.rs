@@ -1,8 +1,10 @@
-//! Shared Zenoh API payload types for GenICam camera services.
+//! The message payloads and topic names the viva GenICam camera services
+//! publish, and their clients subscribe to.
 //!
-//! This crate has no Zenoh dependency — it is a pure data contract that can be
-//! used by both the camera service and any client application (e.g. a Tauri
-//! desktop app or a CLI tool).
+//! This is the *contract*, not the transport. Despite the crate name, nothing
+//! here depends on the `zenoh` crate: these are plain serde types, so a client
+//! can agree with the service on the message format without linking a message
+//! broker — and the crate compiles everywhere, including `wasm32`.
 
 use serde::{Deserialize, Serialize};
 

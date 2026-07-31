@@ -604,6 +604,7 @@ pub struct RegisterDecl {
 
 /// Declaration of a node extracted from the GenICam XML description.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum NodeDecl {
     /// Integer feature backed by a register block or delegated via pValue.
     Integer {

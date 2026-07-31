@@ -42,8 +42,10 @@ viva-gencp              - Protocol primitives: GenCP encode/decode
 - `viva-pfnc` — Pixel Format Naming Convention tables; the single authority for
   pixel-format codes and layouts.
 - `viva-sfnc` — Standard Feature Naming Convention constants.
-- `viva-zenoh-api` — shared Zenoh wire types (no Zenoh dependency; compiles
-  everywhere including wasm).
+- `viva-zenoh-api` — the message payloads and topic names the services
+  publish. This is the contract, not the transport: despite the name it does
+  not depend on the `zenoh` crate, so a client can share the message format
+  without linking a broker, and it compiles everywhere including wasm.
 
 **Test crates (not published):**
 

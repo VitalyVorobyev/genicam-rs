@@ -316,6 +316,7 @@ fn print_frame_summary(index: usize, frame: &Frame) {
                 ChunkValue::U64(value) => println!("  {kind:?}: {value}"),
                 ChunkValue::F64(value) => println!("  {kind:?}: {value}"),
                 ChunkValue::Bytes(bytes) => println!("  {kind:?}: {} raw bytes", bytes.len()),
+                other => println!("  {kind:?}: {other:?}"),
             }
         }
     } else {
