@@ -30,6 +30,34 @@ And in `studio/ui/viva-studio-ui`:
 
 4. `bun install --frozen-lockfile && bun run test -- --run && bun run build`
 
+## The Tauri app is a *third* workspace (run it whenever a public type changes)
+
+**`studio/apps/viva-studio-tauri/src-tauri` is not a member of the `studio/`
+workspace.** `cargo clippy --workspace` in `studio/` does not reach it, and the
+only thing that covers it is CI's `tauri-lint` job. Run:
+
+```bash
+cd studio/apps/viva-studio-tauri/src-tauri && cargo clippy --all-targets -- -D warnings
+```
+
+Adding a variant to a public enum broke this and nothing local caught it
+(#105 → #106). Run it whenever a public `enum`, trait or signature changes in
+the library workspace, not only when `studio/` files are edited.
+
+## The Python bindings are not covered by `cargo test` (run them when the pyo3
+## surface changes)
+
+`cargo test --workspace` does not build a wheel or run `pytest`, so a change to
+a `#[pyo3]` signature is only checked by the `Python wheels` CI workflow. There
+is no compile-time link between the pyo3 function and the hand-written wrapper
+in `crates/viva-pygenicam/python/viva_genicam/`, which calls it **positionally**.
+
+Renaming an argument in `src/camera.rs` without renaming it in `camera.py`,
+`_native.pyi`, the tests and the examples produced a silent misconfiguration
+rather than a `TypeError` — Python's `bool` subclasses `int`, so `False` arrived
+as `0` (#104 → #106). When touching the pyo3 surface, grep the whole crate plus
+`book/src/python/` for the old name before pushing.
+
 ## Notes
 
 - cargo-deny runs in CI (Linux). Run `cargo deny check` locally only if

@@ -736,6 +736,10 @@ fn build_feature_state(
             .map(|v| serde_json::Value::Number(v.into()))
             .map_err(|e| format!("Failed to eval IntConverter '{name}': {e}"))?,
         Node::Command(_) | Node::Category(_) => serde_json::Value::Null,
+        // `Node` is `#[non_exhaustive]`; name the kind rather than emitting a
+        // bare null, so an unhandled type stays legible in the UI. Mirrors
+        // `viva-service`.
+        other => serde_json::json!({ "kind": other.kind_name(), "unsupported": true }),
     };
 
     let (numeric, unit) = match node {

@@ -576,6 +576,36 @@ fn node_decl_to_ui_node(decl: &NodeDecl, nodemap: &NodeMap) -> (String, UiNode) 
                 int_inc: None,
             },
         ),
+        // `NodeDecl` is `#[non_exhaustive]`, so a node type added upstream no
+        // longer breaks this build. Surface it with its own kind rather than
+        // dropping it, so an unmodelled node is visible in the tree instead of
+        // silently absent.
+        other => (
+            decl_name(other),
+            UiNode {
+                name: decl_name(other),
+                kind: UiNodeKind::Unknown {
+                    tag: other.kind().to_string(),
+                },
+                display_name: None,
+                comment: None,
+                tooltip: None,
+                description: None,
+                visibility: None,
+                access_mode: None,
+                unit: None,
+                representation: None,
+                constraints: None,
+                enum_entries: vec![],
+                raw: empty_raw(other.kind()),
+                dependencies: vec![],
+                dependents,
+                expression: None,
+                int_min: None,
+                int_max: None,
+                int_inc: None,
+            },
+        ),
     }
 }
 
@@ -924,6 +954,30 @@ fn node_decl_to_ui_node_simple(decl: &NodeDecl) -> UiNode {
             int_max: None,
             int_inc: None,
         },
+        // See the matching arm above.
+        other => UiNode {
+            name: decl_name(other),
+            kind: UiNodeKind::Unknown {
+                tag: other.kind().to_string(),
+            },
+            display_name: None,
+            comment: None,
+            tooltip: None,
+            description: None,
+            visibility: None,
+            access_mode: None,
+            unit: None,
+            representation: None,
+            constraints: None,
+            enum_entries: vec![],
+            raw: empty_raw(other.kind()),
+            dependencies: vec![],
+            dependents: empty_nodemap_dependents,
+            expression: None,
+            int_min: None,
+            int_max: None,
+            int_inc: None,
+        },
     }
 }
 
@@ -940,6 +994,7 @@ fn decl_name(decl: &NodeDecl) -> String {
         NodeDecl::IntConverter(cv) => cv.name.clone(),
         NodeDecl::String(s) => s.name.clone(),
         NodeDecl::Register(r) => r.name.clone(),
+        other => other.name().to_string(),
     }
 }
 

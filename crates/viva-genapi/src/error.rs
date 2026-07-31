@@ -41,6 +41,14 @@ pub enum GenApiError {
     /// Node metadata or conversion failed.
     #[error("parse error: {0}")]
     Parse(String),
+    /// A declaration this crate has no builder for.
+    ///
+    /// [`viva_genapi_xml::NodeDecl`] is `#[non_exhaustive]`, so a node type
+    /// added to the XML layer no longer breaks this crate's *build*. It
+    /// surfaces here instead, at nodemap construction, and lands in
+    /// [`crate::NodeMap::skipped`] where the corpus test will see it.
+    #[error("unsupported node declaration: {0}")]
+    Unsupported(String),
     /// Parsing a SwissKnife expression failed.
     #[error("failed to parse expression for {name}: {msg}")]
     ExprParse { name: String, msg: String },

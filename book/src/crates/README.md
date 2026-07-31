@@ -29,7 +29,7 @@ Every crate lives under `crates/` and is named for its directory.
 | `viva-gencp` | GenCP message encode/decode, shared by both transports | Contributors, protocol nerds |
 | `viva-pfnc` | Pixel Format Naming Convention tables | Contributors |
 | `viva-sfnc` | Standard Feature Naming Convention constants | Contributors |
-| `viva-zenoh-api` | Wire types shared with Viva Studio (no Zenoh dependency) | Contributors |
+| `viva-zenoh-api` | Message payloads and topic names shared with Viva Studio; plain serde types that do not link Zenoh | Contributors |
 | `viva-service` | Zenoh bridge: GigE cameras → Viva Studio | Integrators |
 | `viva-service-u3v` | Zenoh bridge: U3V cameras → Viva Studio | Integrators |
 | `viva-fake-gige` | In-process fake GigE camera for tests and demos | Everyone |

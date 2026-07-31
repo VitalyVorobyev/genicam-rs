@@ -12,6 +12,7 @@ use crate::swissknife::{AstNode, Value};
 
 /// Node kinds supported by the Tier-1 subset.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Node {
     /// Signed integer feature stored in a fixed-width register block.
     Integer(IntegerNode),

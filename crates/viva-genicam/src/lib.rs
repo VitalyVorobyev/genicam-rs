@@ -236,6 +236,14 @@ impl<T: RegisterIo> Camera<T> {
                 Err(GenicamError::GenApi(GenApiError::Type(name.to_string())))
             }
             Some(Node::Category(_)) => Ok(String::new()),
+            // `Node` is `#[non_exhaustive]`, so a node type added in
+            // `viva-genapi` no longer breaks this crate's build. Name the kind
+            // rather than returning a bare type error, so the gap is legible
+            // from a log line instead of needing a debugger.
+            Some(other) => Err(GenicamError::GenApi(GenApiError::Type(format!(
+                "{name} is a {} node, which Camera::get cannot render as a string",
+                other.kind_name()
+            )))),
             None => Err(GenApiError::NodeNotFound(name.to_string()).into()),
         }
     }
@@ -290,6 +298,11 @@ impl<T: RegisterIo> Camera<T> {
             // this API could parse back. Use `nodemap().set_register(...)`.
             Some(Node::Register(_)) => Err(GenApiError::Type(name.to_string()).into()),
             Some(Node::Category(_)) => Err(GenApiError::Type(name.to_string()).into()),
+            // See the matching arm in `get`.
+            Some(other) => Err(GenicamError::GenApi(GenApiError::Type(format!(
+                "{name} is a {} node, which Camera::set cannot write from a string",
+                other.kind_name()
+            )))),
             None => Err(GenApiError::NodeNotFound(name.to_string()).into()),
         }
     }

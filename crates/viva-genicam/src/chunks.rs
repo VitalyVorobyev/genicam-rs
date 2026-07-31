@@ -47,6 +47,7 @@ enum ValueDecoder {
 
 /// Typed representation of known chunk kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ChunkKind {
     Timestamp,
     ExposureTime,
@@ -57,6 +58,7 @@ pub enum ChunkKind {
 
 /// Decoded value of a chunk entry.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ChunkValue {
     U64(u64),
     F64(f64),
@@ -68,6 +70,7 @@ pub type ChunkMap = HashMap<ChunkKind, ChunkValue>;
 
 /// Errors that can occur while decoding chunk payloads.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ChunkError {
     #[error("chunk {id:#06x} payload length {actual} shorter than required {expected} bytes")]
     InvalidLength {
