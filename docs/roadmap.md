@@ -15,21 +15,21 @@ construct in the vendor corpus, or point at the user report, before ranking it.
 This roadmap applies that rule throughout, which is why several items moved
 between phases relative to the previous revision.
 
-## Phase 0 — Ship 0.3.0 (immediate)
+## Phase 0 — Ship 0.3.1 (immediate)
 
-0.3.0 is written and version-bumped on `main` but was never tagged; crates.io
-and PyPI are still serving 0.2.8. Two of the three open issues are blocked on
-that tag, not on code: both #35's and #45's reporters are hitting the
-`unexpected '='` panic that 0.3.0 already fixes.
+0.3.0 was tagged and published on 2026-07-30, after #70 supplied the hardware
+confirmation that #57's APIPA discovery fixes were waiting for. 0.3.1 is
+code-complete and was gated on one thing only: whether #72's `#[cfg(windows)]`
+acquisition fix worked against a real camera, which no machine here can test.
+It does — re-validated on a JAI over Windows APIPA on 2026-07-31 with zero
+drops (backlog `REL-04`, `REL-05`).
 
-- **Fix #57 — GigE discovery on Windows APIPA networks.** Bundled into 0.3.0
-  rather than deferred, because on Windows the library currently discovers
-  nothing at all. Four defects reported plus four found alongside them; see
-  backlog `REL-01`. Implemented in-repo, crediting the reporter.
-- **Tag and publish 0.3.0** (`v0.3.0` + `py-v0.3.0`), then ask #35, #45 and
-  #57 to retest.
-- **Issue templates** that ask for the artifacts which actually resolved these
-  three issues — model, OS, version, `RUST_LOG=debug` trace, raw GenApi XML.
+- **Tag and publish 0.3.1** (`v0.3.1` + `py-v0.3.1`).
+- **#35 still owes a retest** against 0.3.0; #45 and #57 have both confirmed.
+
+The lesson worth carrying forward is the shape of that gate, not its outcome:
+a green CI on a platform-conditional fix confirms nothing, and the release
+waited on a user with the hardware rather than on our own confidence.
 
 ## Phase 1 — Transport conformance (ADR-0019)
 
@@ -42,9 +42,13 @@ turns out to carry the same class of error:
   mode changes are exactly what cameras use it for.
 - `ACTION_COMMAND` is defined as 0x0080 — the same opcode as `READREG`.
 - The event channel keys on 0x000D, which is not a GVCP opcode at all.
-- The chunk trailer layout is self-consistent with our fake rather than with
-  the standard, and the payload type real cameras use to deliver chunks
-  (0x4001) is rejected outright.
+- The GVSP data trailer is read at the wrong offset — two bytes of an
+  eight-byte payload — so `payload_type` and `size_y` are fed to the chunk
+  parser as if they were chunk data. Chunks cannot decode on any conforming
+  camera, and the frame-error check reads the trailer's reserved word while
+  the real status word is examined nowhere. Found on real hardware (#70), and
+  notable as the one case so far where the fake camera was correct and only
+  the client was wrong.
 
 Neither ACTION nor EVENT is implemented by `viva-fake-gige`, so neither has
 ever been exercised by a test.
