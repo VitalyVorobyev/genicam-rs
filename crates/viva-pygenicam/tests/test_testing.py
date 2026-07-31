@@ -39,7 +39,7 @@ def test_connect_and_stream_through_fake():
         cam = vg.connect_gige(fake.device_info())
         assert cam.transport == "gige"
         assert int(cam.get("Width")) == 320
-        with cam.stream(auto_packet_size=False) as frames:
+        with cam.stream(packet_size=1500) as frames:
             frame = frames.next_frame(timeout_ms=5000)
         assert frame is not None
         assert frame.width == 320

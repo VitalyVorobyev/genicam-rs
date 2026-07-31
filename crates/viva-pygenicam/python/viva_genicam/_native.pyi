@@ -55,7 +55,7 @@ class _Camera:
     def open_stream(
         self,
         iface: Optional[str],
-        auto_packet_size: Optional[bool],
+        packet_size: Optional[int],
         multicast: Optional[str],
         destination_port: Optional[int],
     ) -> _FrameStream: ...

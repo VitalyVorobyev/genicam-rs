@@ -66,7 +66,7 @@ class Camera:
     def stream(
         self,
         iface: Optional[str] = None,
-        auto_packet_size: Optional[bool] = None,
+        packet_size: Optional[int] = None,
         multicast: Optional[str] = None,
         destination_port: Optional[int] = None,
     ) -> FrameStream: ...

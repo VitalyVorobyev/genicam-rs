@@ -62,7 +62,7 @@ The `stream()` call accepts GigE-specific knobs:
 ```python
 cam.stream(
     iface="en0",               # NIC override
-    auto_packet_size=True,     # negotiate the largest packet that fits MTU
+    packet_size=1500,          # omit to follow the interface's probed MTU
     multicast="239.255.42.99", # subscribe to a multicast group instead of unicast
     destination_port=34567,    # fix the streaming UDP port
 )

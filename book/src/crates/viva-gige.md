@@ -154,14 +154,15 @@ directly:
 ```
 
 `StreamBuilder` (in `viva_genicam::stream`) exposes `iface`, `dest`,
-`auto_packet_size`, `target_mtu`, `packet_size`, `packet_delay`,
+`target_mtu`, `packet_size`, `packet_delay`,
 `destination_port`, `multicast`, `rcvbuf_bytes` and `channel`. `FrameStream`
 wraps the result and yields whole frames.
 
 ### Packet size and MTU
 
 `GevSCPSPacketSize` is the size of the transmitted **IP packet**, so it must fit
-the path MTU end to end. `auto_packet_size(true)` negotiates it. Two caveats
+the path MTU end to end. The probed MTU is used unless `packet_size` overrides
+it. Two caveats
 worth knowing:
 
 - Cameras **clamp** a size they cannot honour, and the library does not read the
