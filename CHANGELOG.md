@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The GVSP data trailer is read at the offset the specification gives it.**
+  The trailer payload is eight bytes — `reserved(2) | payload_type(2) |
+  size_y(4)` — and the chunk region starts after them. `parse_trailer` read two
+  and handed the remaining six to the chunk parser, producing a
+  `chunk header truncated remaining=6` warning on every frame: those six bytes
+  *are* `payload_type` and `size_y`. Not cosmetic — with chunk mode on the
+  six-byte prefix desynchronises every chunk that follows, so chunks could not
+  decode on any conforming camera. The same two bytes were reported as the
+  trailer's `status`, which both frame-reassembly paths test to reject a bad
+  frame; they are reserved and always zero, so that check could never fire. The
+  real GVSP status is at offset 0 of the packet header, where `parse_packet` was
+  instead shifting it right by four, calling it a "payload type" and passing it
+  to a parser that discarded it — so the status was examined nowhere in the
+  receive path. `GvspPacket::Trailer` now carries `payload_type` and `size_y`.
+  Found in the log attached to #70; `viva-fake-gige` was already emitting a
+  correct trailer, making this the first case where the fake was right and only
+  the client was wrong (#96).
+- **GigE discovery reaches link-local cameras on Linux.** Discovery took the
+  broadcast address from `if-addrs`' optional `broadcast` field, and on Linux an
+  address configured without an explicit `brd` — a manually assigned
+  `169.254.0.0/16`, typically — can report the interface address itself there,
+  turning the broadcast into a unicast to self. It is now derived from the
+  netmask, which is authoritative. Complements #57, which fixed enumeration of
+  link-local addresses; even once enumerated, discovery was not leaving the
+  host. Confirmed on hardware by @Katze719, whose Micro-Epsilon scanCONTROL
+  8500-50 at `169.254.7.189` is now discovered automatically (#95).
+
 ## [0.3.1] - 2026-07-31
 
 ### Added
