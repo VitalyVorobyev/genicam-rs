@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that it agrees with our own fake.
 >>>>>>> ff44fb0 (Assert the fake's GVSP bytes against the spec, not against our parser (TC-04, #63))
 
+- **Five spec-derived GenCP acknowledgement-header tests** (backlog `TC-04`)
+  pin the header as a literal byte array indexed by offset, rather than
+  building the input with the same calls the decoder reads back. They also fix
+  the *interpretation* of `length` — the payload alone, not the datagram —
+  because off by exactly `HEADER_SIZE` a fake and a client round-trip
+  perfectly while every real device disagrees.
+
 ## [0.4.1] - 2026-08-03
 
 ### Added
