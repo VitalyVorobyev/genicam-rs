@@ -1084,6 +1084,12 @@ input[type="checkbox"] {
   outline: none;
 }
 
+/* A Command node's Execute button. `.editor` is a grid, so a button placed in
+   it stretches edge to edge and reads as a banner rather than a control —
+   `.editor__input` is capped at 360px for the same reason. Size it to its
+   label instead. */
+.editor__action { justify-self: start; }
+
 .editor__input-row { display: flex; align-items: center; gap: var(--sp-3); }
 
 .editor__unit {
