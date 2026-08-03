@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
-#[cfg(not(windows))]
+// Used by the receive loop on non-Windows and by the packet-size probe
+// everywhere — the probe runs before the socket is handed to the Windows
+// reader thread, so it is a tokio socket on every platform.
 use tokio::time::timeout;
 #[cfg(not(windows))]
 use tracing::trace;
