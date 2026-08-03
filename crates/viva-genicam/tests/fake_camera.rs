@@ -803,29 +803,69 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
     .await
     .unwrap();
 
-    // Collect one whole block: leader, every data packet, trailer.
-    let mut leader = Vec::new();
+    // Collect blocks until one arrives whole.
+    //
+    // UDP on loopback does drop datagrams: Windows CI lost a trailer here on
+    // the first run, and the collector ran on into the next block and compared
+    // its packets against the previous block's id. An incomplete block is a
+    // flaky test rather than a real finding, so discard it and follow the next
+    // one — while keeping every assertion strict on the block that is kept.
+    //
+    // The completeness filter is deliberately weak: it checks only that the
+    // trailer's packet id accounts for every data packet, i.e. that nothing
+    // went missing. Each packet's own id, the stride and the byte total are
+    // asserted below and are not implied by that count.
+    let block_id_of = |pkt: &[u8]| u16::from_be_bytes([pkt[2], pkt[3]]);
+    let packet_id_of = |pkt: &[u8]| u32::from_be_bytes([0, pkt[5], pkt[6], pkt[7]]);
+
+    /// One GVSP block as it arrived: leader, data packets in receipt order,
+    /// trailer.
+    struct Block {
+        leader: Vec<u8>,
+        payloads: Vec<Vec<u8>>,
+        trailer: Vec<u8>,
+    }
+
+    let mut captured: Option<Block> = None;
+    let mut leader: Vec<u8> = Vec::new();
     let mut payloads: Vec<Vec<u8>> = Vec::new();
-    let mut trailer = Vec::new();
     let mut buf = vec![0u8; 4096];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while trailer.is_empty() && tokio::time::Instant::now() < deadline {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while captured.is_none() && tokio::time::Instant::now() < deadline {
         let Ok(Ok((len, _))) =
-            tokio::time::timeout(Duration::from_secs(2), sink.recv_from(&mut buf)).await
+            tokio::time::timeout(Duration::from_secs(3), sink.recv_from(&mut buf)).await
         else {
             break;
         };
         let pkt = buf[..len].to_vec();
-        // Byte 4 low nibble is the packet format; the high bit is the
-        // extended-block-ID flag, which the fake does not set.
-        match pkt[4] {
-            0x01 if leader.is_empty() => leader = pkt,
-            0x03 if !leader.is_empty() => payloads.push(pkt),
-            0x02 if !leader.is_empty() => trailer = pkt,
+        // Byte 4: the low nibble is the packet format, the high bit is the
+        // extended-block-ID flag. Dispatch on the nibble so a future fake that
+        // sets the flag fails the explicit assertion below rather than timing
+        // out here with nothing to say.
+        let same_block = !leader.is_empty() && block_id_of(&pkt) == block_id_of(&leader);
+        match pkt[4] & 0x0F {
+            // A leader always begins a fresh block; if one was in progress it
+            // lost its trailer.
+            0x01 => {
+                leader = pkt;
+                payloads.clear();
+            }
+            0x03 if same_block => payloads.push(pkt),
+            0x02 if same_block => {
+                if packet_id_of(&pkt) == payloads.len() as u32 + 1 {
+                    captured = Some(Block {
+                        leader: std::mem::take(&mut leader),
+                        payloads: std::mem::take(&mut payloads),
+                        trailer: pkt,
+                    });
+                } else {
+                    leader.clear();
+                    payloads.clear();
+                }
+            }
             _ => {}
         }
     }
-
     let cam = camera.clone();
     tokio::task::spawn_blocking(move || {
         let _ = cam.lock().unwrap().acquisition_stop();
@@ -833,9 +873,12 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
     .await
     .unwrap();
 
-    assert!(!leader.is_empty(), "no GVSP leader arrived");
-    assert!(!trailer.is_empty(), "no GVSP trailer arrived");
-    assert!(!payloads.is_empty(), "no GVSP data packets arrived");
+    let Block {
+        leader,
+        payloads,
+        trailer,
+    } = captured.expect("no complete GVSP block arrived within the deadline");
+    assert!(!payloads.is_empty(), "a block with no data packets");
 
     let be16 = |b: &[u8], at: usize| u16::from_be_bytes([b[at], b[at + 1]]);
     let be32 = |b: &[u8], at: usize| u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
