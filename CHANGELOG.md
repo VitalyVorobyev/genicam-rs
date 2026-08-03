@@ -50,10 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A camera that clamps the GVSP packet size produced a stream that never
-  completed a frame** (backlog `SR-02`,
-  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)). Seen on a
-  Vieworks FS3200T on a Windows jumbo link: zero frames on every Acquisition
-  Start, and correct streaming when the packet size was forced to 1500.
+  completed a frame** (backlog `SR-02`). Found by reading code, not on
+  hardware — it is *not* the cause of
+  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112), whose
+  camera accepts the size it is given.
 
   `StreamBuilder::build` wrote `GevSCPSPacketSize` and never read it back.
   `StreamParams.packet_size` kept the **requested** value and `gvsp_payload_size`

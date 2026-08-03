@@ -76,24 +76,33 @@ stops working.
 
 **Also landed 2026-08-03:**
 
-- **SR-02** (#112) — `GevSCPSPacketSize` was written and never read back, and
-  the *requested* value then drove every reassembly offset. A camera that
-  clamps left the host striding at the wrong pitch, so no frame completed: a
-  Vieworks FS3200T on a Windows jumbo link yielded zero frames on every
-  Acquisition Start and streamed correctly when forced to 1500. The backlog row
-  predicted this in one sentence and sat at P0/planned because nothing had hit
-  it. The read-back landed; the specification's test-packet negotiation did
-  not, because one observation in the report is still unexplained and picking a
-  mechanism before the answer arrives is how a guess gets frozen into the wire
-  layer.
+- **SR-02** — `GevSCPSPacketSize` was written and never read back, and the
+  *requested* value then drove every reassembly offset, so a camera that clamps
+  left the host striding at the wrong pitch. Found by reading code and fixed
+  against a fake taught to clamp. **It is not the cause of #112**, which this
+  phase briefly recorded that it was: the FS3200T accepts 16114 and holds it,
+  and the `1500` in the report was a GenApi node read. Correcting that is the
+  evidence hierarchy applied to us — "confirmed in the tree" and "explains the
+  hardware" are different claims, and only the first was ever true here.
 - **DX-09** — a stream that received nothing printed `frames=0` and named no
   candidate cause. #112's reporter needed a custom instrumented build to find a
   packet-size mismatch the warning now names outright. Landed with SR-02: one
   review surface, and the two halves of one user's afternoon.
 
-**Why 0.4.1 waited for them.** Releasing the `--iface` grammar first would have
-handed #112's reporter a version that did not fix what they reported. SR-02 was
-the P0 in this phase; DX-10 was the P1.
+**0.4.1 no longer waits.** It was held so #112's reporter would not get a
+release that failed to fix what they reported — but SR-02 was never going to
+fix it, and DX-09 will at least tell them which half of the stream is at fault.
+Ship 0.4.1 with what has landed; **SR-13** (the GVSP test packet) is the actual
+candidate fix for #112 and is gated on a path measurement the reporter is
+running, so it belongs to the release after this one.
+
+**Also newly filed from #112's attached log**, none of them related to the
+streaming failure and all of them real: **GA-20** (62 reads fail because a
+GigE Vision timestamp is a `u64` and our integer model is `i64` — those
+features are unreadable, not merely mis-parsed), **TC-21** (62 `BAD_ALIGNMENT`
+on event registers; #35 fixed the READMEM *count*, this is the *address*), and
+**ST-21** (Studio bulk-reads command-backed registers). One user's log, three
+defects, 297 WARN lines in a single session.
 
 **The ordering argument is the evidence hierarchy, not novelty.** Everything in
 this phase came from users running hardware this project does not have — a JAI
