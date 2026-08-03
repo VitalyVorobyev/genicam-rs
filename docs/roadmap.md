@@ -15,22 +15,19 @@ construct in the vendor corpus, or point at the user report, before ranking it.
 This roadmap applies that rule throughout, which is why several items moved
 between phases relative to the previous revision.
 
-## Phase 0 — Ship 0.4.0 (immediate)
+## Phase 0 — 0.4.0, shipped
 
-0.3.1 was tagged on 2026-07-31, once #70 confirmed #72's `#[cfg(windows)]`
-acquisition fix against a real camera — the one thing it was gated on, and
-the one thing no machine here can test.
+**0.4.0 was tagged on 2026-07-31 at `41dee23`, and this phase is closed.**
 
-The lesson worth carrying forward is the shape of that gate, not its outcome:
-a green CI on a platform-conditional fix confirms nothing, and the release
-waited on a user with the hardware rather than on our own confidence.
-
-**The follow-up release is 0.4.0, not the 0.3.2 this phase used to name, and
-that question is now settled** (REL-07). Removing `StreamBuilder::auto_packet_size`
-and the Python `open_stream(auto_packet_size=)` argument, and adding variants to
-public enums, are breaking under semver; Cargo reads `^0.3` as any 0.3.x, so a
-patch would break dependents on their next `cargo update`. Phase 5 renumbers to
-0.5.0 as a consequence — see its heading below. Its contents:
+Two lessons are worth carrying past it. The first is the shape of the gate on
+0.3.1: it waited on a user with the hardware rather than on our own confidence,
+because a green CI on a platform-conditional fix confirms nothing. The second
+is that 0.4.0 had to be a minor bump, not the 0.3.2 originally planned —
+removing `StreamBuilder::auto_packet_size` and the Python
+`open_stream(auto_packet_size=)` argument, and adding variants to public enums,
+are all breaking under semver, and Cargo reads `^0.3` as any 0.3.x, so a patch
+would have broken dependents on their next `cargo update`. Phase 5 renumbered to
+0.5.0 as a consequence — see its heading below. What shipped:
 
 - **TC-17 and TC-20**, which landed after the 0.3.1 tag: the GVSP data trailer
   read at offset 2 of an 8-byte payload, and a Linux link-local discovery
@@ -55,6 +52,31 @@ patch would break dependents on their next `cargo update`. Phase 5 renumbers to
 
 Retest status is now settled and should not be restated more favourably than it
 is: **#45 and #57 confirmed on 0.3.0; #35 was asked and never answered.**
+
+## Phase 0b — 0.4.1, the first thing after 0.4.0
+
+Three items, all additive, so this is a patch release rather than another
+minor: nothing is removed and both `--iface` spellings are accepted, so no
+caller that worked stops working.
+
+- **DX-10** (#109) — `--iface` meant a host IPv4 address in `viva-camctl`, an
+  OS interface name in `viva-service` and the Python bindings, and one or the
+  other depending on which example you ran. One `IfaceSelector` now takes
+  either spelling everywhere, and an unresolvable value lists the interfaces
+  the library can see — the Windows GUID a reporter otherwise has to hunt for.
+- **SVC-06** — found while doing DX-10, not reported: `viva-service` resolved
+  the receive interface by looking the *camera's* address up among the host's
+  own, so it could not stream without `--iface` at all. Third instance of the
+  #70 confusion, and the last site that still had it.
+- **ST-19** (#110) — Studio's Command `Execute` renders as plain text because
+  the button carries no class. Studio ships separately, so this does not gate
+  the crate release.
+
+**The ordering argument is the evidence hierarchy, not novelty.** #109 and #110
+both come from the reporter behind #57 and #70 — the one person outside this
+repo running real hardware against this stack — so they outrank the conformance
+work queued behind them. After 0.4.1 the queue returns to Phase 1: **TC-04**
+(#63) first, since it is the structural item the rest of that phase rests on.
 
 ## Phase 1 — Transport conformance (ADR-0019)
 

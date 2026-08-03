@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+use viva_gige::nic::IfaceSelector;
 
 use crate::cmd_bench::{self, BenchArgs};
 use crate::cmd_chunks;
@@ -26,9 +27,10 @@ pub struct Cli {
     /// Output JSON where applicable
     #[arg(long)]
     json: bool,
-    /// Preferred interface IPv4 address
+    /// Host interface to use, named either by one of its IPv4 addresses
+    /// (`169.254.105.106`) or by its OS name (`en0`, or a GUID on Windows)
     #[arg(long)]
-    iface: Option<Ipv4Addr>,
+    iface: Option<IfaceSelector>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -39,8 +41,9 @@ pub enum Cmd {
     List {
         #[arg(long, default_value_t = 1000)]
         timeout_ms: u64,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
     },
     /// Read a feature via GenApi NodeMap
     Get {
@@ -58,8 +61,9 @@ pub enum Cmd {
         ip: Option<Ipv4Addr>,
         #[arg(long)]
         index: Option<usize>,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
         /// Write to this file instead of stdout
         #[arg(long)]
         out: Option<PathBuf>,
@@ -70,8 +74,9 @@ pub enum Cmd {
         ip: Option<Ipv4Addr>,
         #[arg(long)]
         index: Option<usize>,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
         /// Write the bundle here. `.txt` because GitHub rejects `.xml`
         /// attachments.
         #[arg(long, default_value = "viva-report.txt")]
@@ -102,8 +107,9 @@ pub enum Cmd {
         ip: Option<Ipv4Addr>,
         #[arg(long)]
         index: Option<usize>,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
         #[arg(long, default_value = "unicast")]
         mode: String,
         #[arg(long)]
@@ -126,8 +132,9 @@ pub enum Cmd {
         ip: Option<Ipv4Addr>,
         #[arg(long)]
         index: Option<usize>,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
         #[arg(long, default_value_t = 10020)]
         port: u16,
         #[arg(long, default_value = "FrameStart,ExposureEnd")]
@@ -152,8 +159,9 @@ pub enum Cmd {
         ip: Option<Ipv4Addr>,
         #[arg(long)]
         index: Option<usize>,
+        /// Host interface, by IPv4 address or by OS name
         #[arg(long)]
-        iface: Option<Ipv4Addr>,
+        iface: Option<IfaceSelector>,
         #[arg(long, default_value = "unicast")]
         mode: String,
         #[arg(long)]

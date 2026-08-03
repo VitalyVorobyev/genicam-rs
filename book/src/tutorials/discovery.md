@@ -50,18 +50,26 @@ model. If nothing appears:
 
 ### 1.2. Selecting an interface explicitly
 
-On multi-NIC systems, tell `viva-camctl` which interface to use. The value is
-the IPv4 address of your **host** NIC on the camera network, not the camera's:
+On multi-NIC systems, tell `viva-camctl` which interface to use. `--iface`
+names your **host** NIC — never the camera — and accepts either of the two
+ways a host NIC is normally identified:
 
 ```bash
-cargo run -p viva-camctl -- list --iface 192.168.0.5
+cargo run -p viva-camctl -- list --iface 192.168.0.5   # one of its IPv4 addresses
+cargo run -p viva-camctl -- list --iface eth0          # its OS name
 ```
 
+Both spellings work in `viva-service`, in the Python `iface=` argument and in
+the Rust examples too, so the value you found once carries across the tools.
+Use whichever you have: on Windows an interface name is a GUID like
+`{6394C55F-F630-4BC7-92D2-7AC320C73D1C}`, which is far harder to obtain than
+the address.
+
 If you are not sure which NIC to use, `ip addr` (Linux), `ifconfig` (macOS) or
-`ipconfig` (Windows) will tell you. The discovery output also names each
-interface the library itself can see, which is not always the same set the OS
-reports — an interface missing from that list is invisible to discovery no
-matter what anything else says.
+`ipconfig` (Windows) will tell you — and so will an unresolvable `--iface`,
+which lists every interface the library can see. That list matters on its own:
+it is not always the same set the OS reports, and an interface missing from it
+is invisible to discovery no matter what anything else says.
 
 If discovery works with `--iface` but not without it, your machine has several
 active interfaces and the automatic choice is not the one you expect.
@@ -81,11 +89,8 @@ cargo run -p viva-camctl -- --json list
 ```bash
 cargo run -p viva-genicam --example list_cameras
 cargo run -p viva-genicam --example list_cameras -- --iface eth0
+cargo run -p viva-genicam --example list_cameras -- --iface 192.168.0.5
 ```
-
-Note that the two `--iface` flags take different things: `viva-camctl` wants the
-host NIC's **IPv4 address**, this example wants its **name**. That is worth
-knowing before you conclude your interface is broken.
 
 The part that matters is short:
 
@@ -112,7 +117,7 @@ loopback scan that can only produce noise.
 Record two things — you will reuse them in every later tutorial:
 
 - The camera's IP address (e.g. `192.168.0.10`) → `--ip 192.168.0.10`
-- The host NIC you used (e.g. `192.168.0.5`) → `--iface 192.168.0.5`
+- The host NIC you used (e.g. `192.168.0.5` or `eth0`) → `--iface 192.168.0.5`
 
 If several cameras answer, label them physically now rather than guessing later.
 

@@ -58,15 +58,19 @@ pub struct DeviceHandle {
     raw_xml: String,
     device_id: String,
     info: gige::DeviceInfo,
-    /// Network interface name for stream setup (e.g. "en0").
-    iface_name: Option<String>,
+    /// Host interface for stream setup, already resolved.
+    ///
+    /// Held resolved rather than as a name: the round trip through a string
+    /// is what let the receive path drift into resolving it a second way, and
+    /// wrongly (backlog `SVC-06`).
+    iface: Option<Iface>,
 }
 
 impl DeviceHandle {
     /// Connect to a discovered device and return a handle.
     pub async fn connect(
         info: &gige::DeviceInfo,
-        iface_name: Option<String>,
+        iface: Option<Iface>,
     ) -> Result<Self, GenicamError> {
         let (camera, xml) = connect_gige_with_xml(info).await?;
         let device_id = Self::derive_device_id(info);
@@ -75,7 +79,7 @@ impl DeviceHandle {
             raw_xml: xml,
             device_id,
             info: info.clone(),
-            iface_name,
+            iface,
         })
     }
 
@@ -101,8 +105,9 @@ impl DeviceHandle {
         &self.info
     }
 
-    pub fn iface_name(&self) -> Option<&str> {
-        self.iface_name.as_deref()
+    /// The host interface `--iface` selected, if the operator named one.
+    pub fn iface(&self) -> Option<&Iface> {
+        self.iface.as_ref()
     }
 
     /// Build a GVSP stream using the CCP-holding device.

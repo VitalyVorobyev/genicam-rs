@@ -393,13 +393,34 @@ async fn frame_loop(
     info!(device_id, frames_acquired, "frame loop exited");
 }
 
+/// The host interface that will receive this device's GVSP traffic.
+///
+/// With `--iface` the operator has already chosen, and the handle carries the
+/// interface they chose, resolved once.
+///
+/// Without it, the OS is asked which local interface routes to the camera.
+/// This arm used to call `Iface::from_ipv4(device.info().ip)` — the camera's
+/// address handed to the *host*-address lookup, which can only ever fail with
+/// `no interface with IPv4 <camera-ip>`. So `viva-service` could not stream
+/// without `--iface` at all. That is the same confusion as #70 (`REL-04` in
+/// the studio backend, `DX-08` in `viva-camctl`); this was the third copy and
+/// the last one left (backlog `SVC-06`).
 fn resolve_iface(device: &DeviceHandle) -> Result<Iface, String> {
-    match device.iface_name() {
-        Some(name) => Iface::from_system(name).map_err(|e| e.to_string()),
-        None => {
-            // Try to resolve the interface from the camera's IP.
-            Iface::from_ipv4(device.info().ip).map_err(|e| e.to_string())
-        }
+    receive_iface(device.iface(), device.info().ip)
+}
+
+/// The decision behind [`resolve_iface`], separated so it can be tested
+/// without a camera — which matters here, because the fake camera cannot
+/// reproduce the defect this guards (see the test).
+fn receive_iface(chosen: Option<&Iface>, camera_ip: std::net::Ipv4Addr) -> Result<Iface, String> {
+    match chosen {
+        Some(iface) => Ok(iface.clone()),
+        None => Iface::from_remote_ipv4(camera_ip).map_err(|e| {
+            format!(
+                "probe which local interface routes to {camera_ip}: {e} \
+                 (pass --iface <HOST-IP|NAME> to choose one explicitly)"
+            )
+        }),
     }
 }
 
@@ -459,5 +480,47 @@ pub async fn publish_image_meta<D: crate::device::DeviceOps>(
         } else {
             info!(device_id, width, height, "published image metadata");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    /// Backlog `SVC-06`. Without `--iface` the receive interface must come
+    /// from a route probe, not from looking the *camera's* address up among
+    /// the host's own — a lookup that can only ever fail.
+    ///
+    /// `127.0.0.2` is the whole test: it is routable (loopback answers for the
+    /// entire `127/8`) but it is not an address any interface reports, so the
+    /// two functions give visibly different answers. The camera we test
+    /// against cannot show this, because it lives on `127.0.0.1`, which *is* a
+    /// host address — so the broken lookup succeeds there by coincidence. That
+    /// is why this is a unit test and not an e2e one.
+    #[test]
+    fn no_iface_probes_the_route_rather_than_looking_up_the_camera_address() {
+        let camera_ip = Ipv4Addr::new(127, 0, 0, 2);
+
+        // What the code used to do.
+        assert!(
+            Iface::from_ipv4(camera_ip).is_err(),
+            "a camera address is not a host address; if this ever succeeds \
+             the test has stopped proving anything"
+        );
+
+        // What it does now.
+        let iface = receive_iface(None, camera_ip).expect("route probe should resolve");
+        assert_eq!(iface.ipv4(), Some(Ipv4Addr::LOCALHOST));
+    }
+
+    /// An explicit `--iface` is honoured verbatim; the camera's address is not
+    /// consulted at all.
+    #[test]
+    fn an_explicit_iface_is_used_as_given() {
+        let chosen = Iface::from_ipv4(Ipv4Addr::LOCALHOST).expect("loopback iface");
+        let resolved = receive_iface(Some(&chosen), Ipv4Addr::new(192, 0, 2, 1))
+            .expect("an explicit interface needs no probe");
+        assert_eq!(resolved, chosen);
     }
 }

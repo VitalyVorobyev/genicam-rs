@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use tracing::warn;
-use viva_genicam::gige::nic::Iface;
+use viva_genicam::gige::nic::{Iface, IfaceSelector};
 use viva_genicam::gige::stats::StreamStats;
 use viva_genicam::pfnc::PixelFormat;
 use viva_genicam::{Frame, FrameStream, StreamBuilder, connect_gige};
@@ -29,7 +29,7 @@ struct Args {
 
 fn print_usage() {
     eprintln!(
-        "usage: grab_gige --iface <name> [--packet-size <bytes>] [--multicast <ip>] [--port <n>] [--save <n>] [--rgb]"
+        "usage: grab_gige --iface <HOST-IP|NAME> [--packet-size <bytes>] [--multicast <ip>] [--port <n>] [--save <n>] [--rgb]"
     );
 }
 
@@ -45,10 +45,11 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--iface" => {
-                let name = args
+                let value = args
                     .next()
                     .ok_or_else(|| "--iface requires an argument".to_string())?;
-                iface = Some(Iface::from_system(&name)?);
+                // Either an IPv4 address or an OS interface name (#109).
+                iface = Some(value.parse::<IfaceSelector>().unwrap().resolve()?);
             }
             "--packet-size" => {
                 let value = args
@@ -102,7 +103,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let iface = match args.iface.clone() {
         Some(iface) => iface,
         None => {
-            println!("Please specify the capture interface using --iface <name>.");
+            println!("Please specify the capture interface using --iface <HOST-IP|NAME>.");
             print_usage();
             return Ok(());
         }

@@ -7,6 +7,7 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use viva_genicam::gige::nic::IfaceSelector;
 use viva_service::config::Cli;
 use viva_service::device::DeviceHandle;
 use viva_service::{acquisition, nodes, status, xml};
@@ -74,16 +75,35 @@ async fn run_discovery_loop(
     session: Arc<zenoh::Session>,
     discovery_timeout: std::time::Duration,
     discovery_interval: std::time::Duration,
-    iface: Option<String>,
+    iface: Option<IfaceSelector>,
     mut shutdown: watch::Receiver<bool>,
     active_devices: Arc<tokio::sync::Mutex<HashMap<String, Vec<tokio::task::JoinHandle<()>>>>>,
 ) {
     use viva_genicam::gige;
 
     loop {
+        // Resolve `--iface` on every pass rather than once at startup, so an
+        // interface that comes up after the service does is still picked up.
+        // A selector that resolves to nothing is logged and retried on the
+        // next tick, not fatal — and the error carries the interfaces this
+        // host reports, which is what a Windows operator needs to find the
+        // GUID. It must not fall through to a broadcast scan: the operator
+        // named an interface, and scanning every other one instead would be
+        // answering a question they did not ask.
+        let resolved = match iface.as_ref().map(IfaceSelector::resolve).transpose() {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                error!(error = %e, "--iface could not be resolved, retrying");
+                if wait_or_shutdown(&mut shutdown, discovery_interval).await {
+                    return;
+                }
+                continue;
+            }
+        };
+
         // Discover cameras.
-        let devices = match &iface {
-            Some(name) => gige::discover_on_interface(discovery_timeout, name).await,
+        let devices = match &resolved {
+            Some(iface) => gige::discover_on_interface(discovery_timeout, iface.name()).await,
             None => gige::discover(discovery_timeout).await,
         };
 
@@ -109,7 +129,7 @@ async fn run_discovery_loop(
                     }
 
                     info!(device_id, ip = %dev_info.ip, "new camera, connecting...");
-                    match DeviceHandle::connect(&dev_info, iface.clone()).await {
+                    match DeviceHandle::connect(&dev_info, resolved.clone()).await {
                         Ok(handle) => {
                             let handle = Arc::new(handle);
                             info!(device_id, "connected, spawning service tasks");
@@ -156,13 +176,26 @@ async fn run_discovery_loop(
             }
         }
 
-        tokio::select! {
-            _ = tokio::time::sleep(discovery_interval) => {}
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    info!("discovery loop shutting down");
-                    return;
-                }
+        if wait_or_shutdown(&mut shutdown, discovery_interval).await {
+            return;
+        }
+    }
+}
+
+/// Sleep until the next discovery pass, returning `true` if the service is
+/// shutting down and the loop should stop instead.
+async fn wait_or_shutdown(
+    shutdown: &mut watch::Receiver<bool>,
+    interval: std::time::Duration,
+) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(interval) => false,
+        _ = shutdown.changed() => {
+            if *shutdown.borrow() {
+                info!("discovery loop shutting down");
+                true
+            } else {
+                false
             }
         }
     }

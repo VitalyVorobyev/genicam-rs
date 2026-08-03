@@ -13,7 +13,7 @@ use viva_genapi_xml::XmlError;
 use viva_genicam::genapi::NodeMap;
 use viva_genicam::gige::GVCP_PORT;
 use viva_genicam::gige::gvsp::{self, GvspPacket};
-use viva_genicam::gige::nic::Iface;
+use viva_genicam::gige::nic::IfaceSelector;
 use viva_genicam::{Camera, Frame, GigeRegisterIo, StreamBuilder, StreamDest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ enum DestMode {
 #[derive(Debug, Clone)]
 struct Args {
     duration: Duration,
-    iface: Ipv4Addr,
+    iface: IfaceSelector,
     mode: DestMode,
     group: Option<Ipv4Addr>,
     port: Option<u16>,
@@ -50,7 +50,7 @@ struct BenchReport {
 
 fn print_usage() {
     eprintln!(
-        "usage: soak_bench --duration <Ns> --iface <IPv4> --dest <unicast|multicast> [--group <IPv4> --port <n>] [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--json <path>]"
+        "usage: soak_bench --duration <Ns> --iface <HOST-IP|NAME> --dest <unicast|multicast> [--group <IPv4> --port <n>] [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--json <path>]"
     );
 }
 
@@ -95,8 +95,9 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--iface" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| "--iface requires an IPv4 address".to_string())?;
-                iface = Some(value.parse()?);
+                    .ok_or_else(|| "--iface requires a host IP or interface name".to_string())?;
+                // Either spelling, as everywhere else (#109).
+                iface = Some(value.parse::<IfaceSelector>().unwrap());
             }
             "--dest" => {
                 let value = args
@@ -196,12 +197,12 @@ struct BlockState {
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let args = parse_args()?;
-    let iface = Iface::from_ipv4(args.iface)?;
+    let iface = args.iface.resolve()?;
 
     println!("GigE Vision soak bench");
     println!("  duration: {:?}", args.duration);
     println!("  interface: {} (index {})", iface.name(), iface.index());
-    println!("  interface IPv4: {}", args.iface);
+    println!("  interface IPv4: {:?}", iface.ipv4());
     println!("  destination: {:?}", args.mode);
     if let Some(group) = args.group {
         println!("  multicast group: {group}");
@@ -270,7 +271,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut stream_device = viva_genicam::gige::GigeDevice::open(control_addr).await?;
     let dest = match args.mode {
         DestMode::Unicast => StreamDest::Unicast {
-            dst_ip: args.iface,
+            // The camera streams *to* the host, so this is the resolved
+            // interface's own address — not whatever string `--iface` was
+            // spelled with.
+            dst_ip: iface
+                .ipv4()
+                .ok_or_else(|| format!("interface {} has no IPv4 address", iface.name()))?,
             dst_port: args.port.unwrap_or(0),
         },
         DestMode::Multicast => StreamDest::Multicast {

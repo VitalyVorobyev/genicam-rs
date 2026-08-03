@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--iface` accepts a host IPv4 address *or* an OS interface name, in every
+  tool** (backlog `DX-10`, [#109](https://github.com/VitalyVorobyev/viva-genicam/issues/109)).
+  It previously meant a different thing in each: `viva-camctl` took the host
+  NIC's IPv4 address and rejected a name, while `viva-service` and the Python
+  `iface=` argument took a name and rejected an address. A value obtained with
+  one tool was not a legal argument to the next — and on Windows the name is a
+  GUID like `{6394C55F-F630-4BC7-92D2-7AC320C73D1C}`, the spelling a user is
+  least able to supply.
+
+  The new `viva_gige::nic::IfaceSelector` parses an IPv4 literal first and
+  takes anything else as an interface name; the two cannot collide, since no
+  interface name parses as an address. Every `--iface` and `iface=` in the
+  workspace now goes through it, including the six Rust examples, which had
+  split the same way four-to-two. **Nothing that worked before stops working**
+  — this widens what is accepted, it does not move it.
+
+  A selector that resolves to nothing now lists every interface the library can
+  see, with its addresses. That is the part that answers the report: the old
+  `no interface with IPv4 169.254.105.106` could not tell anyone what their
+  adapter was actually called.
+
+### Fixed
+
+- **`viva-service` could not stream without `--iface`** (backlog `SVC-06`).
+  It resolved the receive interface with `Iface::from_ipv4(camera_ip)` — the
+  camera's address handed to the lookup that searches the *host's* own
+  addresses — so on any real network it failed with `no interface with IPv4
+  <camera-ip>` and streaming never started. It now probes which local
+  interface routes to the camera, matching `viva-camctl` and the Studio
+  embedded backend.
+
+  This is the same confusion as [#70](https://github.com/VitalyVorobyev/viva-genicam/issues/70)
+  for the third time — the studio backend was fixed in 0.3.1 and `viva-camctl`
+  in 0.4.0, and `Iface::from_remote_ipv4` was added *for this case* — so
+  `DeviceHandle` now carries a resolved interface rather than a name, leaving
+  no second place to re-resolve it differently. Note that the fake camera
+  cannot reproduce this and never could: it lives on `127.0.0.1`, which *is* a
+  host address, so the broken lookup succeeds there by coincidence. The
+  regression test uses `127.0.0.2` — routable, but on no interface.
+
 ## [0.4.0] - 2026-07-31
 
 A minor bump rather than the 0.3.2 the roadmap planned. This release removes

@@ -72,7 +72,7 @@ For high throughput or separation from office traffic:
 Characteristics:
 - Camera traffic isolated from general network.
 - Easier to tune MTU, QoS, and firewall rules.
-- In discovery and streaming, you may need to specify --iface <host-ip>.
+- In discovery and streaming, you may need to specify --iface (see §7).
 
 Recommended for:
 - High data rates.
@@ -359,10 +359,16 @@ Monitor:
 ## 7. Using --iface and discovery quirks
 
 On systems with more than one active NIC, automatic interface selection might
-pick the wrong one.
-- In viva-camctl, use --iface <host-ip> to force the correct NIC.
-- In Rust examples, pass the desired local address when building the context
-or stream (see the genicam and viva-gige crate chapters for details).
+pick the wrong one. `--iface` forces the choice, and means the same thing
+everywhere: in `viva-camctl`, in `viva-service`, in the Python `iface=`
+argument and in the Rust examples. It names the **host** NIC, by either
+- one of its IPv4 addresses — `--iface 192.168.0.5`, or
+- its OS name — `--iface eth0`, or a GUID like
+  `{6394C55F-F630-4BC7-92D2-7AC320C73D1C}` on Windows.
+
+Use whichever you have; the address is usually easier to find, and on Windows
+much easier. A value that resolves to nothing prints every interface the
+library can see, which is the fastest way to learn the GUID.
 
 If discovery only works when you specify --iface, but not without it:
 - You likely have:

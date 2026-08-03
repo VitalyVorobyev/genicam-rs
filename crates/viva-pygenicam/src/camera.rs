@@ -10,7 +10,7 @@ use if_addrs::{get_if_addrs, IfAddr};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use viva_genicam::gige::nic::Iface;
+use viva_genicam::gige::nic::{Iface, IfaceSelector};
 use viva_genicam::{
     connect_gige_with_xml, connect_u3v_with_xml, Camera, GigeRegisterIo, U3vRegisterIo,
 };
@@ -69,8 +69,19 @@ pub(crate) struct PyCamera {
     pub(crate) inner: CameraInner,
 }
 
-fn iface_from_str(name: &str) -> PyResult<Iface> {
-    Iface::from_system(name).map_err(|e| parse_error(format!("iface '{name}': {e}")))
+/// Resolve the `iface=` argument, however the caller spelled it.
+///
+/// An IPv4 address and an OS interface name are both accepted, matching
+/// `viva-camctl --iface` and `viva-service --iface`. Before this the Python
+/// surface took the name only, so the address a user had just read off
+/// `discover()` was not a legal argument to `connect_gige()`
+/// ([#109](https://github.com/VitalyVorobyev/viva-genicam/issues/109)).
+pub(crate) fn iface_from_str(selector: &str) -> PyResult<Iface> {
+    selector
+        .parse::<IfaceSelector>()
+        .expect("IfaceSelector parsing is infallible")
+        .resolve()
+        .map_err(|e| parse_error(format!("iface '{selector}': {e}")))
 }
 
 #[pyfunction]

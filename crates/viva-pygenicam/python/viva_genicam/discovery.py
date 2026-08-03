@@ -91,7 +91,11 @@ def discover(
 
     Args:
         timeout_ms: How long to wait for responses.
-        iface: If given, restrict discovery to the named NIC (e.g. ``"en0"``).
+        iface: If given, restrict discovery to one host interface, named
+            either by one of its IPv4 addresses (``"169.254.105.106"``) or by
+            its OS name (``"en0"``, or a GUID on Windows). ``viva-camctl
+            --iface`` and ``viva-service --iface`` accept the same two
+            spellings.
         all: If True, enumerate all system interfaces and merge results.
 
     Returns:

@@ -19,12 +19,14 @@ use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 use tracing::info;
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 pub struct XmlArgs {
     pub ip: Option<Ipv4Addr>,
     pub index: Option<usize>,
-    pub iface: Option<Ipv4Addr>,
+    pub iface: Option<IfaceSelector>,
     pub out: Option<PathBuf>,
 }
 
@@ -36,7 +38,7 @@ pub async fn run(args: XmlArgs) -> Result<()> {
         out,
     } = args;
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(ip, index, iface, timeout).await?;
+    let device = common::select_device(ip, index, iface.as_ref(), timeout).await?;
     info!(ip = %device.ip, "fetching GenApi XML");
 
     let control = Arc::new(Mutex::new(common::open_control(&device).await?));

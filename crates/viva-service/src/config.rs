@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::time::Duration;
+use viva_genicam::gige::nic::IfaceSelector;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -7,9 +8,11 @@ use std::time::Duration;
     about = "GenICam camera service with Zenoh API"
 )]
 pub struct Cli {
-    /// Network interface for camera discovery (e.g. "en0", "eth0").
+    /// Host interface for camera discovery, named either by one of its IPv4
+    /// addresses (`169.254.105.106`) or by its OS name (`en0`, `eth0`, or a
+    /// GUID on Windows). `viva-camctl --iface` accepts the same two spellings.
     #[arg(long)]
-    pub iface: Option<String>,
+    pub iface: Option<IfaceSelector>,
 
     /// Camera discovery timeout in milliseconds.
     #[arg(long, default_value_t = 2000)]

@@ -45,8 +45,10 @@ cargo run -p viva-camctl -- stream \
   --ip 192.168.0.10 --iface 192.168.0.5 --duration-s 10
 ```
 
-`--iface` is the IPv4 address of the **host** NIC. Without `--duration-s` the
-stream runs until Ctrl+C.
+`--iface` names the **host** NIC, either by one of its IPv4 addresses or by its
+OS name (`eth0`, or a GUID on Windows) — and it is optional: omit it and the OS
+is asked which interface routes to `--ip`. Without `--duration-s` the stream
+runs until Ctrl+C.
 
 Once a second you get a progress line, and a summary at the end:
 
@@ -61,7 +63,7 @@ If no frames arrive at all:
   the control channel exclusively).
 - Confirm the host firewall permits inbound UDP on the stream port — `10040` by
   default, changeable with `--port`.
-- Confirm the `--iface` address is one the camera can actually reach.
+- Confirm the `--iface` interface is one the camera can actually reach.
 
 ### 2.2. Saving frames
 

@@ -5,6 +5,8 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use tracing::{info, warn};
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 #[derive(Serialize)]
@@ -27,24 +29,23 @@ fn parse_events(csv: &str) -> Vec<String> {
 pub async fn run(
     ip: Option<Ipv4Addr>,
     index: Option<usize>,
-    iface: Option<Ipv4Addr>,
+    iface: Option<IfaceSelector>,
     port: u16,
     enable: String,
     count: u32,
     json: bool,
 ) -> Result<()> {
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(ip, index, iface, timeout).await?;
+    let device = common::select_device(ip, index, iface.as_ref(), timeout).await?;
 
     // The camera sends events *to* this address, so it must be the host's, not
     // the camera's. With no --iface, probe which local interface routes there
-    // rather than refusing to run (backlog DX-08).
-    let local_ip = match iface {
-        Some(ip) => ip,
-        None => common::resolve_receive_iface(None, device.ip)?
-            .ipv4()
-            .ok_or_else(|| anyhow!("interface routing to {} has no IPv4 address", device.ip))?,
-    };
+    // rather than refusing to run (backlog DX-08). `--iface` no longer *is*
+    // the address — it may name the interface instead — so it is resolved here
+    // rather than used verbatim (backlog DX-10).
+    let local_ip = common::resolve_receive_iface(iface.as_ref(), device.ip)?
+        .ipv4()
+        .ok_or_else(|| anyhow!("interface routing to {} has no IPv4 address", device.ip))?;
     info!(ip = %device.ip, %local_ip, port, "configuring events");
     let mut camera = common::open_camera(&device)
         .await

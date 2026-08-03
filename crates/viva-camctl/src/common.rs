@@ -18,7 +18,7 @@ use viva_genicam::{Camera, GigeRegisterIo};
 use viva_gige::DeviceInfo;
 use viva_gige::discover_on_interface;
 use viva_gige::gvcp::GigeDevice;
-use viva_gige::nic::Iface;
+use viva_gige::nic::{Iface, IfaceSelector};
 use viva_gige::{GVCP_PORT, discover};
 
 pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 500;
@@ -32,10 +32,10 @@ pub fn format_mac(mac: &[u8; 6]) -> String {
 
 pub async fn discover_devices(
     timeout: Duration,
-    iface_ip: Option<Ipv4Addr>,
+    iface: Option<&IfaceSelector>,
 ) -> Result<Vec<DeviceInfo>> {
-    let devices = if let Some(ip) = iface_ip {
-        let iface = Iface::from_ipv4(ip).context("resolve interface from IPv4 address")?;
+    let devices = if let Some(selector) = iface {
+        let iface = resolve_iface_selector(selector)?;
         discover_on_interface(timeout, iface.name())
             .await
             .context("discover devices on interface")?
@@ -48,19 +48,19 @@ pub async fn discover_devices(
 pub async fn select_device(
     ip: Option<Ipv4Addr>,
     index: Option<usize>,
-    iface_ip: Option<Ipv4Addr>,
+    iface: Option<&IfaceSelector>,
     timeout: Duration,
 ) -> Result<DeviceInfo> {
     match (ip, index) {
         (Some(ip), None) => {
-            let mut devices = discover_devices(timeout, iface_ip).await?;
+            let mut devices = discover_devices(timeout, iface).await?;
             if let Some(found) = devices.drain(..).find(|dev| dev.ip == ip) {
                 return Ok(found);
             }
             Ok(DeviceInfo::from_ip(ip))
         }
         (None, Some(idx)) => {
-            let devices = discover_devices(timeout, iface_ip).await?;
+            let devices = discover_devices(timeout, iface).await?;
             let device = devices
                 .into_iter()
                 .nth(idx)
@@ -127,13 +127,25 @@ pub async fn open_control(device: &DeviceInfo) -> Result<GigeDevice> {
         .with_context(|| format!("connect GVCP control channel at {}", device.ip))
 }
 
+/// Resolve `--iface` against the host, whichever way the user spelled it.
+///
+/// The spelling is [`IfaceSelector`]'s problem, not this crate's: an IPv4
+/// address and an OS interface name are both accepted here, in `viva-service`
+/// and in the Python bindings, because a user who found a camera with one tool
+/// should be able to stream it with the next
+/// ([#109](https://github.com/VitalyVorobyev/viva-genicam/issues/109)).
+pub fn resolve_iface_selector(selector: &IfaceSelector) -> Result<Iface> {
+    selector
+        .resolve()
+        .with_context(|| format!("resolve host interface '{selector}'"))
+}
+
 /// Resolve the local interface that will receive packets from `camera_ip`.
 ///
-/// `--iface` names a **host** interface address, so it can only be resolved
-/// with [`Iface::from_ipv4`]. Without it, ask the OS which local interface
-/// routes to the camera instead of refusing to run: `list`, `xml`, `report`,
-/// `get`, `set` and `set-ip` all tolerate a missing `--iface` and fall back to
-/// broadcast discovery, and `stream`, `bench` and `events` were the exceptions.
+/// Without `--iface`, ask the OS which local interface routes to the camera
+/// instead of refusing to run: `list`, `xml`, `report`, `get`, `set` and
+/// `set-ip` all tolerate a missing `--iface` and fall back to broadcast
+/// discovery, and `stream`, `bench` and `events` were the exceptions.
 ///
 /// That mattered beyond consistency. `viva-camctl stream --ip <IP>` is the
 /// command our own documentation hands to anyone reporting a camera we cannot
@@ -141,27 +153,26 @@ pub async fn open_control(device: &DeviceInfo) -> Result<GigeDevice> {
 /// [`Iface::from_remote_ipv4`] — the route probe added by #72 *for this exact
 /// case*, and produced by that very issue — had no caller in this crate
 /// (backlog `DX-08`).
-pub fn resolve_receive_iface(iface_ip: Option<Ipv4Addr>, camera_ip: Ipv4Addr) -> Result<Iface> {
-    match iface_ip {
-        Some(ip) => {
-            Iface::from_ipv4(ip).with_context(|| format!("resolve host interface with IPv4 {ip}"))
-        }
+///
+/// Note which side of the split each function serves: the selector names a
+/// **host** interface, while `camera_ip` is **remote**, so the fallback must
+/// be `from_remote_ipv4` and never `from_ipv4`. Passing a camera address to
+/// `from_ipv4` is the #70 defect, and `viva-service` still had a copy of it
+/// (backlog `SVC-06`).
+pub fn resolve_receive_iface(iface: Option<&IfaceSelector>, camera_ip: Ipv4Addr) -> Result<Iface> {
+    match iface {
+        Some(selector) => resolve_iface_selector(selector),
         None => Iface::from_remote_ipv4(camera_ip).with_context(|| {
             format!(
                 "probe which local interface routes to {camera_ip} \
-                 (pass --iface <HOST-IP> to choose one explicitly)"
+                 (pass --iface <HOST-IP|NAME> to choose one explicitly)"
             )
         }),
     }
 }
 
-pub fn resolve_iface(ip: Option<Ipv4Addr>) -> Result<Option<Iface>> {
-    if let Some(ip) = ip {
-        let iface = Iface::from_ipv4(ip).context("resolve interface from IPv4 address")?;
-        Ok(Some(iface))
-    } else {
-        Ok(None)
-    }
+pub fn resolve_iface(iface: Option<&IfaceSelector>) -> Result<Option<Iface>> {
+    iface.map(resolve_iface_selector).transpose()
 }
 
 pub fn print_json<T: Serialize>(value: &T) -> Result<()> {

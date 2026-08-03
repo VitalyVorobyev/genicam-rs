@@ -13,13 +13,15 @@ use viva_genicam::gige::gvsp::{self, GvspPacket};
 use viva_genicam::pfnc::PixelFormat;
 use viva_genicam::{Frame, StreamBuilder, StreamDest, parse_chunk_bytes};
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 #[derive(Debug, Clone)]
 pub struct BenchArgs {
     pub ip: Option<Ipv4Addr>,
     pub index: Option<usize>,
-    pub iface: Option<Ipv4Addr>,
+    pub iface: Option<IfaceSelector>,
     pub mode: String,
     pub group: Option<Ipv4Addr>,
     pub port: u16,
@@ -50,7 +52,7 @@ struct BlockState {
 
 pub async fn run(args: BenchArgs, emit_json: bool) -> Result<()> {
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(args.ip, args.index, args.iface, timeout).await?;
+    let device = common::select_device(args.ip, args.index, args.iface.as_ref(), timeout).await?;
     info!(ip = %device.ip, "opening camera for benchmark");
     let mut camera = common::open_camera(&device)
         .await
@@ -59,7 +61,7 @@ pub async fn run(args: BenchArgs, emit_json: bool) -> Result<()> {
         .await
         .context("open control channel for bench")?;
 
-    let iface = common::resolve_receive_iface(args.iface, device.ip)?;
+    let iface = common::resolve_receive_iface(args.iface.as_ref(), device.ip)?;
     let host_ip = iface
         .ipv4()
         .ok_or_else(|| anyhow!("interface {} has no IPv4 address", iface.name()))?;

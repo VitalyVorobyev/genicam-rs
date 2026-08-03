@@ -72,12 +72,10 @@ impl Drop for TestCamera {
     }
 }
 
-/// Resolve the loopback interface name (platform-independent).
-fn loopback_iface_name() -> String {
+/// Resolve the loopback interface (platform-independent).
+fn loopback_iface() -> viva_genicam::gige::nic::Iface {
     viva_genicam::gige::nic::Iface::from_ipv4(std::net::Ipv4Addr::LOCALHOST)
         .expect("loopback iface")
-        .name()
-        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +168,9 @@ async fn e2e_acquisition_roundtrip() {
         .expect("fake camera not found on loopback");
 
     // 3. Connect and create DeviceHandle.
-    let iface_name = loopback_iface_name().to_string();
+    let iface = loopback_iface();
     let handle = Arc::new(
-        DeviceHandle::connect(dev_info, Some(iface_name))
+        DeviceHandle::connect(dev_info, Some(iface))
             .await
             .expect("connect failed"),
     );
@@ -260,7 +258,7 @@ async fn e2e_double_start_rejected() {
         .unwrap();
 
     let handle = Arc::new(
-        DeviceHandle::connect(dev_info, Some(loopback_iface_name().to_string()))
+        DeviceHandle::connect(dev_info, Some(loopback_iface()))
             .await
             .unwrap(),
     );
@@ -303,7 +301,7 @@ async fn e2e_sustained_streaming() {
         .expect("fake camera not found on loopback");
 
     let handle = Arc::new(
-        DeviceHandle::connect(dev_info, Some(loopback_iface_name().to_string()))
+        DeviceHandle::connect(dev_info, Some(loopback_iface()))
             .await
             .expect("connect failed"),
     );
@@ -390,7 +388,7 @@ async fn e2e_feature_state_reflects_predicates() {
         .find(|d| d.ip == Ipv4Addr::LOCALHOST)
         .expect("fake camera not found on loopback");
 
-    let handle = DeviceHandle::connect(dev_info, Some(loopback_iface_name()))
+    let handle = DeviceHandle::connect(dev_info, Some(loopback_iface()))
         .await
         .expect("connect failed");
 
