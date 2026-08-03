@@ -177,6 +177,118 @@ async fn configure_packet_size(
     Ok(effective)
 }
 
+/// Packet size at or below which probing has nothing to discover, and the
+/// control size the probe uses to decide whether the device answers at all.
+///
+/// 1500 is the Ethernet default: a path that cannot carry it is broken in a way
+/// no negotiation can rescue.
+const PROBE_FLOOR: u32 = 1500;
+
+/// How long to wait for a test packet before calling the size unusable.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Find the largest packet size the network path will actually deliver.
+///
+/// `GevSCPSPacketSize` reports what the *device* stored, which is not what the
+/// *link* will carry. On the Vieworks FS3200T in
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112) the camera
+/// declares `Max=16366`, accepts and holds 16114, and streams nothing: the path
+/// tops out at a 9216-byte frame, so 9198 is the largest usable size. The
+/// reporter found that by bisecting by hand. The specification provides the
+/// mechanism to find it automatically — bit 31 asks the device for one test
+/// packet, bit 30 forbids fragmenting it — and we used neither.
+///
+/// **A device that does not implement test packets must not be punished for
+/// it.** Walking such a device down to 1500 would be a severe regression for
+/// every working jumbo link. So the probe first asks for a test packet at
+/// [`PROBE_FLOOR`], a size any functioning path carries: if *that* produces
+/// nothing, the device does not answer probes and the requested size is kept
+/// unchanged. Only a device that has demonstrably answered is allowed to talk
+/// us downwards.
+///
+/// The probe never increases the size, so an explicitly configured
+/// `--packet-size` is still a ceiling.
+async fn probe_packet_size(
+    device: &mut GigeDevice,
+    channel: u32,
+    socket: &UdpSocket,
+    requested: u32,
+) -> Result<u32, GenicamError> {
+    if requested <= PROBE_FLOOR {
+        return Ok(requested);
+    }
+
+    // Control probe. Establishes that this device answers at all before any
+    // negative result is allowed to mean anything.
+    if !test_packet_arrives(device, channel, socket, PROBE_FLOOR).await? {
+        debug!(
+            channel,
+            packet_size = requested,
+            "device did not answer a {PROBE_FLOOR}-byte test packet; it likely does not \
+             implement them, so the requested size stands"
+        );
+        return Ok(requested);
+    }
+
+    if test_packet_arrives(device, channel, socket, requested).await? {
+        debug!(
+            channel,
+            packet_size = requested,
+            "path carries the requested GVSP packet size"
+        );
+        return Ok(requested);
+    }
+
+    // Known good at `lo`, known bad at `hi`. Bisect to the byte: the boundary
+    // is a frame ceiling, not a round number, and landing one byte below it is
+    // the difference between a working jumbo link and 1500.
+    let (mut lo, mut hi) = (PROBE_FLOOR, requested);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if test_packet_arrives(device, channel, socket, mid).await? {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    warn!(
+        channel,
+        requested,
+        negotiated = lo,
+        "the network path did not carry a {requested}-byte GVSP test packet; negotiated down. \
+         Both the host interface and the camera accept the larger size, so the limit is the \
+         link between them"
+    );
+    Ok(lo)
+}
+
+/// Ask for one test packet of `size` and report whether it arrived.
+async fn test_packet_arrives(
+    device: &mut GigeDevice,
+    channel: u32,
+    socket: &UdpSocket,
+    size: u32,
+) -> Result<bool, GenicamError> {
+    // Discard anything already queued, so a previous probe's late arrival
+    // cannot be counted as this one's answer.
+    let mut scratch = [0u8; 2048];
+    while socket.try_recv_from(&mut scratch).is_ok() {}
+
+    device
+        .request_test_packet(channel, size)
+        .await
+        .map_err(|err| GenicamError::transport(err.to_string()))?;
+
+    let mut buf = vec![0u8; size as usize + 64];
+    match timeout(PROBE_TIMEOUT, socket.recv_from(&mut buf)).await {
+        Ok(Ok(_)) => Ok(true),
+        // A receive error here is the socket's problem, not the path's; treat
+        // it as "no answer" rather than failing the whole stream.
+        Ok(Err(_)) | Err(_) => Ok(false),
+    }
+}
+
 /// How long a stream may produce nothing before [`SilenceWatch`] speaks up.
 const SILENCE_GRACE: Duration = Duration::from_secs(3);
 
@@ -297,6 +409,7 @@ pub struct StreamBuilder<'a> {
     packet_delay: Option<u32>,
     channel: u32,
     dst_port: u16,
+    probe: bool,
 }
 
 impl<'a> StreamBuilder<'a> {
@@ -312,7 +425,23 @@ impl<'a> StreamBuilder<'a> {
             packet_delay: None,
             channel: 0,
             dst_port: 0,
+            probe: true,
         }
+    }
+
+    /// Whether to probe the path with a GVSP test packet before streaming
+    /// (default: on).
+    ///
+    /// Turning it off restores the pre-0.4.2 behaviour: whatever the camera
+    /// stored in `GevSCPSPacketSize` is assumed to reach the host. That is
+    /// wrong on any path narrower than both endpoints
+    /// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)), so
+    /// the only good reason to disable it is a device that misbehaves when
+    /// asked for a test packet — in which case please open an issue, because
+    /// the probe is written to tolerate a device that simply ignores it.
+    pub fn probe(mut self, enable: bool) -> Self {
+        self.probe = enable;
+        self
     }
 
     /// Select the interface used for receiving GVSP packets.
@@ -491,13 +620,23 @@ impl<'a> StreamBuilder<'a> {
             }
         }
 
+        // Bind before configuring, so the socket is already listening when the
+        // probe below asks the camera to send to it.
+        let source = PacketSource::Udp(Self::bind_socket(&dest, &iface, self.rcvbuf_bytes).await?);
+
         let packet_size = configure_packet_size(self.device, self.channel, packet_size).await?;
+        let packet_size = if self.probe {
+            let socket = source
+                .as_udp_socket()
+                .expect("the UDP path always has a socket");
+            probe_packet_size(self.device, self.channel, socket, packet_size).await?
+        } else {
+            packet_size
+        };
         self.device
             .set_stream_packet_delay(self.channel, packet_delay)
             .await
             .map_err(|err| GenicamError::transport(err.to_string()))?;
-
-        let source = PacketSource::Udp(Self::bind_socket(&dest, &iface, self.rcvbuf_bytes).await?);
 
         let source_filter = if dest.is_multicast() {
             None

@@ -743,7 +743,25 @@ pub struct RegisterMap {
     /// — the ADR-0019 failure mode of a fake that only agrees with its client.
     /// `None` keeps the old accept-anything behaviour.
     max_packet_size: Option<u32>,
+    /// Largest GVSP datagram this device's *path* will actually deliver.
+    ///
+    /// Distinct from [`RegisterMap::max_packet_size`], and the distinction is
+    /// the whole of [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112):
+    /// that camera declares `Max=16366`, stores 16114 without complaint, and
+    /// then streams nothing, because the link tops out at a 9216-byte frame.
+    /// A register read cannot find that; only a test packet can.
+    max_on_wire: Option<u32>,
+    /// Size requested by the most recent write with the fire-test-packet bit,
+    /// for the GVCP server to act on once it has released the register lock.
+    pending_test_packet: Option<u32>,
 }
+
+/// `GevSCPSPacketSize` bit 31: send one test packet of the requested size.
+pub const SCPS_FIRE_TEST_PACKET: u32 = 0x8000_0000;
+/// `GevSCPSPacketSize` bit 30: set do-not-fragment on transmitted packets.
+pub const SCPS_DO_NOT_FRAGMENT: u32 = 0x4000_0000;
+/// The bits of `GevSCPSPacketSize` that hold the size itself.
+pub const STREAM_PACKET_SIZE_MASK: u32 = 0xFFFF;
 
 /// Compress the GenApi XML into a single-entry ZIP archive (deflate).
 fn zip_xml_blob(xml: &[u8]) -> Vec<u8> {
@@ -899,6 +917,8 @@ impl RegisterMap {
             last_register_command: Instant::now(),
             enforce_heartbeat: false,
             max_packet_size: None,
+            max_on_wire: None,
+            pending_test_packet: None,
         }
     }
 
@@ -926,6 +946,24 @@ impl RegisterMap {
     /// register reads back lower than what was written — nothing on the wire
     /// distinguishes that from acceptance, which is the defect in
     /// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112).
+    /// Silently drop any GVSP datagram larger than `max`, as a path with a
+    /// smaller frame ceiling than either endpoint believes does.
+    ///
+    /// See [`RegisterMap::max_on_wire`].
+    pub fn set_max_on_wire(&mut self, max: u32) {
+        self.max_on_wire = Some(max);
+    }
+
+    /// The path ceiling, if one was configured.
+    pub fn max_on_wire(&self) -> Option<u32> {
+        self.max_on_wire
+    }
+
+    /// Take the size requested by the last fire-test-packet write, if any.
+    pub fn take_pending_test_packet(&mut self) -> Option<u32> {
+        self.pending_test_packet.take()
+    }
+
     pub fn set_max_packet_size(&mut self, max: u32) {
         self.max_packet_size = Some(max);
         // Apply it to whatever the register already holds, so a device
@@ -1022,6 +1060,23 @@ impl RegisterMap {
 
     /// Write `data` starting at `addr`.
     pub fn write(&mut self, addr: u64, data: &[u8]) {
+        // `GevSCPSPacketSize` carries two flags above the 16-bit size field:
+        // bit 31 fires a test packet and bit 30 sets do-not-fragment. Neither
+        // is part of the stored value — a device that echoed them back would
+        // report a packet size of over a billion — so they are recorded for
+        // the caller and stripped here.
+        let stripped;
+        let mut data = data;
+        if addr == STREAM_CHANNEL_BASE + SCP_PACKET_SIZE && data.len() >= 4 {
+            let raw = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            self.pending_test_packet =
+                (raw & SCPS_FIRE_TEST_PACKET != 0).then_some(raw & STREAM_PACKET_SIZE_MASK);
+            if raw & (SCPS_FIRE_TEST_PACKET | SCPS_DO_NOT_FRAGMENT) != 0 {
+                stripped = (raw & STREAM_PACKET_SIZE_MASK).to_be_bytes();
+                data = &stripped[..];
+            }
+        }
+
         // A capped device reduces an oversized packet size instead of refusing
         // it — silently, exactly as the hardware in #112 does.
         let clamped;

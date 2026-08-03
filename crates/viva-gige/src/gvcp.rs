@@ -190,6 +190,22 @@ pub use consts::PORT as GVCP_PORT;
 /// a packet size of over a billion.
 pub const STREAM_PACKET_SIZE_MASK: u32 = 0xFFFF;
 
+/// `GevSCPSPacketSize` bit 31: emit one test packet of the requested size.
+///
+/// The only way to discover that a size *both endpoints accept* cannot cross
+/// the link between them — a register read reports what the device stored, not
+/// what the network will carry
+/// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)).
+pub const SCPS_FIRE_TEST_PACKET: u32 = 0x8000_0000;
+
+/// `GevSCPSPacketSize` bit 30: set do-not-fragment on transmitted packets.
+///
+/// Paired with the test packet so a path that would *fragment* the datagram
+/// drops it instead. Without it a probe can succeed on a link that then
+/// delivers reassembled fragments, which is slower than the smaller size it
+/// talked us out of.
+pub const SCPS_DO_NOT_FRAGMENT: u32 = 0x4000_0000;
+
 /// GVCP request header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GvcpRequestHeader {
@@ -1234,6 +1250,31 @@ impl GigeDevice {
         info!(channel, packet_size, "configuring stream packet size");
         let addr = Self::stream_reg(channel, consts::STREAM_PACKET_SIZE);
         self.write_mem(addr, &packet_size.to_be_bytes()).await
+    }
+
+    /// Ask the device to emit one GVSP test packet of `packet_size` bytes.
+    ///
+    /// Writes `GevSCPSPacketSize` with bit 31 (fire test packet) and bit 30
+    /// (do not fragment) set. The size lands in the register as usual; the
+    /// flags do not, and a device that echoed them back would report a packet
+    /// size of over a billion, so [`GigeDevice::get_stream_packet_size`] masks.
+    ///
+    /// This does not wait for the packet — it arrives on the stream channel,
+    /// which this type does not own. The caller listens.
+    pub async fn request_test_packet(
+        &mut self,
+        channel: u32,
+        packet_size: u32,
+    ) -> Result<(), GigeError> {
+        if packet_size > STREAM_PACKET_SIZE_MASK {
+            return Err(GigeError::Protocol(format!(
+                "GVSP packet size {packet_size} does not fit GevSCPSPacketSize"
+            )));
+        }
+        let addr = Self::stream_reg(channel, consts::STREAM_PACKET_SIZE);
+        let word = packet_size | SCPS_FIRE_TEST_PACKET | SCPS_DO_NOT_FRAGMENT;
+        debug!(channel, packet_size, "requesting GVSP test packet");
+        self.write_mem(addr, &word.to_be_bytes()).await
     }
 
     /// Read `GevSCPSPacketSize` back and return the size the device holds.

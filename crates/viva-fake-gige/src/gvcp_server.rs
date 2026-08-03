@@ -352,17 +352,80 @@ async fn handle_writemem(
     }
     let addr = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as u64;
     let data = &payload[4..];
-    let mut store = regs.lock().await;
-    store.write(addr, data);
-    store.handle_special_write(addr);
-    check_acquisition(addr, data, acq_start, acq_stop_flag);
+    let (test_packet, dest_ip, dest_port, max_on_wire) = {
+        let mut store = regs.lock().await;
+        store.write(addr, data);
+        store.handle_special_write(addr);
+        check_acquisition(addr, data, acq_start, acq_stop_flag);
+        (
+            store.take_pending_test_packet(),
+            store.stream_dest_ip(),
+            store.stream_dest_port(),
+            store.max_on_wire(),
+        )
+    };
 
     // WRITEMEM ACK payload: address(4)
     let mut resp_payload = BytesMut::with_capacity(4);
     resp_payload.put_u32(addr as u32);
     let resp = build_ack(WRITEMEM_ACK, request_id, &resp_payload);
     let _ = socket.send_to(&resp, peer).await;
+
+    // The acknowledgement goes first: a real device answers the write and then
+    // emits the test packet, and a controller that waits for the ack before
+    // listening must not miss it.
+    if let Some(size) = test_packet {
+        fire_test_packet(size, dest_ip, dest_port, max_on_wire).await;
+    }
     trace!(%peer, addr = format!("0x{addr:x}"), len = data.len(), "WRITEMEM response");
+}
+
+/// Emit one GVSP test packet of `size` bytes to the configured stream
+/// destination, unless the configured path ceiling would have swallowed it.
+///
+/// `size` is the IP datagram size the controller asked for, so the UDP payload
+/// is `size` minus the 20-byte IPv4 and 8-byte UDP headers. What matters to the
+/// probe is only whether *something* arrives, but sending the right length lets
+/// a caller check it.
+///
+/// The `max_on_wire` arm is the point of the whole mechanism: a path that
+/// cannot carry the frame drops it with nobody to report the loss, which is
+/// exactly what a register read cannot discover
+/// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)).
+async fn fire_test_packet(
+    size: u32,
+    dest_ip: std::net::Ipv4Addr,
+    dest_port: u16,
+    max_on_wire: Option<u32>,
+) {
+    if dest_port == 0 {
+        debug!("test packet requested before a stream destination was set");
+        return;
+    }
+    if max_on_wire.is_some_and(|max| size > max) {
+        debug!(
+            size,
+            "test packet exceeds the path ceiling; dropped in flight"
+        );
+        return;
+    }
+
+    const IP_AND_UDP_HEADERS: u32 = 28;
+    let payload_len = size.saturating_sub(IP_AND_UDP_HEADERS) as usize;
+    let Ok(sock) = UdpSocket::bind("0.0.0.0:0").await else {
+        return;
+    };
+    // A test packet is a GVSP payload-format datagram; the controller only
+    // checks that it arrived, so the header just has to be well formed.
+    let mut pkt = BytesMut::with_capacity(payload_len.max(8));
+    pkt.put_u16(0); // status
+    pkt.put_u16(0); // block id — a test packet belongs to no block
+    pkt.put_u8(0x03); // packet format: payload
+    pkt.put_u8(0);
+    pkt.put_u16(0); // packet id
+    pkt.resize(payload_len.max(8), 0);
+    let _ = sock.send_to(&pkt, (dest_ip, dest_port)).await;
+    debug!(size, %dest_ip, dest_port, "test packet sent");
 }
 
 /// Handle a GVCP `ACTION_CMD` (0x0100).
