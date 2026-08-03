@@ -730,6 +730,258 @@ async fn test_probe_leaves_the_size_alone_when_no_test_packet_returns() {
     );
 }
 
+/// Check the fake's GVSP **bytes** against the specification's field tables,
+/// with none of our own receive path in between (backlog `TC-04`, ADR-0019).
+///
+/// `viva-gige`'s unit tests already assert the *parser* against golden bytes.
+/// This is the other direction, and the one that catches the failure mode the
+/// ADR exists for: producer and consumer agreeing with each other while both
+/// disagree with the standard. That has happened three times here — the SCPS
+/// overhead, unaligned READMEM, and the Discovery ACK MAC offset in #57 — and
+/// each time every test passed.
+///
+/// So the datagrams are read from a plain `UdpSocket` this test binds itself,
+/// configured through `GigeDevice` directly. `StreamBuilder`, `Stream`,
+/// `FrameStream` and `gvsp::parse_packet` are all deliberately absent; a round
+/// trip through them would prove only that they agree with the fake.
+#[tokio::test]
+async fn test_fake_gvsp_packets_match_spec_layout() {
+    use tokio::net::UdpSocket;
+
+    const PACKET_SIZE: u32 = 1500;
+    // GevSCPSPacketSize counts the IP datagram, so a data packet carries
+    // packet_size - (20 IP + 8 UDP + 8 GVSP) bytes of image.
+    const PAYLOAD_STRIDE: usize = PACKET_SIZE as usize - 36;
+
+    // A deliberately small frame: 8 192 Mono8 bytes is six data packets, five
+    // full and one partial, which is every stride case the assertions below
+    // check. The default 640x480 is 210 packets, and a block is only usable
+    // here if *all* of them arrive — on Windows CI loopback dropped at least
+    // one from every block for 20 s and the test timed out with no block
+    // captured. Fewer packets per block is what makes a whole block likely,
+    // not a longer deadline.
+    const WIDTH: u32 = 256;
+    const HEIGHT: u32 = 32;
+
+    let _cam = common::TestCamera::start_with(|builder| builder.width(WIDTH).height(HEIGHT)).await;
+    let device_info = discover_fake().await;
+    let control_addr = std::net::SocketAddr::new(device_info.ip.into(), gige::GVCP_PORT);
+
+    let xml = viva_genapi_xml::fetch_and_load_xml({
+        let addr = control_addr;
+        move |address, length| async move {
+            let mut dev = gige::GigeDevice::open(addr)
+                .await
+                .map_err(|e| viva_genapi_xml::XmlError::Transport(e.to_string()))?;
+            dev.read_mem(address, length)
+                .await
+                .map_err(|e| viva_genapi_xml::XmlError::Transport(e.to_string()))
+        }
+    })
+    .await
+    .expect("fetch XML");
+    let model = viva_genapi_xml::parse(&xml).expect("parse XML");
+    let nodemap = viva_genicam::genapi::NodeMap::try_from_xml(model).expect("build nodemap");
+
+    // Our own socket, so nothing of ours touches the bytes.
+    let sink = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind GVSP sink");
+    let sink_port = sink.local_addr().expect("sink addr").port();
+
+    let mut device = gige::GigeDevice::open(control_addr)
+        .await
+        .expect("open device");
+    device.claim_control().await.expect("claim control");
+    device
+        .set_stream_destination(0, std::net::Ipv4Addr::LOCALHOST, sink_port)
+        .await
+        .expect("set stream destination");
+    device
+        .set_stream_packet_size(0, PACKET_SIZE)
+        .await
+        .expect("set packet size");
+
+    let handle = tokio::runtime::Handle::current();
+    let camera = Arc::new(Mutex::new(Camera::new(
+        GigeRegisterIo::new(handle, device),
+        nodemap,
+    )));
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        cam.lock().unwrap().acquisition_start().expect("start");
+    })
+    .await
+    .unwrap();
+
+    // Collect blocks until one arrives whole.
+    //
+    // UDP on loopback does drop datagrams: Windows CI lost a trailer here on
+    // the first run, and the collector ran on into the next block and compared
+    // its packets against the previous block's id. An incomplete block is a
+    // flaky test rather than a real finding, so discard it and follow the next
+    // one — while keeping every assertion strict on the block that is kept.
+    //
+    // The completeness filter is deliberately weak: it checks only that the
+    // trailer's packet id accounts for every data packet, i.e. that nothing
+    // went missing. Each packet's own id, the stride and the byte total are
+    // asserted below and are not implied by that count.
+    let block_id_of = |pkt: &[u8]| u16::from_be_bytes([pkt[2], pkt[3]]);
+    let packet_id_of = |pkt: &[u8]| u32::from_be_bytes([0, pkt[5], pkt[6], pkt[7]]);
+
+    /// One GVSP block as it arrived: leader, data packets in receipt order,
+    /// trailer.
+    struct Block {
+        leader: Vec<u8>,
+        payloads: Vec<Vec<u8>>,
+        trailer: Vec<u8>,
+    }
+
+    let mut captured: Option<Block> = None;
+    let mut leader: Vec<u8> = Vec::new();
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut buf = vec![0u8; 4096];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while captured.is_none() && tokio::time::Instant::now() < deadline {
+        let Ok(Ok((len, _))) =
+            tokio::time::timeout(Duration::from_secs(3), sink.recv_from(&mut buf)).await
+        else {
+            break;
+        };
+        let pkt = buf[..len].to_vec();
+        // Byte 4: the low nibble is the packet format, the high bit is the
+        // extended-block-ID flag. Dispatch on the nibble so a future fake that
+        // sets the flag fails the explicit assertion below rather than timing
+        // out here with nothing to say.
+        let same_block = !leader.is_empty() && block_id_of(&pkt) == block_id_of(&leader);
+        match pkt[4] & 0x0F {
+            // A leader always begins a fresh block; if one was in progress it
+            // lost its trailer.
+            0x01 => {
+                leader = pkt;
+                payloads.clear();
+            }
+            0x03 if same_block => payloads.push(pkt),
+            0x02 if same_block => {
+                if packet_id_of(&pkt) == payloads.len() as u32 + 1 {
+                    captured = Some(Block {
+                        leader: std::mem::take(&mut leader),
+                        payloads: std::mem::take(&mut payloads),
+                        trailer: pkt,
+                    });
+                } else {
+                    leader.clear();
+                    payloads.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = cam.lock().unwrap().acquisition_stop();
+    })
+    .await
+    .unwrap();
+
+    let Block {
+        leader,
+        payloads,
+        trailer,
+    } = captured.expect("no complete GVSP block arrived within the deadline");
+    assert!(!payloads.is_empty(), "a block with no data packets");
+
+    let be16 = |b: &[u8], at: usize| u16::from_be_bytes([b[at], b[at + 1]]);
+    let be32 = |b: &[u8], at: usize| u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+
+    // ── Data Leader ────────────────────────────────────────────────────────
+    // Standard 8-byte header: status(2) block_id(2) format(1) packet_id(3),
+    // then a 36-byte image leader payload.
+    assert_eq!(leader.len(), 44, "8-byte header + 36-byte image leader");
+    assert_eq!(be16(&leader, 0), 0x0000, "status at offset 0");
+    let block_id = be16(&leader, 2);
+    assert_ne!(block_id, 0, "block id at offset 2 (0 is reserved)");
+    assert_eq!(leader[4], 0x01, "packet format at offset 4: leader");
+    assert_eq!(
+        u32::from_be_bytes([0, leader[5], leader[6], leader[7]]),
+        0,
+        "the leader is packet 0 of its block"
+    );
+    assert_eq!(be16(&leader, 8), 0, "reserved at offset 8");
+    assert_eq!(
+        be16(&leader, 10),
+        0x0001,
+        "payload type at offset 10: image"
+    );
+    // Offset 12..20 is the timestamp; the fake's clock is free-running, so
+    // assert only that it is set rather than pinning a value.
+    assert_ne!(
+        u64::from_be_bytes(leader[12..20].try_into().unwrap()),
+        0,
+        "timestamp at offset 12"
+    );
+    assert_eq!(
+        be32(&leader, 20),
+        0x0108_0001,
+        "pixel format at offset 20: Mono8"
+    );
+    assert_eq!(be32(&leader, 24), WIDTH, "size_x at offset 24");
+    assert_eq!(be32(&leader, 28), HEIGHT, "size_y at offset 28");
+    assert_eq!(be32(&leader, 32), 0, "offset_x at offset 32");
+    assert_eq!(be32(&leader, 36), 0, "offset_y at offset 36");
+    assert_eq!(be16(&leader, 40), 0, "padding_x at offset 40");
+    assert_eq!(be16(&leader, 42), 0, "padding_y at offset 42");
+
+    // ── Data Payload ───────────────────────────────────────────────────────
+    // Image bytes begin immediately after the 8-byte header — no payload-type
+    // field, unlike the leader and trailer.
+    for (i, pkt) in payloads.iter().enumerate() {
+        assert_eq!(be16(pkt, 0), 0x0000, "status, packet {i}");
+        assert_eq!(be16(pkt, 2), block_id, "same block id, packet {i}");
+        assert_eq!(pkt[4], 0x03, "packet format: payload, packet {i}");
+        assert_eq!(
+            u32::from_be_bytes([0, pkt[5], pkt[6], pkt[7]]),
+            i as u32 + 1,
+            "data packets are numbered from 1, the leader being 0"
+        );
+    }
+    // Every packet but the last carries a full stride. This is the accounting
+    // that was wrong in both the fake and the receiver at once — they
+    // subtracted different overheads and agreed anyway, because each only ever
+    // talked to the other.
+    for pkt in &payloads[..payloads.len() - 1] {
+        assert_eq!(
+            pkt.len() - 8,
+            PAYLOAD_STRIDE,
+            "a full data packet carries packet_size - 36 image bytes"
+        );
+    }
+    let total: usize = payloads.iter().map(|p| p.len() - 8).sum();
+    assert_eq!(
+        total,
+        (WIDTH * HEIGHT) as usize,
+        "the data packets must carry exactly one Mono8 frame"
+    );
+
+    // ── Data Trailer ───────────────────────────────────────────────────────
+    assert_eq!(be16(&trailer, 0), 0x0000, "status at offset 0");
+    assert_eq!(be16(&trailer, 2), block_id, "same block id");
+    assert_eq!(trailer[4], 0x02, "packet format at offset 4: trailer");
+    assert_eq!(
+        u32::from_be_bytes([0, trailer[5], trailer[6], trailer[7]]),
+        payloads.len() as u32 + 1,
+        "the trailer closes the block after the last data packet"
+    );
+    assert_eq!(be16(&trailer, 8), 0, "reserved at offset 8");
+    assert_eq!(
+        be16(&trailer, 10),
+        0x0001,
+        "payload type at offset 10, not offset 2 — the TC-17 defect"
+    );
+    assert_eq!(be32(&trailer, 12), HEIGHT, "size_y at offset 12");
+}
+
 /// The DX-09 warning must actually reach the log.
 ///
 /// `SilenceWatch` itself is unit-tested; what this covers is the wiring into

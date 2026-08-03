@@ -548,4 +548,129 @@ mod tests {
         assert_eq!(ack.header.status, StatusCode::Success);
         assert_eq!(ack.payload.len(), 0);
     }
+
+    // ── Spec-derived acknowledgement header (backlog TC-04) ────────────────
+    //
+    // The tests above build their input with the same `put_u16` calls the
+    // encoder uses, in the order the decoder reads them. That proves the two
+    // agree; it cannot show either matches the standard. These assert the
+    // header as a literal byte array written from the specification's field
+    // table, and index it by offset.
+    //
+    // | Offset | Size | Field                    |
+    // |--------|------|--------------------------|
+    // |      0 |    2 | Status                   |
+    // |      2 |    2 | Acknowledge command id   |
+    // |      4 |    2 | Length of the payload    |
+    // |      6 |    2 | Request id (echoed)      |
+    // |      8 |    n | Payload                  |
+    //
+    // All fields are big-endian.
+
+    /// A `READREG_ACK` returning `0x0000_3EF2`, byte for byte.
+    const GOLDEN_READ_REGISTER_ACK: [u8; 12] = [
+        0x00, 0x00, // status: SUCCESS
+        0x00, 0x81, // acknowledge command id: READREG_ACK
+        0x00, 0x04, // length: 4 — the payload alone
+        0x12, 0x34, // request id
+        0x00, 0x00, 0x3E, 0xF2, // payload: 16114
+    ];
+
+    #[test]
+    fn ack_header_fields_sit_at_the_specified_offsets() {
+        let b = &GOLDEN_READ_REGISTER_ACK;
+        assert_eq!(u16::from_be_bytes([b[0], b[1]]), 0x0000, "status at 0");
+        assert_eq!(u16::from_be_bytes([b[2], b[3]]), 0x0081, "ack id at 2");
+        assert_eq!(u16::from_be_bytes([b[4], b[5]]), 4, "length at 4");
+        assert_eq!(u16::from_be_bytes([b[6], b[7]]), 0x1234, "request id at 6");
+        assert_eq!(HEADER_SIZE, 8, "the payload begins at offset 8");
+
+        let ack = decode_ack(b).expect("decode the golden ack");
+        assert_eq!(ack.header.status, StatusCode::Success);
+        assert_eq!(ack.header.opcode, OpCode::ReadRegister);
+        assert_eq!(ack.header.length, 4);
+        assert_eq!(ack.header.request_id, 0x1234);
+        assert_eq!(&ack.payload[..], &[0x00, 0x00, 0x3E, 0xF2]);
+    }
+
+    /// `length` counts the payload, not the whole datagram.
+    ///
+    /// Off by exactly `HEADER_SIZE`, a fake and a client still round-trip
+    /// perfectly with each other while every real device disagrees — the
+    /// ADR-0019 shape. Pin the interpretation rather than the arithmetic.
+    #[test]
+    fn ack_length_counts_the_payload_only() {
+        let mut counts_the_header = GOLDEN_READ_REGISTER_ACK;
+        counts_the_header[4..6].copy_from_slice(&12u16.to_be_bytes());
+        assert!(
+            decode_ack(&counts_the_header).is_err(),
+            "a length of 12 describes a 20-byte datagram, not this one"
+        );
+
+        // And the truncation case: the field promises more than arrived.
+        let mut over_promises = GOLDEN_READ_REGISTER_ACK;
+        over_promises[4..6].copy_from_slice(&8u16.to_be_bytes());
+        assert!(decode_ack(&over_promises).is_err());
+    }
+
+    /// The acknowledge command id is the command id plus one, and the decoder
+    /// must reject a *command* id arriving where an acknowledgement belongs.
+    #[test]
+    fn ack_ids_are_command_ids_plus_one() {
+        for (cmd, ack) in [
+            (0x0080u16, 0x0081u16),
+            (0x0082, 0x0083),
+            (0x0084, 0x0085),
+            (0x0086, 0x0087),
+        ] {
+            assert_eq!(
+                OpCode::from_command(cmd).expect("command id").ack_code(),
+                ack
+            );
+            assert!(
+                OpCode::from_ack(cmd).is_err(),
+                "{cmd:#06x} is a command id, not an acknowledgement"
+            );
+        }
+    }
+
+    /// A pending-acknowledge is a distinct command id carrying a *success*
+    /// status, so nothing about the status word distinguishes it from the real
+    /// answer (backlog TC-16). It must not decode as one.
+    #[test]
+    fn pending_ack_is_not_a_normal_acknowledgement() {
+        let mut pending = GOLDEN_READ_REGISTER_ACK;
+        pending[2..4].copy_from_slice(&PENDING_ACK_COMMAND.to_be_bytes());
+        assert_eq!(
+            u16::from_be_bytes([pending[0], pending[1]]),
+            0x0000,
+            "a pending-ack reports SUCCESS — the status cannot be the signal"
+        );
+        assert!(
+            decode_ack(&pending).is_err(),
+            "0x0805 is not an acknowledgement command id"
+        );
+    }
+
+    /// The command header uses the same four fields in the same order, so the
+    /// encoder is pinned by offset too.
+    #[test]
+    fn command_header_fields_sit_at_the_specified_offsets() {
+        let cmd = GenCpCmd {
+            header: CommandHeader {
+                flags: CommandFlags::ACK_REQUIRED,
+                opcode: OpCode::ReadMem,
+                length: 8,
+                request_id: 0x00AB,
+            },
+            payload: Bytes::from_static(&[0, 0, 0x0D, 0x04, 0, 0, 0, 4]),
+        };
+        let b = encode_cmd(&cmd);
+
+        assert_eq!(u16::from_be_bytes([b[0], b[1]]), 0x0001, "flags at 0");
+        assert_eq!(u16::from_be_bytes([b[2], b[3]]), 0x0084, "READMEM_CMD at 2");
+        assert_eq!(u16::from_be_bytes([b[4], b[5]]), 8, "payload length at 4");
+        assert_eq!(u16::from_be_bytes([b[6], b[7]]), 0x00AB, "request id at 6");
+        assert_eq!(b.len(), HEADER_SIZE + 8);
+    }
 }

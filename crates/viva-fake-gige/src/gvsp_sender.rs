@@ -170,7 +170,7 @@ pub async fn run(
             } else {
                 Vec::new()
             };
-            let trailer = build_trailer(block_id, packet_id, &chunk_data);
+            let trailer = build_trailer(block_id, packet_id, height, &chunk_data);
             let _ = socket.send_to(&trailer, dest).await;
 
             trace!(block_id, packets = packet_id + 1, %dest, "frame sent");
@@ -321,7 +321,13 @@ fn build_event(request_id: u16, event_id: u16, block_id: u16, timestamp: u64) ->
     buf.to_vec()
 }
 
-fn build_trailer(block_id: u16, packet_id: u16, chunk_data: &[u8]) -> Vec<u8> {
+/// `size_y` is the number of lines the block actually delivered, not a
+/// placeholder. It used to be hardcoded to zero: the parser read the field from
+/// the right offset and got a wrong value, and no test noticed because none
+/// asserted it (backlog `TC-04`). It is the only field that tells a receiver
+/// the true height of a variable-height block, which is how a linescan or
+/// profile-scanner frame reports how much it sent.
+fn build_trailer(block_id: u16, packet_id: u16, size_y: u32, chunk_data: &[u8]) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(16 + chunk_data.len());
 
     // GVSP header
@@ -340,7 +346,7 @@ fn build_trailer(block_id: u16, packet_id: u16, chunk_data: &[u8]) -> Vec<u8> {
     } else {
         buf.put_u16(0x4001); // payload_type: image + chunk
     }
-    buf.put_u32(0); // size_y
+    buf.put_u32(size_y);
 
     // Append chunk data blocks
     buf.put_slice(chunk_data);

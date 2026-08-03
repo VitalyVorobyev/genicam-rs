@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Added
 
 - **The GVSP packet size is now probed against the network path, not just the
@@ -31,6 +32,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape of the reporter's link, and something the existing `max_packet_size`
   register clamp cannot express. Without it `SR-13` would have been untestable.
 
+=======
+### Fixed
+
+- **The fake camera reported a GVSP trailer `size_y` of zero** (backlog
+  `TC-04`). `size_y` is the number of lines a block actually delivered — the
+  only field that tells a receiver the true height of a variable-height block,
+  which is how a linescan or profile scanner reports how much it sent.
+  `viva-fake-gige` hardcoded it to `0`, and since `TC-17` had already taught
+  the parser to read that field from the right offset, producer and consumer
+  agreed on a wrong value with nothing looking. Found by the new
+  spec-derived GVSP wire test, which is the fourth instance of the pattern
+  ADR-0019 exists for.
+
+### Testing
+
+- **`test_fake_gvsp_packets_match_spec_layout`** (backlog `TC-04`,
+  [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63)) asserts the
+  fake's GVSP leader, data packets and trailer against the specification's
+  field tables, reading them from a `UdpSocket` the test binds itself.
+  `StreamBuilder`, `Stream`, `FrameStream` and `gvsp::parse_packet` are all
+  deliberately absent: a round trip through our own receive path proves only
+  that it agrees with our own fake.
+>>>>>>> ff44fb0 (Assert the fake's GVSP bytes against the spec, not against our parser (TC-04, #63))
+
+- **Five spec-derived GenCP acknowledgement-header tests** (backlog `TC-04`)
+  pin the header as a literal byte array indexed by offset, rather than
+  building the input with the same calls the decoder reads back. They also fix
+  the *interpretation* of `length` — the payload alone, not the datagram —
+  because off by exactly `HEADER_SIZE` a fake and a client round-trip
+  perfectly while every real device disagrees.
 
 ## [0.4.1] - 2026-08-03
 
