@@ -279,6 +279,88 @@ impl Iface {
     }
 }
 
+/// How a user names a host interface on a command line or in an API call.
+///
+/// Parsed as an IPv4 literal first and taken as an operating-system interface
+/// name otherwise. The two spellings cannot collide: an interface name that
+/// parses as an IPv4 address does not exist on any platform we support.
+///
+/// Both spellings are needed. A Windows interface name is a GUID
+/// (`{6394C55F-F630-4BC7-92D2-7AC320C73D1C}`), which a user has no easy way to
+/// obtain, so IPv4 has to work; and an interface that carries no address yet
+/// can only be named, so the name has to work too. Before this existed
+/// `viva-camctl` accepted only the address and `viva-service` only the name,
+/// and a user who had discovered a camera with one tool could not stream it
+/// with the other ([#109](https://github.com/VitalyVorobyev/viva-genicam/issues/109)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IfaceSelector {
+    /// One of the interface's own IPv4 addresses, e.g. `169.254.105.106`.
+    Ipv4(Ipv4Addr),
+    /// The name the operating system gives the interface, e.g. `en0`.
+    Name(String),
+}
+
+impl IfaceSelector {
+    /// Resolve the selector against the interfaces this host reports.
+    ///
+    /// Delegates to [`Iface::from_ipv4`] or [`Iface::from_system`]; the only
+    /// thing added here is the failure message, which lists what we can
+    /// actually see. That listing is the point rather than a nicety: the
+    /// Windows GUID a user needs is not discoverable from the error it
+    /// replaces, and `Iface::list` is already the library's own view of the
+    /// machine (#57).
+    pub fn resolve(&self) -> io::Result<Iface> {
+        let resolved = match self {
+            Self::Ipv4(addr) => Iface::from_ipv4(*addr),
+            Self::Name(name) => Iface::from_system(name),
+        };
+        resolved.map_err(|err| io::Error::new(err.kind(), format!("{err}{}", available())))
+    }
+}
+
+impl std::str::FromStr for IfaceSelector {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.parse::<Ipv4Addr>() {
+            Ok(addr) => Self::Ipv4(addr),
+            Err(_) => Self::Name(s.to_string()),
+        })
+    }
+}
+
+impl std::fmt::Display for IfaceSelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ipv4(addr) => write!(f, "{addr}"),
+            Self::Name(name) => f.write_str(name),
+        }
+    }
+}
+
+/// The interfaces this host reports, formatted for appending to an error.
+///
+/// Returns an empty string when the enumeration itself fails, so a failure to
+/// explain never replaces the failure being explained.
+fn available() -> String {
+    let Ok(ifaces) = Iface::list() else {
+        return String::new();
+    };
+    if ifaces.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n  interfaces this host reports:");
+    for iface in ifaces {
+        let addrs = iface.all_ipv4().unwrap_or_default();
+        out.push_str(&format!("\n    {}", iface.name()));
+        if !addrs.is_empty() {
+            let list: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
+            out.push_str(&format!("  {}", list.join(", ")));
+        }
+    }
+    out
+}
+
 /// Read the MTU configured for the provided interface.
 ///
 /// On Linux the value is obtained from `/sys/class/net/<iface>/mtu` to avoid
@@ -596,6 +678,83 @@ mod tests {
         const UDP_MAX_PAYLOAD: u32 = 65535 - 20 - 8;
         let gvsp_payload = best_packet_size(65536) - 20 - 8 - 8;
         assert!(gvsp_payload + 8 <= UDP_MAX_PAYLOAD);
+    }
+
+    #[test]
+    fn selector_parses_an_ipv4_literal_as_an_address_and_anything_else_as_a_name() {
+        use std::str::FromStr;
+
+        assert_eq!(
+            IfaceSelector::from_str("169.254.105.106").unwrap(),
+            IfaceSelector::Ipv4(Ipv4Addr::new(169, 254, 105, 106))
+        );
+        assert_eq!(
+            IfaceSelector::from_str("en0").unwrap(),
+            IfaceSelector::Name("en0".into())
+        );
+        // The spelling #109's reporter had to use on Windows.
+        let guid = "{6394C55F-F630-4BC7-92D2-7AC320C73D1C}";
+        assert_eq!(
+            IfaceSelector::from_str(guid).unwrap(),
+            IfaceSelector::Name(guid.into())
+        );
+        // Not an address, so a name — and rejected by `Iface::resolve`, which
+        // is where the length check lives.
+        assert_eq!(
+            IfaceSelector::from_str("").unwrap(),
+            IfaceSelector::Name(String::new())
+        );
+        // A partial address is a name, not a parse error: `from_str` cannot
+        // fail, so the diagnosis is deferred to `resolve`.
+        assert_eq!(
+            IfaceSelector::from_str("169.254").unwrap(),
+            IfaceSelector::Name("169.254".into())
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn both_spellings_of_loopback_resolve_to_the_same_interface() {
+        use std::str::FromStr;
+
+        let lo_name = if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
+        let by_name = IfaceSelector::from_str(lo_name).unwrap().resolve().unwrap();
+        let by_addr = IfaceSelector::from_str("127.0.0.1")
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(by_name.name(), by_addr.name());
+        assert_eq!(by_addr.ipv4(), Some(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn an_unresolvable_selector_names_the_interfaces_we_can_see() {
+        use std::str::FromStr;
+
+        // The whole reason the selector owns the error: #109's reporter could
+        // not have guessed their adapter's GUID from `no interface with IPv4
+        // 169.254.105.106`.
+        let err = IfaceSelector::from_str("no-such-iface")
+            .unwrap()
+            .resolve()
+            .expect_err("a name no host has must not resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("interfaces this host reports:"),
+            "expected the interface listing, got: {msg}"
+        );
+        assert!(
+            Iface::list()
+                .unwrap()
+                .iter()
+                .any(|iface| msg.contains(iface.name())),
+            "expected a real interface name in: {msg}"
+        );
     }
 
     #[test]

@@ -103,9 +103,12 @@ class Camera:
     ) -> FrameStream:
         """Open a frame stream (context-manager yielding ``Frame`` objects).
 
-        ``packet_size`` overrides the GVSP packet size in bytes; omit it to
-        follow the interface's probed MTU. GigE-only parameters are ignored for
-        U3V cameras.
+        ``iface`` names the host interface that receives the stream, either by
+        one of its IPv4 addresses (``"169.254.105.106"``) or by its OS name
+        (``"en0"``, or a GUID on Windows); omit it to let the OS pick the
+        interface that routes to the camera. ``packet_size`` overrides the GVSP
+        packet size in bytes; omit it to follow the interface's probed MTU.
+        GigE-only parameters are ignored for U3V cameras.
         """
         native = self._native.open_stream(
             iface, packet_size, multicast, destination_port
@@ -114,7 +117,12 @@ class Camera:
 
 
 def connect_gige(device_info: GigeDeviceInfo, iface: Optional[str] = None) -> Camera:
-    """Connect to a GigE Vision camera."""
+    """Connect to a GigE Vision camera.
+
+    ``iface`` accepts either one of the host interface's IPv4 addresses or its
+    OS name; omit it to let the OS pick the interface that routes to the
+    camera.
+    """
     native = _native.connect_gige(device_info._handle, iface)
     return Camera(native)
 

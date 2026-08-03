@@ -9,13 +9,15 @@ use tracing::{info, warn};
 use viva_genicam::pfnc::PixelFormat;
 use viva_genicam::{Frame, FrameStream, StreamBuilder, StreamDest};
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 #[derive(Debug, Clone)]
 pub struct StreamArgs {
     pub ip: Option<Ipv4Addr>,
     pub index: Option<usize>,
-    pub iface: Option<Ipv4Addr>,
+    pub iface: Option<IfaceSelector>,
     pub mode: String,
     pub group: Option<Ipv4Addr>,
     pub port: u16,
@@ -33,13 +35,13 @@ pub struct StreamArgs {
 #[allow(clippy::await_holding_lock)]
 pub async fn run(args: StreamArgs) -> Result<()> {
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(args.ip, args.index, args.iface, timeout).await?;
+    let device = common::select_device(args.ip, args.index, args.iface.as_ref(), timeout).await?;
     info!(ip = %device.ip, "opening camera for streaming");
     let mut camera = common::open_camera(&device)
         .await
         .context("open camera for stream")?;
 
-    let iface = common::resolve_receive_iface(args.iface, device.ip)?;
+    let iface = common::resolve_receive_iface(args.iface.as_ref(), device.ip)?;
     let host_ip = iface
         .ipv4()
         .ok_or_else(|| anyhow!("interface {} has no IPv4 address", iface.name()))?;

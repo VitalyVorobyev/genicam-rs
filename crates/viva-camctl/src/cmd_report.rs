@@ -26,7 +26,7 @@ use viva_genapi_xml::XmlModel;
 use viva_genicam::genapi::NodeMap;
 use viva_gige::DeviceInfo;
 use viva_gige::gvcp::{GigeDevice, consts};
-use viva_gige::nic::Iface;
+use viva_gige::nic::{Iface, IfaceSelector};
 
 use crate::common;
 
@@ -117,7 +117,7 @@ fn decode(value: u32, fmt: Fmt) -> String {
 pub struct ReportArgs {
     pub ip: Option<Ipv4Addr>,
     pub index: Option<usize>,
-    pub iface: Option<Ipv4Addr>,
+    pub iface: Option<IfaceSelector>,
     pub out: Option<PathBuf>,
     pub timeout_ms: u64,
     /// Omit the GenApi XML. It is the single most useful artifact, so this is
@@ -132,7 +132,7 @@ pub async fn run(args: ReportArgs) -> Result<()> {
 
     environment(&mut out);
     interfaces(&mut out);
-    let devices = discovery(&mut out, args.iface, args.timeout_ms).await;
+    let devices = discovery(&mut out, args.iface.as_ref(), args.timeout_ms).await;
     camera(&mut out, &args, &devices).await;
 
     let _ = writeln!(out, "## End of report");
@@ -227,7 +227,11 @@ fn interfaces(out: &mut String) {
     let _ = writeln!(out);
 }
 
-async fn discovery(out: &mut String, iface: Option<Ipv4Addr>, timeout_ms: u64) -> Vec<DeviceInfo> {
+async fn discovery(
+    out: &mut String,
+    iface: Option<&IfaceSelector>,
+    timeout_ms: u64,
+) -> Vec<DeviceInfo> {
     let _ = writeln!(out, "## Discovery");
     let _ = writeln!(out);
     let timeout = Duration::from_millis(timeout_ms);

@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use tracing::info;
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common::{self, DEFAULT_DISCOVERY_TIMEOUT_MS};
 
 #[derive(Serialize)]
@@ -17,11 +19,11 @@ pub async fn run(
     ip: Option<Ipv4Addr>,
     index: Option<usize>,
     name: String,
-    iface: Option<Ipv4Addr>,
+    iface: Option<IfaceSelector>,
     json: bool,
 ) -> Result<()> {
     let timeout = Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS);
-    let device = common::select_device(ip, index, iface, timeout).await?;
+    let device = common::select_device(ip, index, iface.as_ref(), timeout).await?;
     info!(ip = %device.ip, "opening camera for get");
     let camera = common::open_camera(&device)
         .await

@@ -4,6 +4,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use tracing::info;
 
+use viva_gige::nic::IfaceSelector;
+
 use crate::common;
 
 /// Parse a MAC address string like "DE:AD:BE:EF:CA:FE" into a 6-byte array.
@@ -28,13 +30,13 @@ pub async fn run(
     subnet: Ipv4Addr,
     gateway: Ipv4Addr,
     force: bool,
-    iface: Option<Ipv4Addr>,
+    iface: Option<IfaceSelector>,
 ) -> Result<()> {
     let mac = parse_mac(mac)?;
 
     if force {
         // FORCEIP: broadcast temporary IP assignment.
-        let iface_obj = common::resolve_iface(iface)?;
+        let iface_obj = common::resolve_iface(iface.as_ref())?;
         viva_gige::force_ip(mac, ip, subnet, gateway, iface_obj.as_ref())
             .await
             .context("FORCEIP command failed")?;
@@ -48,7 +50,7 @@ pub async fn run(
     } else {
         // Persistent IP: discover device by MAC, then write registers.
         let timeout = Duration::from_millis(common::DEFAULT_DISCOVERY_TIMEOUT_MS);
-        let devices = common::discover_devices(timeout, iface).await?;
+        let devices = common::discover_devices(timeout, iface.as_ref()).await?;
         let device = devices.iter().find(|d| d.mac == mac).ok_or_else(|| {
             anyhow!(
                 "no device with MAC {} found (use --force for offline assignment)",

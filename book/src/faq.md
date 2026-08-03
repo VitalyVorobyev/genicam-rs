@@ -33,10 +33,12 @@ If it shows nothing:
     - On Windows, make sure the binary is allowed on the relevant network
 profile (Private / Domain).
 4.	Multiple NICs
-	- Use --iface <host-ip> to force the interface:
+	- Use --iface to force the interface. It takes the host NIC's IPv4
+address or its OS name, whichever you have:
 
 ```bash
 cargo run -p viva-camctl -- list --iface 192.168.0.5
+cargo run -p viva-camctl -- list --iface eth0
 ```
 
 If the camera's address starts with `169.254.`, it is using link-local (APIPA)

@@ -1,9 +1,10 @@
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use anyhow::Result;
 use serde::Serialize;
 use tracing::info;
+
+use viva_gige::nic::IfaceSelector;
 
 use crate::common;
 
@@ -16,9 +17,9 @@ struct DeviceEntry {
     model: Option<String>,
 }
 
-pub async fn run(timeout_ms: u64, iface: Option<Ipv4Addr>, json: bool) -> Result<()> {
+pub async fn run(timeout_ms: u64, iface: Option<IfaceSelector>, json: bool) -> Result<()> {
     let timeout = Duration::from_millis(timeout_ms);
-    let devices = common::discover_devices(timeout, iface).await?;
+    let devices = common::discover_devices(timeout, iface.as_ref()).await?;
     info!(count = devices.len(), "discovered cameras");
 
     if json {

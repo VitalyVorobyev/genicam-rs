@@ -12,14 +12,14 @@ use viva_genapi_xml::XmlError;
 use viva_genicam::genapi::NodeMap;
 use viva_genicam::gige::GVCP_PORT;
 use viva_genicam::gige::gvsp::{self, GvspPacket};
-use viva_genicam::gige::nic::Iface;
+use viva_genicam::gige::nic::IfaceSelector;
 use viva_genicam::gige::stats::StreamStats;
 use viva_genicam::pfnc::PixelFormat;
 use viva_genicam::{Camera, Frame, GigeRegisterIo, StreamBuilder, StreamDest};
 
 #[derive(Debug, Clone)]
 struct Args {
-    iface: Ipv4Addr,
+    iface: IfaceSelector,
     group: Ipv4Addr,
     port: u16,
     ttl: u32,
@@ -31,7 +31,7 @@ struct Args {
 
 fn print_usage() {
     eprintln!(
-        "usage: multicast_grab --iface <IPv4> --group <IPv4> --port <n> [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--save <n>]"
+        "usage: multicast_grab --iface <HOST-IP|NAME> --group <IPv4> --port <n> [--ttl <n>] [--loopback] [--stream-idx <n>] [--packet-size <bytes>] [--save <n>]"
     );
 }
 
@@ -51,8 +51,9 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--iface" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| "--iface requires an IPv4 address".to_string())?;
-                iface = Some(value.parse()?);
+                    .ok_or_else(|| "--iface requires a host IP or interface name".to_string())?;
+                // Either spelling, as everywhere else (#109).
+                iface = Some(value.parse::<IfaceSelector>().unwrap());
             }
             "--group" => {
                 let value = args
@@ -132,11 +133,11 @@ struct BlockState {
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let args = parse_args()?;
-    let iface = Iface::from_ipv4(args.iface)?;
+    let iface = args.iface.resolve()?;
 
     println!("GigE Vision multicast capture");
     println!("  interface: {} (index {})", iface.name(), iface.index());
-    println!("  interface IPv4: {}", args.iface);
+    println!("  interface IPv4: {:?}", iface.ipv4());
     println!("  multicast group: {}", args.group);
     println!("  port: {}", args.port);
     println!("  ttl: {}", args.ttl);

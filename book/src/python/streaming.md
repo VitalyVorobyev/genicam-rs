@@ -61,7 +61,7 @@ The `stream()` call accepts GigE-specific knobs:
 
 ```python
 cam.stream(
-    iface="en0",               # NIC override
+    iface="en0",               # NIC override — or "192.168.0.5"
     packet_size=1500,          # omit to follow the interface's probed MTU
     multicast="239.255.42.99", # subscribe to a multicast group instead of unicast
     destination_port=34567,    # fix the streaming UDP port
@@ -69,6 +69,8 @@ cam.stream(
 ```
 
 None of these are required. `iface=` is auto-resolved by subnet match if you omit it; the rest fall back to the camera's defaults.
+
+`iface=` takes the host NIC's IPv4 address or its OS name, the same two spellings `viva-camctl --iface` and `viva-service --iface` accept — so the address you read off `discover()` is a legal value here.
 
 For U3V cameras all options are silently ignored.
 

@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use viva_genicam::genapi::NodeMap;
 use viva_genicam::gige::GVCP_PORT;
 use viva_genicam::gige::gvsp::{self, GvspPacket};
-use viva_genicam::gige::nic::Iface;
+use viva_genicam::gige::nic::IfaceSelector;
 use viva_genicam::sfnc;
 use viva_genicam::{
     Camera, ChunkConfig, ChunkKind, ChunkValue, Frame, GenicamError, GigeRegisterIo, StreamBuilder,
@@ -24,7 +24,7 @@ struct Args {
 }
 
 fn print_usage() {
-    eprintln!("usage: grab_with_chunks --iface <name>");
+    eprintln!("usage: grab_with_chunks --iface <HOST-IP|NAME>");
 }
 
 fn parse_args() -> Result<Args, Box<dyn Error>> {
@@ -35,7 +35,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--iface" => {
                 let name = args
                     .next()
-                    .ok_or_else(|| "--iface requires an interface name".to_string())?;
+                    .ok_or_else(|| "--iface requires a host IP or interface name".to_string())?;
                 parsed.iface = Some(name);
             }
             "--help" => {
@@ -62,16 +62,17 @@ struct BlockState {
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let args = parse_args()?;
-    let iface_name = match args.iface.as_deref() {
-        Some(name) => name,
+    let selector = match args.iface.as_deref() {
+        Some(value) => value.parse::<IfaceSelector>().unwrap(),
         None => {
-            println!("Please specify the capture interface using --iface <name>.");
+            println!("Please specify the capture interface using --iface <HOST-IP|NAME>.");
             print_usage();
             return Ok(());
         }
     };
 
-    let iface = Iface::from_system(iface_name)?;
+    // Either an IPv4 address or an OS interface name (#109).
+    let iface = selector.resolve()?;
     let timeout = Duration::from_millis(500);
     let mut devices = viva_genicam::gige::discover(timeout).await?;
     if devices.is_empty() {

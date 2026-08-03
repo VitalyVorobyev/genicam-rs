@@ -5,6 +5,7 @@ use std::time::Duration;
 use pyo3::prelude::*;
 use viva_genicam::gige;
 
+use crate::camera::iface_from_str;
 use crate::errors::transport_error;
 use crate::runtime::runtime;
 
@@ -112,10 +113,13 @@ fn discover_gige(
     all: bool,
 ) -> PyResult<Vec<PyGigeDeviceInfo>> {
     let timeout = Duration::from_millis(timeout_ms);
+    // `iface` may be an IPv4 address or an OS interface name; the underlying
+    // discovery call takes a name, so resolve first (#109).
+    let resolved = iface.map(iface_from_str).transpose()?;
     let devices = py.detach(|| {
         runtime().block_on(async move {
-            match (iface, all) {
-                (Some(name), _) => gige::discover_on_interface(timeout, name).await,
+            match (resolved.as_ref(), all) {
+                (Some(iface), _) => gige::discover_on_interface(timeout, iface.name()).await,
                 (None, true) => gige::discover_all(timeout).await,
                 (None, false) => gige::discover(timeout).await,
             }

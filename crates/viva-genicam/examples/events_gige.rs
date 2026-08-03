@@ -1,6 +1,6 @@
 use std::env;
 use std::error::Error;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,10 +9,11 @@ use viva_genapi_xml::{self, XmlError};
 use viva_genicam::Camera;
 use viva_genicam::genapi;
 use viva_genicam::gige::GVCP_PORT;
+use viva_genicam::gige::nic::IfaceSelector;
 
 #[derive(Debug, Clone)]
 struct Args {
-    iface: Ipv4Addr,
+    iface: IfaceSelector,
     port: u16,
     enable: Vec<String>,
     limit: usize,
@@ -20,7 +21,7 @@ struct Args {
 
 fn print_usage() {
     eprintln!(
-        "usage: events_gige --iface <ipv4> [--port <udp-port>] [--enable <event1,event2>] [--count <n>]"
+        "usage: events_gige --iface <HOST-IP|NAME> [--port <udp-port>] [--enable <event1,event2>] [--count <n>]"
     );
 }
 
@@ -36,8 +37,9 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--iface" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| "--iface requires an IPv4 address".to_string())?;
-                iface = Some(value.parse()?);
+                    .ok_or_else(|| "--iface requires a host IP or interface name".to_string())?;
+                // Either spelling, as everywhere else (#109).
+                iface = Some(value.parse::<IfaceSelector>().unwrap());
             }
             "--port" => {
                 let value = args
@@ -125,9 +127,16 @@ fn format_event(event: &viva_genicam::Event, index: usize) {
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
     let args = parse_args()?;
+    // The camera sends events *to* this address, so it must be the host's.
+    // `--iface` names the interface either way (#109); the address comes from
+    // resolving it, not from parsing the argument.
+    let iface = args.iface.resolve()?;
+    let local_ip = iface
+        .ipv4()
+        .ok_or_else(|| format!("interface {} has no IPv4 address", iface.name()))?;
     println!(
         "Configuring message channel on {}:{} (events: {})",
-        args.iface,
+        local_ip,
         args.port,
         args.enable.join(", ")
     );
@@ -146,9 +155,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let enable_refs: Vec<&str> = args.enable.iter().map(|s| s.as_str()).collect();
     camera
-        .configure_events(args.iface, args.port, &enable_refs)
+        .configure_events(local_ip, args.port, &enable_refs)
         .await?;
-    let stream = camera.open_event_stream(args.iface, args.port).await?;
+    let stream = camera.open_event_stream(local_ip, args.port).await?;
     if let Ok(addr) = stream.local_addr() {
         println!("Listening on {addr}");
     }

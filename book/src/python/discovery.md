@@ -28,9 +28,12 @@ class GigeDeviceInfo:
 
 ```python
 cams = vg.discover(timeout_ms=500, iface="en0")
+cams = vg.discover(timeout_ms=500, iface="192.168.0.5")   # same thing
 ```
 
 Use this when the host has multiple NICs and you only want to broadcast out one of them.
+
+`iface=` accepts the host NIC's OS name or one of its IPv4 addresses. On Windows the name is a GUID like `{6394C55F-F630-4BC7-92D2-7AC320C73D1C}`, so the address is usually the easier value to supply.
 
 ### Scan every NIC
 
@@ -89,6 +92,7 @@ cam = vg.Camera.open(cams[0])                  # dispatches on info type
 
 ```python
 cam = vg.connect_gige(info, iface="en0")
+cam = vg.connect_gige(info, iface="192.168.0.5")   # same thing
 ```
 
 When omitted, the stream interface is auto-resolved by matching the camera IP against every local NIC's subnet. For loopback (e.g. the fake camera) this resolves to `lo`/`lo0` automatically.
