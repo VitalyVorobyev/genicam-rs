@@ -58,6 +58,7 @@ pub struct FakeCameraBuilder {
     zip_xml: bool,
     enforce_heartbeat: bool,
     heartbeat_timeout_ms: Option<u32>,
+    max_packet_size: Option<u32>,
 }
 
 /// PFNC pixel format codes.
@@ -76,6 +77,7 @@ impl Default for FakeCameraBuilder {
             zip_xml: false,
             enforce_heartbeat: false,
             heartbeat_timeout_ms: None,
+            max_packet_size: None,
         }
     }
 }
@@ -138,6 +140,22 @@ impl FakeCameraBuilder {
         self
     }
 
+    /// Clamp `GevSCPSPacketSize` to `max`, the way a real camera caps it.
+    ///
+    /// A request above `max` is acknowledged and silently reduced, so the
+    /// register reads back lower than what was written. Off by default: the
+    /// fake accepts any size, which is what every existing test expects.
+    ///
+    /// The fake accepted anything until 0.4.1, so it could not express the
+    /// camera behind
+    /// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112) and no
+    /// test could have caught that defect — the ADR-0019 failure mode of a fake
+    /// that only ever agrees with its client.
+    pub fn max_packet_size(mut self, max: u32) -> Self {
+        self.max_packet_size = Some(max);
+        self
+    }
+
     /// Report a different `GevHeartbeatTimeout` than the 3 000 ms default.
     ///
     /// A shorter window keeps a test that has to wait one out from dominating
@@ -153,6 +171,9 @@ impl FakeCameraBuilder {
             registers::RegisterMap::new(self.width, self.height, self.pixel_format, self.zip_xml);
         if let Some(timeout_ms) = self.heartbeat_timeout_ms {
             register_map.set_heartbeat_timeout_ms(timeout_ms);
+        }
+        if let Some(max) = self.max_packet_size {
+            register_map.set_max_packet_size(max);
         }
         register_map.enforce_heartbeat(self.enforce_heartbeat);
         let regs = Arc::new(Mutex::new(register_map));

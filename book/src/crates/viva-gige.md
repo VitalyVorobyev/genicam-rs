@@ -165,12 +165,18 @@ the path MTU end to end. The probed MTU is used unless `packet_size` overrides
 it. Two caveats
 worth knowing:
 
-- Cameras **clamp** a size they cannot honour, and the library does not read the
-  value back yet (backlog SR-02). If throughput does not match what you set,
-  read `GevSCPSPacketSize` back with `viva-camctl get`.
+- Cameras **clamp** a size they cannot honour, and the write succeeds when they
+  do. `StreamBuilder::build` reads the register back through
+  `GigeDevice::get_stream_packet_size` and puts the *effective* size in
+  `StreamParams`, so reassembly follows the camera rather than the request. A
+  device that will not answer the read-back keeps the requested value and logs
+  a warning.
 - On a large-MTU link the requested size must still be clamped to the IPv4
   maximum. Linux loopback reports MTU 65536, which would produce a
   65 508-byte datagram against the 65 507-byte limit — every `send_to` fails.
+  An explicitly configured size above 65 535 is refused rather than truncated:
+  `GevSCPSPacketSize` holds the size in 16 bits, so writing 70 000 would
+  configure 4 464.
 
 ### Resend
 

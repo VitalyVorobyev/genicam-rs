@@ -182,6 +182,14 @@ pub mod consts {
 /// Public alias for the GVCP well-known port.
 pub use consts::PORT as GVCP_PORT;
 
+/// The bits of `GevSCPSPacketSize` that hold the packet size.
+///
+/// Bit 31 fires a test packet and bit 30 sets do-not-fragment; bits 29-16 are
+/// reserved. Masking matters on the read side as much as the write side — a
+/// device that leaves the do-not-fragment bit set would otherwise read back as
+/// a packet size of over a billion.
+pub const STREAM_PACKET_SIZE_MASK: u32 = 0xFFFF;
+
 /// GVCP request header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GvcpRequestHeader {
@@ -1205,14 +1213,45 @@ impl GigeDevice {
     }
 
     /// Configure the packet size for the stream channel.
+    ///
+    /// Only bits 0-15 of `GevSCPSPacketSize` hold the size; the high bits are
+    /// reserved for the fire-test-packet and do-not-fragment flags. A larger
+    /// value is refused rather than truncated, because truncation is silent and
+    /// arrives as a stream that never completes a frame — writing 70 000 would
+    /// configure 4 464.
     pub async fn set_stream_packet_size(
         &mut self,
         channel: u32,
         packet_size: u32,
     ) -> Result<(), GigeError> {
+        if packet_size > STREAM_PACKET_SIZE_MASK {
+            return Err(GigeError::Protocol(format!(
+                "GVSP packet size {packet_size} does not fit GevSCPSPacketSize: the size field is \
+                 bits 0-15, so the device would receive {}",
+                packet_size & STREAM_PACKET_SIZE_MASK
+            )));
+        }
         info!(channel, packet_size, "configuring stream packet size");
         let addr = Self::stream_reg(channel, consts::STREAM_PACKET_SIZE);
         self.write_mem(addr, &packet_size.to_be_bytes()).await
+    }
+
+    /// Read `GevSCPSPacketSize` back and return the size the device holds.
+    ///
+    /// A device is free to clamp a requested packet size to what it supports,
+    /// and the request succeeds when it does — nothing on the wire distinguishes
+    /// "accepted" from "accepted and reduced". Until the receive path follows
+    /// the *effective* value it reassembles at the wrong pitch and no frame ever
+    /// completes ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112),
+    /// backlog SR-02).
+    ///
+    /// Deliberately a GVCP READREG rather than a GenApi node read: the write
+    /// side bypasses the `NodeMap`, so a cached `GevSCPSPacketSize` node can
+    /// report the pre-write value and turn this check into a second bug.
+    pub async fn get_stream_packet_size(&mut self, channel: u32) -> Result<u32, GigeError> {
+        let addr = Self::stream_reg(channel, consts::STREAM_PACKET_SIZE) as u32;
+        let raw = self.read_register(addr).await?;
+        Ok(raw & STREAM_PACKET_SIZE_MASK)
     }
 
     /// Configure the packet delay (`GevSCPD`).
