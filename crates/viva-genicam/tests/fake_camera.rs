@@ -623,51 +623,67 @@ async fn test_clamped_packet_size_is_followed_not_assumed() {
     .unwrap();
 }
 
+/// Accumulates every `WARN` this test binary emits.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Install a **global** `WARN` capture, once per process.
+///
+/// A thread-local subscriber (`tracing::subscriber::set_default`) is not
+/// enough. On Windows the receive loop runs on its own std thread inside
+/// `windows_frame_receiver`, which never sees a subscriber installed on the
+/// test's thread — the first Windows CI run of this test captured an empty log
+/// for exactly that reason, while the wiring it checks was present and correct.
+/// Assertions below are `contains`, so warnings interleaved from other tests
+/// are harmless.
+fn captured_warnings() -> &'static LogCapture {
+    static CAPTURE: std::sync::OnceLock<LogCapture> = std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::WARN)
+            // Colour escapes would sit between the words the assertions match.
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("no other test may install a global subscriber");
+        capture
+    })
+}
+
 /// The DX-09 warning must actually reach the log.
 ///
 /// `SilenceWatch` itself is unit-tested; what this covers is the wiring into
-/// the receive loop, which needed a poll deadline on `recv` before the loop
-/// could turn at all while nothing was arriving.
+/// the receive loop — which differs by platform, and needed a poll deadline on
+/// `recv` off Windows before the loop could turn at all while nothing arrived.
 ///
 /// The stream is built and then never given an `AcquisitionStart`, so not one
 /// GVSP datagram arrives — the shape of a firewall block or a control privilege
 /// held elsewhere, which is what the "no GVSP packet" verdict names.
 #[tokio::test]
 async fn test_silent_stream_warns_and_names_the_candidates() {
-    use std::io::Write;
-    use tracing_subscriber::fmt::MakeWriter;
-
-    #[derive(Clone, Default)]
-    struct LogCapture(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for LogCapture {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for LogCapture {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
+    let capture = captured_warnings();
 
     let _cam = common::TestCamera::start().await;
     let device_info = discover_fake().await;
-
-    let capture = LogCapture::default();
-    // Thread-local rather than global: the tests in this binary run in
-    // parallel, and a global subscriber would capture all of them.
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(capture.clone())
-        .with_max_level(tracing::Level::WARN)
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
 
     let (mut frame_stream, _camera) = setup_stream_sized(&device_info, Some(1500)).await;
 
@@ -678,7 +694,6 @@ async fn test_silent_stream_warns_and_names_the_candidates() {
         "a camera that was never told to acquire must not produce a frame"
     );
 
-    drop(guard);
     let log = String::from_utf8_lossy(&capture.0.lock().unwrap().clone()).into_owned();
     assert!(
         log.contains("no GVSP packet has arrived"),
