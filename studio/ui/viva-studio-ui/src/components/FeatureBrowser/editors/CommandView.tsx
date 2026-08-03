@@ -37,7 +37,21 @@ export function CommandView({
 
   return (
     <div className="editor">
-      <button type="button" disabled={disabled} title={title} onClick={onExecute}>
+      {/*
+        `.btn` is not optional decoration. The bare `button` reset in
+        components.css is transparent, borderless and muted, so an unclassed
+        button reads as a line of text — which is exactly how a Command node's
+        only action was reported (#110). This is the same class the feature
+        panel's Apply carries, so the primary action of a Command looks like
+        the primary action of everything else.
+      */}
+      <button
+        type="button"
+        className="btn editor__action"
+        disabled={disabled}
+        title={title}
+        onClick={onExecute}
+      >
         Execute
       </button>
       <div className="editor__hint">{title}</div>
