@@ -32,7 +32,22 @@ See "Version Bumps" in `CLAUDE.md`.
 
 ## 2. Verify locally
 
-- Refresh `Cargo.lock`: `cargo metadata --format-version 1 > /dev/null`
+- Refresh **all four** lockfiles — `cargo metadata --format-version 1 > /dev/null`
+  run from each of:
+
+  ```
+  .                                        # library workspace
+  crates/viva-pygenicam                    # its own workspace, not a member
+  studio                                   # second workspace (ADR-0017)
+  studio/apps/viva-studio-tauri/src-tauri  # third workspace
+  ```
+
+  Every crate version appears in each of them, so a stale one fails CI rather
+  than merely looking untidy: the `lint viva-pygenicam` job runs
+  `cargo clippy --locked`, and `--locked` refuses to update the file. Missing
+  `crates/viva-pygenicam/Cargo.lock` is what broke the 0.4.1 release PR — it is
+  easy to forget precisely because that crate is also the one manifest that
+  does not inherit `version.workspace`.
 - Run the **quality-gate** skill — all gates must pass.
 
 ## 3. Release PR
