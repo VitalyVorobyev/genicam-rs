@@ -59,6 +59,7 @@ pub struct FakeCameraBuilder {
     enforce_heartbeat: bool,
     heartbeat_timeout_ms: Option<u32>,
     max_packet_size: Option<u32>,
+    max_on_wire: Option<u32>,
 }
 
 /// PFNC pixel format codes.
@@ -78,6 +79,7 @@ impl Default for FakeCameraBuilder {
             enforce_heartbeat: false,
             heartbeat_timeout_ms: None,
             max_packet_size: None,
+            max_on_wire: None,
         }
     }
 }
@@ -156,6 +158,20 @@ impl FakeCameraBuilder {
         self
     }
 
+    /// Silently drop any GVSP datagram larger than `max`, as a network path
+    /// with a smaller frame ceiling than either endpoint believes does.
+    ///
+    /// Different from [`FakeCameraBuilder::max_packet_size`], and the
+    /// difference is the whole of
+    /// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112): that
+    /// camera accepts and *stores* 16114, then streams nothing, because the
+    /// link tops out at a 9216-byte frame. No register read can find that —
+    /// only a test packet can.
+    pub fn max_on_wire(mut self, max: u32) -> Self {
+        self.max_on_wire = Some(max);
+        self
+    }
+
     /// Report a different `GevHeartbeatTimeout` than the 3 000 ms default.
     ///
     /// A shorter window keeps a test that has to wait one out from dominating
@@ -174,6 +190,9 @@ impl FakeCameraBuilder {
         }
         if let Some(max) = self.max_packet_size {
             register_map.set_max_packet_size(max);
+        }
+        if let Some(max) = self.max_on_wire {
+            register_map.set_max_on_wire(max);
         }
         register_map.enforce_heartbeat(self.enforce_heartbeat);
         let regs = Arc::new(Mutex::new(register_map));

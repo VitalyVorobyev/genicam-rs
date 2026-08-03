@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The GVSP packet size is now probed against the network path, not just the
+  device** (backlog `SR-13`,
+  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)).
+  `GevSCPSPacketSize` reports what the *camera* stored, which is not what the
+  *link* will carry: on a Vieworks FS3200T the camera declares `Max=16366`,
+  accepts and holds 16114, and streams nothing, because the path tops out at a
+  9216-byte frame. `StreamBuilder` now asks the camera for a GVSP test packet
+  (bit 31, with do-not-fragment on bit 30) and bisects to the largest size that
+  actually arrives — 9198 for those numbers.
+
+  **A device that never answers keeps the size it was given.** The probe first
+  requests a test packet at 1500; if that produces nothing, the device does not
+  answer probes and nothing is changed. Reading silence as "too big" would have
+  walked every camera that has never implemented test packets down to 1500.
+  The probe also never *raises* a size, so an explicit `--packet-size` stays a
+  ceiling, and `StreamBuilder::probe(false)` restores the previous behaviour.
+
+- **`viva-fake-gige`: `max_on_wire`** makes the fake drop oversized GVSP
+  datagrams in flight while still accepting the size into its register — the
+  shape of the reporter's link, and something the existing `max_packet_size`
+  register clamp cannot express. Without it `SR-13` would have been untestable.
+
+
 ## [0.4.1] - 2026-08-03
 
 ### Added

@@ -669,6 +669,67 @@ fn captured_warnings() -> &'static LogCapture {
     })
 }
 
+/// The probe must find a ceiling that lives in the **path**, not the device —
+/// backlog `SR-13`, reported as
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112).
+///
+/// The numbers are the reporter's, measured by hand on a Vieworks FS3200T: the
+/// camera declares `Max=16366`, accepts and stores 16114 without complaint, and
+/// streams nothing, because 9198 is the largest datagram the link carries
+/// (`9198 + 18 = 9216`). Nothing readable from the device says so. `SR-02`'s
+/// read-back returns 16114 and is perfectly correct; only a test packet finds
+/// the real limit.
+///
+/// So the fake accepts any size into the register and drops anything larger
+/// than 9198 in flight, and the probe has to land on exactly 9198.
+#[tokio::test]
+async fn test_probe_finds_a_path_ceiling_the_device_does_not_report() {
+    const PATH_CEILING: u32 = 9198;
+    // The reporter's host MTU. Requested explicitly rather than via `None`,
+    // because `nic::mtu` probes only on Linux and Windows and returns a
+    // hardcoded 1500 elsewhere (TC-11) — on macOS the auto path would ask for
+    // 1500, which is below the probe floor, and the test would assert nothing.
+    const HOST_MTU: u32 = 16114;
+
+    let _cam = common::TestCamera::start_with(|b| b.max_on_wire(PATH_CEILING)).await;
+    let device_info = discover_fake().await;
+
+    let (frame_stream, _camera) = setup_stream_sized(&device_info, Some(HOST_MTU)).await;
+
+    assert_eq!(
+        frame_stream.params().packet_size,
+        PATH_CEILING,
+        "the probe must bisect to the largest size the path actually carries"
+    );
+}
+
+/// When no test packet comes back at all, the requested size stands.
+///
+/// This is the regression that matters most about `SR-13`. Most cameras have
+/// worked for years without ever being asked for a test packet, and a probe
+/// that read "no answer" as "too big" would walk every one of them down to
+/// 1500 — turning a fix for one link into a throughput collapse everywhere
+/// else. The control probe at the floor exists precisely so silence is
+/// diagnosed as silence rather than as narrowness.
+///
+/// The fake is configured to drop every test packet, which is indistinguishable
+/// on the wire from a device that ignores the request — and deliberately so:
+/// the probe cannot tell those apart and must not need to. Both mean "no
+/// evidence", and the safe reading of no evidence is to change nothing.
+#[tokio::test]
+async fn test_probe_leaves_the_size_alone_when_no_test_packet_returns() {
+    let _cam = common::TestCamera::start_with(|b| b.max_on_wire(0)).await;
+    let device_info = discover_fake().await;
+
+    let (frame_stream, _camera) = setup_stream_sized(&device_info, Some(9000)).await;
+
+    assert_eq!(
+        frame_stream.params().packet_size,
+        9000,
+        "a device that answers no test packet must keep the requested size"
+    );
+}
+
 /// The DX-09 warning must actually reach the log.
 ///
 /// `SilenceWatch` itself is unit-tested; what this covers is the wiring into
