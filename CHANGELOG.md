@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-03
+
 ### Added
 
 - **`--iface` accepts a host IPv4 address *or* an OS interface name, in every
@@ -896,7 +898,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.4.1
 [0.4.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.4.0
 [0.3.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.1
 [0.3.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.0
