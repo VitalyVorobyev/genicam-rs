@@ -728,6 +728,8 @@ async fn test_probe_leaves_the_size_alone_when_no_test_packet_returns() {
         9000,
         "a device that answers no test packet must keep the requested size"
     );
+}
+
 /// Check the fake's GVSP **bytes** against the specification's field tables,
 /// with none of our own receive path in between (backlog `TC-04`, ADR-0019).
 ///
@@ -751,7 +753,17 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
     // packet_size - (20 IP + 8 UDP + 8 GVSP) bytes of image.
     const PAYLOAD_STRIDE: usize = PACKET_SIZE as usize - 36;
 
-    let _cam = common::TestCamera::start().await;
+    // A deliberately small frame: 8 192 Mono8 bytes is six data packets, five
+    // full and one partial, which is every stride case the assertions below
+    // check. The default 640x480 is 210 packets, and a block is only usable
+    // here if *all* of them arrive — on Windows CI loopback dropped at least
+    // one from every block for 20 s and the test timed out with no block
+    // captured. Fewer packets per block is what makes a whole block likely,
+    // not a longer deadline.
+    const WIDTH: u32 = 256;
+    const HEIGHT: u32 = 32;
+
+    let _cam = common::TestCamera::start_with(|builder| builder.width(WIDTH).height(HEIGHT)).await;
     let device_info = discover_fake().await;
     let control_addr = std::net::SocketAddr::new(device_info.ip.into(), gige::GVCP_PORT);
 
@@ -914,8 +926,8 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
         0x0108_0001,
         "pixel format at offset 20: Mono8"
     );
-    assert_eq!(be32(&leader, 24), 640, "size_x at offset 24");
-    assert_eq!(be32(&leader, 28), 480, "size_y at offset 28");
+    assert_eq!(be32(&leader, 24), WIDTH, "size_x at offset 24");
+    assert_eq!(be32(&leader, 28), HEIGHT, "size_y at offset 28");
     assert_eq!(be32(&leader, 32), 0, "offset_x at offset 32");
     assert_eq!(be32(&leader, 36), 0, "offset_y at offset 36");
     assert_eq!(be16(&leader, 40), 0, "padding_x at offset 40");
@@ -948,7 +960,7 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
     let total: usize = payloads.iter().map(|p| p.len() - 8).sum();
     assert_eq!(
         total,
-        640 * 480,
+        (WIDTH * HEIGHT) as usize,
         "the data packets must carry exactly one Mono8 frame"
     );
 
@@ -967,7 +979,7 @@ async fn test_fake_gvsp_packets_match_spec_layout() {
         0x0001,
         "payload type at offset 10, not offset 2 — the TC-17 defect"
     );
-    assert_eq!(be32(&trailer, 12), 480, "size_y at offset 12");
+    assert_eq!(be32(&trailer, 12), HEIGHT, "size_y at offset 12");
 }
 
 /// The DX-09 warning must actually reach the log.
