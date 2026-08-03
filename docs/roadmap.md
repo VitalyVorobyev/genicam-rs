@@ -55,9 +55,11 @@ is: **#45 and #57 confirmed on 0.3.0; #35 was asked and never answered.**
 
 ## Phase 0b — 0.4.1, the first thing after 0.4.0
 
-Three items, all additive, so this is a patch release rather than another
-minor: nothing is removed and both `--iface` spellings are accepted, so no
-caller that worked stops working.
+All additive, so this is a patch release rather than another minor: nothing is
+removed and both `--iface` spellings are accepted, so no caller that worked
+stops working.
+
+**Landed 2026-08-03 in `46a6d67` ([#111](https://github.com/VitalyVorobyev/viva-genicam/pull/111)):**
 
 - **DX-10** (#109) — `--iface` meant a host IPv4 address in `viva-camctl`, an
   OS interface name in `viva-service` and the Python bindings, and one or the
@@ -72,11 +74,47 @@ caller that worked stops working.
   the button carries no class. Studio ships separately, so this does not gate
   the crate release.
 
-**The ordering argument is the evidence hierarchy, not novelty.** #109 and #110
-both come from the reporter behind #57 and #70 — the one person outside this
-repo running real hardware against this stack — so they outrank the conformance
-work queued behind them. After 0.4.1 the queue returns to Phase 1: **TC-04**
-(#63) first, since it is the structural item the rest of that phase rests on.
+**Also landed 2026-08-03:**
+
+- **SR-02** — `GevSCPSPacketSize` was written and never read back, and the
+  *requested* value then drove every reassembly offset, so a camera that clamps
+  left the host striding at the wrong pitch. Found by reading code and fixed
+  against a fake taught to clamp. **It is not the cause of #112**, which this
+  phase briefly recorded that it was: the FS3200T accepts 16114 and holds it,
+  and the `1500` in the report was a GenApi node read. Correcting that is the
+  evidence hierarchy applied to us — "confirmed in the tree" and "explains the
+  hardware" are different claims, and only the first was ever true here.
+- **DX-09** — a stream that received nothing printed `frames=0` and named no
+  candidate cause. #112's reporter needed a custom instrumented build to find a
+  packet-size mismatch the warning now names outright. Landed with SR-02: one
+  review surface, and the two halves of one user's afternoon.
+
+**0.4.1 no longer waits.** It was held so #112's reporter would not get a
+release that failed to fix what they reported — but SR-02 was never going to
+fix it, and DX-09 will at least tell them which half of the stream is at fault.
+Ship 0.4.1 with what has landed; **SR-13** (the GVSP test packet) is the actual
+candidate fix for #112 and is gated on a path measurement the reporter is
+running, so it belongs to the release after this one.
+
+**Also newly filed from #112's attached log**, none of them related to the
+streaming failure and all of them real: **GA-20** (62 reads fail because a
+GigE Vision timestamp is a `u64` and our integer model is `i64` — those
+features are unreadable, not merely mis-parsed), **TC-21** (62 `BAD_ALIGNMENT`
+on event registers; #35 fixed the READMEM *count*, this is the *address*), and
+**ST-21** (Studio bulk-reads command-backed registers). One user's log, three
+defects, 297 WARN lines in a single session.
+
+**The ordering argument is the evidence hierarchy, not novelty.** Everything in
+this phase came from users running hardware this project does not have — a JAI
+and a Vieworks FS3200T on Windows (#57, #70, #109, #110, #112) and a
+Micro-Epsilon scanCONTROL 850050 (#91-#93) — so it outranks the conformance
+work queued behind it.
+
+After 0.4.1 the queue returns to Phase 1: **TC-04** (#63) first, since it is
+the structural item the rest of that phase rests on — and #112 is a fresh
+argument for it, because `viva-fake-gige` accepts any packet size and so cannot
+express the camera that caused it. **GA-09 phase two** (`<pLength>`) follows,
+with its API shape now confirmed by the contributor who needed it (#93).
 
 ## Phase 1 — Transport conformance (ADR-0019)
 

@@ -30,7 +30,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `no interface with IPv4 169.254.105.106` could not tell anyone what their
   adapter was actually called.
 
+- **A silent stream now says what to check** (backlog `DX-09`). A stream that
+  received nothing printed `frames=0 drops=0 resends=0`, and that line was
+  identical for a firewall block, a packet size the path cannot carry, a
+  control privilege held by another application, and a camera waiting for a
+  trigger. After a few seconds of producing nothing the receiver warns once,
+  and it distinguishes the two cases it can already tell apart: *no GVSP packet
+  has arrived* (path or privilege) versus *packets are arriving but no frame
+  has completed* (a packet-size disagreement). Both receive paths carry it, the
+  Windows reader thread included.
+
+- **`viva-fake-gige --max-packet-size`** makes the fake clamp
+  `GevSCPSPacketSize` the way a real camera does — acknowledging the write and
+  silently reducing it. Without this the fake accepted any size and so could
+  not express the camera behind
+  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112), which is
+  the ADR-0019 failure mode of a fake that only ever agrees with its client.
+
 ### Fixed
+
+- **A camera that clamps the GVSP packet size produced a stream that never
+  completed a frame** (backlog `SR-02`). Found by reading code, not on
+  hardware — it is *not* the cause of
+  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112), whose
+  camera accepts the size it is given.
+
+  `StreamBuilder::build` wrote `GevSCPSPacketSize` and never read it back.
+  `StreamParams.packet_size` kept the **requested** value and `gvsp_payload_size`
+  derives every reassembly offset from it, so a camera that clamped left the
+  host striding at the wrong pitch. The write still succeeded — nothing on the
+  wire distinguishes "accepted" from "accepted and reduced".
+
+  `build` now reads the register back over GVCP READREG (never through GenApi,
+  whose cache the raw write bypasses) and puts the **effective** size in
+  `StreamParams`, warning when it differs from the request. A device that will
+  not answer the read-back keeps the requested value and says so, rather than
+  failing a stream that works today. The read also comes *first*: Viva Studio
+  rebuilds the stream on every Acquisition Start, so an unconditional write
+  discarded a working configuration once per Start.
+
+- **An explicitly configured packet size bypassed the IPv4 clamp** (backlog
+  `TC-08`'s leftover). `GevSCPSPacketSize` holds the size in 16 bits, so
+  `--packet-size 70000` silently configured 4 464. It is now refused with an
+  error naming both the value and the bound.
 
 - **`viva-service` could not stream without `--iface`** (backlog `SVC-06`).
   It resolved the receive interface with `Iface::from_ipv4(camera_ip)` — the

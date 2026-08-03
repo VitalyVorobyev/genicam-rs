@@ -133,13 +133,23 @@ switch, and the host NIC.
   CPU becomes the bottleneck sooner.
 
 The usual approach is jumbo frames (MTU 9000) on a dedicated camera network,
-with the packet size set just below it. `--auto` asks the library to negotiate a
-size rather than guessing.
+with the packet size set just below it. The library follows the interface's
+probed MTU unless you pass `--packet-size`.
 
-A caveat worth knowing: cameras **clamp** a packet size they cannot honour, and
-the library does not currently read the value back (backlog SR-02). If your
-throughput does not match what you configured, read `GevSCPSPacketSize` back
-yourself with `viva-camctl get`.
+Cameras **clamp** a packet size they cannot honour, and the write succeeds when
+they do — nothing on the wire distinguishes "accepted" from "accepted and
+reduced". The library reads `GevSCPSPacketSize` back after writing it and
+follows the effective value, logging a warning when the two differ, so a
+clamping camera streams instead of producing frames that never complete.
+
+If a stream produces nothing, the library says so after a few seconds and names
+the likely causes rather than leaving you with `frames=0`. Two messages are
+worth recognising:
+
+- *no GVSP packet has arrived* — a firewall, a lost control privilege, or a
+  camera waiting for a trigger. Nothing is reaching the socket.
+- *packets are arriving but no frame has completed* — the two ends disagree
+  about the packet size. Retry with `--packet-size 1500`.
 
 See [Networking → MTU and jumbo frames](../networking.md#4-mtu-and-jumbo-frames)
 for the host-side configuration.

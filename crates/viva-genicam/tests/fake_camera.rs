@@ -494,6 +494,17 @@ async fn setup_stream(
 async fn setup_stream_owned(
     device_info: &gige::DeviceInfo,
 ) -> (viva_genicam::FrameStream, Camera<GigeRegisterIo>) {
+    setup_stream_sized(device_info, Some(1500)).await
+}
+
+/// As [`setup_stream_owned`], but leaves the packet size to the caller.
+///
+/// `None` means "follow the probed MTU", which is the path SR-02 covers and the
+/// only one where a camera gets the chance to clamp.
+async fn setup_stream_sized(
+    device_info: &gige::DeviceInfo,
+    packet_size: Option<u32>,
+) -> (viva_genicam::FrameStream, Camera<GigeRegisterIo>) {
     use std::net::{IpAddr, SocketAddr};
 
     let control_addr = SocketAddr::new(IpAddr::V4(device_info.ip), gige::GVCP_PORT);
@@ -526,22 +537,209 @@ async fn setup_stream_owned(
     device.claim_control().await.expect("claim control");
 
     let iface = loopback_iface();
-    let stream = viva_genicam::StreamBuilder::new(&mut device)
-        .iface(iface)
-        // Pin the packet size so reassembly is exercised over ~200 packets.
-        // Loopback reports a jumbo MTU, which would reduce a 640x480 frame
-        // to a handful of datagrams and stop testing the stride arithmetic
-        // that #34 got wrong.
-        .packet_size(1500)
-        .build()
-        .await
-        .expect("build stream");
+    let mut builder = viva_genicam::StreamBuilder::new(&mut device).iface(iface);
+    // Callers pin the packet size so reassembly is exercised over ~200 packets.
+    // Loopback reports a jumbo MTU, which would reduce a 640x480 frame to a
+    // handful of datagrams and stop testing the stride arithmetic that #34 got
+    // wrong.
+    if let Some(size) = packet_size {
+        builder = builder.packet_size(size);
+    }
+    let stream = builder.build().await.expect("build stream");
     let frame_stream = viva_genicam::FrameStream::new(stream, None);
 
     let handle = tokio::runtime::Handle::current();
     let transport = GigeRegisterIo::new(handle, device);
 
     (frame_stream, Camera::new(transport, nodemap))
+}
+
+/// A camera that clamps `GevSCPSPacketSize` must be followed, not assumed —
+/// backlog SR-02, reported as
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112).
+///
+/// Loopback reports a jumbo MTU, so the builder asks for one; the fake caps the
+/// register at 1 500 and acknowledges the write, exactly as the Vieworks
+/// FS3200T in the report does. Before the read-back landed,
+/// `StreamParams.packet_size` kept the *request*, `gvsp_payload_size` derived
+/// every reassembly offset from it, and the stream carried packets while
+/// completing no frame — the reporter's "0 frames on every Start".
+///
+/// This could not have been written before: the fake accepted any packet size,
+/// so it could not express the camera that caused the report. That is the
+/// ADR-0019 failure mode — a fake and a client agreeing only with each other —
+/// and it is why `max_packet_size` exists.
+///
+/// The cap is deliberately **below** 1 500 rather than at it. `nic::mtu` probes
+/// only on Linux and Windows and returns a hardcoded 1 500 elsewhere (TC-11),
+/// so a 1 500-byte cap would leave request and cap equal on macOS and the test
+/// would pass without ever exercising the clamp — verified by re-running it with
+/// the read-back disabled, where a 1 500 cap still passed.
+#[tokio::test]
+async fn test_clamped_packet_size_is_followed_not_assumed() {
+    const CAMERA_MAX: u32 = 1000;
+
+    let _cam = common::TestCamera::start_with(|builder| builder.max_packet_size(CAMERA_MAX)).await;
+    let device_info = discover_fake().await;
+
+    // `None` = follow the probed MTU, which on loopback is well above the cap.
+    let (mut frame_stream, camera) = setup_stream_sized(&device_info, None).await;
+    let camera = Arc::new(Mutex::new(camera));
+
+    assert_eq!(
+        frame_stream.params().packet_size,
+        CAMERA_MAX,
+        "the stream must follow the size the camera actually holds, not the one requested"
+    );
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_start().expect("start acquisition");
+    })
+    .await
+    .unwrap();
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame())
+        .await
+        .expect("timeout waiting for frame — the clamped packet size was not followed")
+        .expect("frame error")
+        .expect("stream ended without a frame");
+
+    // A stride disagreement of this kind does not merely drop frames; when one
+    // does complete it is the wrong length, so assert the payload too.
+    assert_eq!(
+        frame.payload.len(),
+        (frame.width * frame.height) as usize,
+        "frame payload length must match width*height for Mono8"
+    );
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_stop().expect("stop acquisition");
+    })
+    .await
+    .unwrap();
+}
+
+/// Accumulates every `WARN` this test binary emits.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Install a **global** `WARN` capture, once per process.
+///
+/// A thread-local subscriber (`tracing::subscriber::set_default`) is not
+/// enough. On Windows the receive loop runs on its own std thread inside
+/// `windows_frame_receiver`, which never sees a subscriber installed on the
+/// test's thread — the first Windows CI run of this test captured an empty log
+/// for exactly that reason, while the wiring it checks was present and correct.
+/// Assertions below are `contains`, so warnings interleaved from other tests
+/// are harmless.
+fn captured_warnings() -> &'static LogCapture {
+    static CAPTURE: std::sync::OnceLock<LogCapture> = std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::WARN)
+            // Colour escapes would sit between the words the assertions match.
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("no other test may install a global subscriber");
+        capture
+    })
+}
+
+/// The DX-09 warning must actually reach the log.
+///
+/// `SilenceWatch` itself is unit-tested; what this covers is the wiring into
+/// the receive loop — which differs by platform, and needed a poll deadline on
+/// `recv` off Windows before the loop could turn at all while nothing arrived.
+///
+/// The stream is built and then never given an `AcquisitionStart`, so not one
+/// GVSP datagram arrives — the shape of a firewall block or a control privilege
+/// held elsewhere, which is what the "no GVSP packet" verdict names.
+#[tokio::test]
+async fn test_silent_stream_warns_and_names_the_candidates() {
+    let capture = captured_warnings();
+
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let (mut frame_stream, _camera) = setup_stream_sized(&device_info, Some(1500)).await;
+
+    // Acquisition is deliberately never started, so this can only time out.
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame()).await;
+    assert!(
+        outcome.is_err(),
+        "a camera that was never told to acquire must not produce a frame"
+    );
+
+    let log = String::from_utf8_lossy(&capture.0.lock().unwrap().clone()).into_owned();
+    assert!(
+        log.contains("no GVSP packet has arrived"),
+        "the receive loop must emit the DX-09 warning; captured log was:\n{log}"
+    );
+    // The value of the warning is the list, not the fact of it.
+    for candidate in ["firewall", "control privilege", "trigger", "1500"] {
+        assert!(
+            log.contains(candidate),
+            "the warning must name '{candidate}'; captured log was:\n{log}"
+        );
+    }
+}
+
+/// An explicitly configured packet size must be bounded like the probed one.
+///
+/// `best_packet_size` clamps the MTU to what an IPv4 datagram can carry, but
+/// `--packet-size` bypassed that (the leftover in backlog TC-08) and reached
+/// `GevSCPSPacketSize`, whose size field is 16 bits — so `--packet-size 70000`
+/// silently configured 4 464 and produced a stream nobody could explain.
+#[tokio::test]
+async fn test_oversized_packet_size_is_refused_not_truncated() {
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let control_addr = std::net::SocketAddr::new(device_info.ip.into(), gige::GVCP_PORT);
+    let mut device = gige::GigeDevice::open(control_addr)
+        .await
+        .expect("open device");
+    device.claim_control().await.expect("claim control");
+
+    // `Stream` is not `Debug`, so unwrap the result by hand rather than via
+    // `expect_err`.
+    let message = match viva_genicam::StreamBuilder::new(&mut device)
+        .iface(loopback_iface())
+        .packet_size(70_000)
+        .build()
+        .await
+    {
+        Ok(_) => panic!("a packet size wider than GevSCPSPacketSize must be refused"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        message.contains("70000") && message.contains("65535"),
+        "the error must name both the value and the bound, got: {message}"
+    );
 }
 
 #[tokio::test]

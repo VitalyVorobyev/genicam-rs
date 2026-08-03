@@ -50,6 +50,11 @@ struct Args {
     /// commands for longer than GevHeartbeatTimeout, as a real device does.
     #[arg(long)]
     enforce_heartbeat: bool,
+
+    /// Silently clamp GevSCPSPacketSize to this many bytes, as a real camera
+    /// caps it. Use 1500 to reproduce the jumbo-link failure in #112.
+    #[arg(long)]
+    max_packet_size: Option<u32>,
 }
 
 #[tokio::main]
@@ -69,20 +74,22 @@ async fn main() {
 
     let pf_name = args.pixel_format.to_ascii_uppercase();
 
-    let camera = FakeCamera::builder()
+    let mut builder = FakeCamera::builder()
         .width(args.width)
         .height(args.height)
         .fps(args.fps)
         .pixel_format(pfnc_code)
         .bind_ip(args.bind)
         .port(args.port)
-        .enforce_heartbeat(args.enforce_heartbeat)
-        .build()
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to start fake camera: {e}");
-            std::process::exit(1);
-        });
+        .enforce_heartbeat(args.enforce_heartbeat);
+    if let Some(max) = args.max_packet_size {
+        builder = builder.max_packet_size(max);
+    }
+
+    let camera = builder.build().await.unwrap_or_else(|e| {
+        eprintln!("Failed to start fake camera: {e}");
+        std::process::exit(1);
+    });
 
     eprintln!(
         "Fake camera running on {}:{} ({}x{} {} @ {} fps)",

@@ -729,6 +729,20 @@ pub struct RegisterMap {
     last_register_command: Instant,
     /// Whether [`RegisterMap::enforce_heartbeat`] is armed.
     enforce_heartbeat: bool,
+    /// Largest `GevSCPSPacketSize` this device accepts, if it clamps at all.
+    ///
+    /// Real cameras cap the packet size at what their MAC can emit and reduce a
+    /// larger request silently — the write is acknowledged and the register then
+    /// reads back lower. Nothing distinguishes that from acceptance on the wire,
+    /// which is why a host that trusts its own request reassembles at the wrong
+    /// stride and completes no frame
+    /// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)).
+    ///
+    /// The fake accepted anything until 0.4.1, so it could not express the
+    /// camera that caused that report, and no test could have caught the defect
+    /// — the ADR-0019 failure mode of a fake that only agrees with its client.
+    /// `None` keeps the old accept-anything behaviour.
+    max_packet_size: Option<u32>,
 }
 
 /// Compress the GenApi XML into a single-entry ZIP archive (deflate).
@@ -884,6 +898,7 @@ impl RegisterMap {
             enabled_events: HashSet::new(),
             last_register_command: Instant::now(),
             enforce_heartbeat: false,
+            max_packet_size: None,
         }
     }
 
@@ -903,6 +918,22 @@ impl RegisterMap {
     pub fn enforce_heartbeat(&mut self, enable: bool) {
         self.enforce_heartbeat = enable;
         self.last_register_command = Instant::now();
+    }
+
+    /// Clamp `GevSCPSPacketSize` writes to `max`, the way a real device does.
+    ///
+    /// A request above `max` is acknowledged and silently reduced, so the
+    /// register reads back lower than what was written — nothing on the wire
+    /// distinguishes that from acceptance, which is the defect in
+    /// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112).
+    pub fn set_max_packet_size(&mut self, max: u32) {
+        self.max_packet_size = Some(max);
+        // Apply it to whatever the register already holds, so a device
+        // configured with a cap never reports a size above it.
+        let current = self.stream_packet_size();
+        if current > max {
+            self.write(STREAM_CHANNEL_BASE + SCP_PACKET_SIZE, &max.to_be_bytes());
+        }
     }
 
     /// Apply the heartbeat rule, and report whether privilege was just revoked.
@@ -991,6 +1022,21 @@ impl RegisterMap {
 
     /// Write `data` starting at `addr`.
     pub fn write(&mut self, addr: u64, data: &[u8]) {
+        // A capped device reduces an oversized packet size instead of refusing
+        // it — silently, exactly as the hardware in #112 does.
+        let clamped;
+        let data = match self.max_packet_size {
+            Some(max)
+                if addr == STREAM_CHANNEL_BASE + SCP_PACKET_SIZE
+                    && data.len() >= 4
+                    && u32::from_be_bytes([data[0], data[1], data[2], data[3]]) > max =>
+            {
+                clamped = max.to_be_bytes();
+                &clamped[..]
+            }
+            _ => data,
+        };
+
         // `EventNotification` applies to the selected event. Enabling a second
         // event must not disable the first, so the value lands in the set
         // keyed by the current selector rather than in a shared register.

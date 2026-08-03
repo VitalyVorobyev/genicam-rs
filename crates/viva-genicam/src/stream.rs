@@ -37,9 +37,11 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
-use tracing::info;
 #[cfg(not(windows))]
-use tracing::{debug, trace, warn};
+use tokio::time::timeout;
+#[cfg(not(windows))]
+use tracing::trace;
+use tracing::{debug, info, warn};
 use viva_pfnc::PixelFormat;
 
 use crate::GenicamError;
@@ -82,6 +84,204 @@ impl PacketSource {
     fn as_udp_socket(&self) -> Option<&UdpSocket> {
         match self {
             PacketSource::Udp(s) => Some(s),
+        }
+    }
+}
+
+/// Smallest GVSP packet size we will configure: the IPv4 minimum reassembly
+/// buffer.
+const MIN_PACKET_SIZE: u32 = 576;
+
+/// Largest GVSP packet size we will configure.
+///
+/// Both bounds bite at once: an IPv4 datagram cannot exceed 65 535 bytes, and
+/// `GevSCPSPacketSize` holds the size in 16 bits.
+const MAX_PACKET_SIZE: u32 = viva_gige::gvcp::STREAM_PACKET_SIZE_MASK;
+
+/// Write `GevSCPSPacketSize`, then read it back and return what the device
+/// actually holds.
+///
+/// A camera may clamp the requested size to what it supports, and the write
+/// succeeds when it does — nothing on the wire distinguishes "accepted" from
+/// "accepted and reduced". The receive path derives every reassembly offset
+/// from [`StreamParams::packet_size`] via `gvsp_payload_size`, so believing the
+/// request produces a stream that carries packets and completes no frame:
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112), where a
+/// Vieworks FS3200T on a 16 114-byte link delivered zero frames on every Start
+/// and streamed correctly when forced to 1 500. Backlog SR-02.
+///
+/// The read comes first as well as last. Viva Studio rebuilds the stream on
+/// every Acquisition Start, so an unconditional write discards a working
+/// configuration once per Start; when the device already holds the size we
+/// want, the write is skipped entirely.
+///
+/// A device that will not answer the read-back is not failed — that would break
+/// streaming which works today on a camera whose only fault is refusing a
+/// READREG. It warns and keeps the requested value, which is exactly the old
+/// behaviour, now visible in the log rather than assumed.
+async fn configure_packet_size(
+    device: &mut GigeDevice,
+    channel: u32,
+    requested: u32,
+) -> Result<u32, GenicamError> {
+    if let Ok(current) = device.get_stream_packet_size(channel).await
+        && current == requested
+    {
+        debug!(
+            channel,
+            packet_size = requested,
+            "camera already holds the requested GVSP packet size; leaving it alone"
+        );
+        return Ok(requested);
+    }
+
+    device
+        .set_stream_packet_size(channel, requested)
+        .await
+        .map_err(|err| GenicamError::transport(err.to_string()))?;
+
+    let effective = match device.get_stream_packet_size(channel).await {
+        Ok(effective) => effective,
+        Err(err) => {
+            warn!(
+                channel,
+                packet_size = requested,
+                error = %err,
+                "could not read GevSCPSPacketSize back; assuming the requested size took effect. \
+                 If no frame completes, the camera may have clamped it — pass an explicit packet \
+                 size of 1500 to find out"
+            );
+            return Ok(requested);
+        }
+    };
+
+    if effective == requested {
+        return Ok(effective);
+    }
+
+    if effective < MIN_PACKET_SIZE {
+        return Err(GenicamError::transport(format!(
+            "camera reduced the GVSP packet size from {requested} to {effective}, below the \
+             {MIN_PACKET_SIZE}-byte minimum; it cannot stream on this link"
+        )));
+    }
+
+    warn!(
+        channel,
+        requested,
+        effective,
+        "camera clamped the GVSP packet size; the receive path will follow the camera. \
+         The requested size is what the host interface MTU allows, so the camera is the \
+         narrower end of this link"
+    );
+    Ok(effective)
+}
+
+/// How long a stream may produce nothing before [`SilenceWatch`] speaks up.
+const SILENCE_GRACE: Duration = Duration::from_secs(3);
+
+/// How often the non-Windows receive loop wakes to re-check the watch.
+///
+/// The Windows reader thread gets the same effect free from its 100 ms socket
+/// read timeout.
+#[cfg(not(windows))]
+const SILENCE_POLL: Duration = Duration::from_millis(500);
+
+/// What a [`SilenceWatch`] has concluded so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Silence {
+    /// Nothing to say: still inside the grace period, or already spoken, or the
+    /// stream is delivering frames.
+    Quiet,
+    /// Not one datagram has arrived.
+    NoPacket,
+    /// Datagrams are arriving and no frame has completed.
+    NoFrame,
+}
+
+/// Warns once when a stream produces nothing, and names what to check.
+///
+/// Backlog DX-09. A silent stream reports `frames=0 drops=0 resends=0`, and
+/// that line is identical for a firewall block, a packet size the path cannot
+/// carry, a control privilege held by another application, and a camera that is
+/// simply not triggering. [#70](https://github.com/VitalyVorobyev/viva-genicam/issues/70)'s
+/// reporter worked the third of those out unaided;
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)'s needed a
+/// custom instrumented build to find the second.
+///
+/// The distinction the watch adds over "no frames" is whether *datagrams* are
+/// arriving, which the receiver already knows and never reported. Nothing
+/// arriving is a path or privilege problem; datagrams arriving with no frame
+/// completing is a packet-size disagreement, which is exactly SR-02.
+struct SilenceWatch {
+    since: Instant,
+    packet_size: u32,
+    saw_packet: bool,
+    saw_frame: bool,
+    warned: bool,
+}
+
+impl SilenceWatch {
+    fn new(packet_size: u32) -> Self {
+        Self {
+            since: Instant::now(),
+            packet_size,
+            saw_packet: false,
+            saw_frame: false,
+            warned: false,
+        }
+    }
+
+    /// A datagram arrived — parsed or not. Malformed still means the path works.
+    fn record_packet(&mut self) {
+        self.saw_packet = true;
+    }
+
+    /// A frame completed, so there is nothing left to diagnose.
+    fn record_frame(&mut self) {
+        self.saw_frame = true;
+    }
+
+    /// Decide what to say at `elapsed`, marking the verdict as spoken.
+    ///
+    /// Split from [`SilenceWatch::tick`] so the decision is testable without a
+    /// clock.
+    fn assess(&mut self, elapsed: Duration) -> Silence {
+        if self.warned || self.saw_frame || elapsed < SILENCE_GRACE {
+            return Silence::Quiet;
+        }
+        self.warned = true;
+        if self.saw_packet {
+            Silence::NoFrame
+        } else {
+            Silence::NoPacket
+        }
+    }
+
+    /// Emit the warning if one is due. Cheap enough to call on every timeout.
+    fn tick(&mut self) {
+        let seconds = SILENCE_GRACE.as_secs();
+        match self.assess(self.since.elapsed()) {
+            Silence::Quiet => {}
+            Silence::NoPacket => warn!(
+                packet_size = self.packet_size,
+                seconds,
+                "no GVSP packet has arrived since the stream opened. Check, roughly in order of \
+                 how often each is the cause: a host firewall blocking inbound UDP on the stream \
+                 port; another application holding control privilege, so AcquisitionStart never \
+                 reached the camera; a camera waiting for a trigger; or a network path that \
+                 cannot carry packets this large — retry with an explicit packet size of 1500 to \
+                 rule that out"
+            ),
+            Silence::NoFrame => warn!(
+                packet_size = self.packet_size,
+                payload_stride = gvsp_payload_size(self.packet_size),
+                seconds,
+                "GVSP packets are arriving but no frame has completed. Reassembly places each \
+                 packet at a stride derived from the negotiated packet size, so the usual cause \
+                 is the two ends disagreeing about it — retry with an explicit packet size of \
+                 1500"
+            ),
         }
     }
 }
@@ -248,11 +448,21 @@ impl<'a> StreamBuilder<'a> {
         // `auto_packet_size` argument to `packet_size` turned a `False` into
         // `Some(0)` -- Python's `bool` is an `int` -- and every wheel streaming
         // test failed with `timeout waiting for frame`.
-        const MIN_PACKET_SIZE: u32 = 576; // the IPv4 minimum reassembly buffer
         if packet_size < MIN_PACKET_SIZE {
             return Err(GenicamError::transport(format!(
                 "GVSP packet size {packet_size} is below the {MIN_PACKET_SIZE}-byte minimum; \
                  pass a real size or omit it to follow the interface MTU"
+            )));
+        }
+        // `best_packet_size` clamps the probed MTU to what an IPv4 datagram can
+        // carry, but an explicitly configured size used to bypass that (backlog
+        // TC-08's leftover) and reach `GevSCPSPacketSize`, whose size field is
+        // 16 bits -- so `--packet-size 70000` silently configured 4 464.
+        if packet_size > MAX_PACKET_SIZE {
+            return Err(GenicamError::transport(format!(
+                "GVSP packet size {packet_size} exceeds the {MAX_PACKET_SIZE}-byte maximum an \
+                 IPv4 datagram can carry, which is also the widest value GevSCPSPacketSize can \
+                 hold"
             )));
         }
 
@@ -281,10 +491,7 @@ impl<'a> StreamBuilder<'a> {
             }
         }
 
-        self.device
-            .set_stream_packet_size(self.channel, packet_size)
-            .await
-            .map_err(|err| GenicamError::transport(err.to_string()))?;
+        let packet_size = configure_packet_size(self.device, self.channel, packet_size).await?;
         self.device
             .set_stream_packet_delay(self.channel, packet_delay)
             .await
@@ -424,19 +631,19 @@ impl<'a> From<&'a mut GigeDevice> for StreamBuilder<'a> {
 const DEFAULT_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// GVSP header size preceding payload data.
-#[cfg(any(not(windows), test))]
 const GVSP_HEADER_SIZE: usize = 8;
 /// IPv4 header size used by GigE Vision streams.
-#[cfg(any(not(windows), test))]
 const IPV4_HEADER_SIZE: usize = 20;
 /// UDP header size used by GigE Vision streams.
-#[cfg(any(not(windows), test))]
 const UDP_HEADER_SIZE: usize = 8;
 /// Bytes in a GVSP data packet that are not image payload.
-#[cfg(any(not(windows), test))]
 const GVSP_PACKET_OVERHEAD: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + GVSP_HEADER_SIZE;
 
-#[cfg(any(not(windows), test))]
+/// The image bytes one GVSP data packet can carry at `packet_size`.
+///
+/// Also the stride reassembly places packets at, which is why
+/// [`SilenceWatch`] reports it: a stream carrying packets that completes no
+/// frame is usually a disagreement about this number.
 fn gvsp_payload_size(packet_size: u32) -> usize {
     (packet_size as usize).saturating_sub(GVSP_PACKET_OVERHEAD)
 }
@@ -625,6 +832,7 @@ fn windows_frame_receiver(
     let reader = thread::spawn(move || {
         let mut recv_buffer = vec![0u8; (packet_size as usize + 64).max(4096)];
         let mut active: Option<WindowsFrameAssembly> = None;
+        let mut silence = SilenceWatch::new(packet_size);
 
         while !reader_stop.load(Ordering::Acquire) {
             let (len, _) = match socket.recv_from(&mut recv_buffer) {
@@ -642,6 +850,7 @@ fn windows_frame_receiver(
                         active = None;
                         stats.record_drop();
                     }
+                    silence.tick();
                     continue;
                 }
                 Err(err) => {
@@ -651,6 +860,8 @@ fn windows_frame_receiver(
                     break;
                 }
             };
+
+            silence.record_packet();
 
             let packet = match gvsp::parse_packet(&recv_buffer[..len]) {
                 Ok(packet) => packet,
@@ -734,6 +945,7 @@ fn windows_frame_receiver(
                         ts_host: None,
                     };
                     stats.record_frame(completed.payload.len(), None);
+                    silence.record_frame();
                     if tx.try_send(Ok(completed)).is_err() {
                         stats.record_backpressure_drop();
                     }
@@ -776,6 +988,8 @@ pub struct FrameStream {
     recv_buffer: Vec<u8>,
     #[cfg(not(windows))]
     active: Option<FrameAssemblyState>,
+    #[cfg(not(windows))]
+    silence: SilenceWatch,
     frame_timeout: Duration,
     #[cfg(windows)]
     frame_timeout_ns: Arc<AtomicU64>,
@@ -823,6 +1037,8 @@ impl FrameStream {
             recv_buffer: vec![0u8; buffer_size],
             #[cfg(not(windows))]
             active: None,
+            #[cfg(not(windows))]
+            silence: SilenceWatch::new(params.packet_size),
             frame_timeout,
             #[cfg(windows)]
             frame_timeout_ns,
@@ -925,12 +1141,23 @@ impl FrameStream {
                     self.active = None;
                 }
 
-                // Receive next packet.
-                let raw = match self.source.recv(&mut self.recv_buffer).await {
-                    Ok(data) if data.is_empty() => return Ok(None), // Stream closed.
-                    Ok(data) => data,
-                    Err(e) => return Err(e),
+                // Receive next packet. The poll deadline exists so the loop
+                // keeps turning while nothing arrives: without it neither the
+                // DX-09 watch below nor the frame-assembly timeout above can
+                // fire on a stream that goes fully silent, because both are
+                // only reached when a packet does. The Windows reader thread
+                // has always had this, from its 100 ms socket read timeout.
+                let raw = match timeout(SILENCE_POLL, self.source.recv(&mut self.recv_buffer)).await
+                {
+                    Ok(Ok(data)) if data.is_empty() => return Ok(None), // Stream closed.
+                    Ok(Ok(data)) => data,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_elapsed) => {
+                        self.silence.tick();
+                        continue;
+                    }
                 };
+                self.silence.record_packet();
 
                 // Parse GVSP packet.
                 let packet = match gvsp::parse_packet(&raw) {
@@ -1064,6 +1291,7 @@ impl FrameStream {
                             .host_time()
                             .and_then(|ts| SystemTime::now().duration_since(ts).ok());
                         self.stats.record_frame(frame.payload.len(), latency);
+                        self.silence.record_frame();
 
                         debug!(
                             block_id,
@@ -1286,6 +1514,43 @@ mod tests {
     fn gvsp_payload_size_excludes_ip_udp_and_gvsp_headers() {
         assert_eq!(gvsp_payload_size(1458), 1422);
         assert_eq!(gvsp_payload_size(9000), 8964);
+    }
+
+    #[test]
+    fn silence_watch_stays_quiet_inside_the_grace_period() {
+        let mut watch = SilenceWatch::new(1500);
+        assert_eq!(
+            watch.assess(SILENCE_GRACE - Duration::from_millis(1)),
+            Silence::Quiet
+        );
+        // Still unspoken, so the verdict is available once the grace expires.
+        assert_eq!(watch.assess(SILENCE_GRACE), Silence::NoPacket);
+    }
+
+    #[test]
+    fn silence_watch_distinguishes_no_packet_from_no_frame() {
+        let mut nothing = SilenceWatch::new(1500);
+        assert_eq!(nothing.assess(SILENCE_GRACE), Silence::NoPacket);
+
+        // The distinction is the whole point of DX-09: nothing arriving is a
+        // path or privilege problem, while packets arriving with no frame
+        // completing is a packet-size disagreement (SR-02).
+        let mut packets = SilenceWatch::new(1500);
+        packets.record_packet();
+        assert_eq!(packets.assess(SILENCE_GRACE), Silence::NoFrame);
+    }
+
+    #[test]
+    fn silence_watch_speaks_once_and_never_after_a_frame() {
+        let mut watch = SilenceWatch::new(1500);
+        assert_eq!(watch.assess(SILENCE_GRACE), Silence::NoPacket);
+        // A stream that stays silent must not warn on every poll.
+        assert_eq!(watch.assess(SILENCE_GRACE * 10), Silence::Quiet);
+
+        let mut healthy = SilenceWatch::new(1500);
+        healthy.record_packet();
+        healthy.record_frame();
+        assert_eq!(healthy.assess(SILENCE_GRACE * 10), Silence::Quiet);
     }
 
     #[test]
