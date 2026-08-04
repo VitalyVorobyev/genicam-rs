@@ -210,6 +210,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 ///
 /// The probe never increases the size, so an explicitly configured
 /// `--packet-size` is still a ceiling.
+///
+/// **Probing is destructive, so the answer has to be written back.** Asking for
+/// a test packet *is* a write to `GevSCPSPacketSize` — there is no separate
+/// register — so when the probe returns, the device holds the last size it was
+/// *asked about*, which is rarely the size that was chosen. Every path that
+/// probed therefore ends by configuring the negotiated value, which also clears
+/// the do-not-fragment bit the probe set.
 async fn probe_packet_size(
     device: &mut GigeDevice,
     channel: u32,
@@ -217,9 +224,35 @@ async fn probe_packet_size(
     requested: u32,
 ) -> Result<u32, GenicamError> {
     if requested <= PROBE_FLOOR {
+        // Nothing was probed, so nothing was written and there is nothing to
+        // put back.
         return Ok(requested);
     }
 
+    let negotiated = probe_path_ceiling(device, channel, socket, requested).await?;
+
+    // The register now holds the last size the probe *tested*, not `negotiated`.
+    // Both mismatches are real and neither is visible from here: a device that
+    // never answered was left at `PROBE_FLOOR`, and a bisection whose final
+    // probe failed was left one byte above its own answer -- 9199 against a
+    // negotiated 9198 on the numbers in #112, which is exactly the size that
+    // reporter measured as the first failing one. Left uncorrected, the host
+    // strides at `negotiated` while the camera sends something else, which is
+    // the SR-02 failure mode this probe was built on top of.
+    configure_packet_size(device, channel, negotiated).await
+}
+
+/// The bisection itself: the largest size that arrives, or `requested` when the
+/// device does not answer probes at all.
+///
+/// Split out from [`probe_packet_size`] so that every early return still passes
+/// through the write-back, rather than each one having to remember it.
+async fn probe_path_ceiling(
+    device: &mut GigeDevice,
+    channel: u32,
+    socket: &UdpSocket,
+    requested: u32,
+) -> Result<u32, GenicamError> {
     // Control probe. Establishes that this device answers at all before any
     // negative result is allowed to mean anything.
     if !test_packet_arrives(device, channel, socket, PROBE_FLOOR).await? {

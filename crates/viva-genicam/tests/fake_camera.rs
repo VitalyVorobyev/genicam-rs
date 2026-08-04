@@ -694,12 +694,136 @@ async fn test_probe_finds_a_path_ceiling_the_device_does_not_report() {
     let _cam = common::TestCamera::start_with(|b| b.max_on_wire(PATH_CEILING)).await;
     let device_info = discover_fake().await;
 
-    let (frame_stream, _camera) = setup_stream_sized(&device_info, Some(HOST_MTU)).await;
+    let (mut frame_stream, camera) = setup_stream_sized(&device_info, Some(HOST_MTU)).await;
+    let camera = Arc::new(Mutex::new(camera));
 
     assert_eq!(
         frame_stream.params().packet_size,
         PATH_CEILING,
         "the probe must bisect to the largest size the path actually carries"
+    );
+
+    // Landing on the right answer is only half of it: the device has to be left
+    // *configured* at that answer. The fake now enforces its ceiling on the
+    // stream as well as on test packets, so a camera left one byte above it
+    // delivers nothing and this times out. Before the write-back, the bisection
+    // on exactly these numbers negotiated 9198 and left the register at 9199 —
+    // the first size the reporter measured as failing.
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_start().expect("start acquisition");
+    })
+    .await
+    .unwrap();
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), frame_stream.next_frame())
+        .await
+        .expect("timeout waiting for frame — the negotiated size never reached the camera")
+        .expect("frame error")
+        .expect("stream ended without a frame");
+
+    assert_eq!(
+        frame.payload.len(),
+        (frame.width * frame.height) as usize,
+        "frame payload length must match width*height for Mono8"
+    );
+
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut cam = cam.lock().unwrap();
+        cam.acquisition_stop().expect("stop acquisition");
+    })
+    .await
+    .unwrap();
+}
+
+/// Open a device, claim it, and build a stream, handing back the device so the
+/// caller can read `GevSCPSPacketSize` afterwards.
+///
+/// [`setup_stream_sized`] moves the device into a `GigeRegisterIo`, and the only
+/// way back to the register from there is a GenApi node read — which #112 showed
+/// is a *different address* (`0x190A04` against the bootstrap `0x0D04`) and a
+/// cached one. So the tests that care about the register open their own device.
+async fn build_stream_keeping_device(
+    device_info: &gige::DeviceInfo,
+    configure: impl FnOnce(viva_genicam::StreamBuilder<'_>) -> viva_genicam::StreamBuilder<'_>,
+) -> (viva_genicam::Stream, gige::GigeDevice) {
+    use std::net::{IpAddr, SocketAddr};
+
+    let control_addr = SocketAddr::new(IpAddr::V4(device_info.ip), gige::GVCP_PORT);
+    let mut device = gige::GigeDevice::open(control_addr)
+        .await
+        .expect("open device");
+    device.claim_control().await.expect("claim control");
+
+    let builder = viva_genicam::StreamBuilder::new(&mut device).iface(loopback_iface());
+    let stream = configure(builder).build().await.expect("build stream");
+
+    (stream, device)
+}
+
+/// After probing, the device must hold the size the probe chose.
+///
+/// Asking for a test packet *is* a write to `GevSCPSPacketSize` — bit 31 rides
+/// in the same register as the size — so a probe that does not put its answer
+/// back leaves the camera at the last size it happened to *test*. The bisection
+/// ends on a failing midpoint about half the time, and on the reporter's numbers
+/// it ends on exactly 9199 while reporting 9198.
+///
+/// That is `SR-02` again from the other direction: host and camera disagree
+/// about the stride, and this time we caused it. Asserting `params()` alone
+/// cannot see it, which is why the original `SR-13` test passed throughout.
+#[tokio::test]
+async fn test_probe_leaves_the_device_holding_the_negotiated_size() {
+    const PATH_CEILING: u32 = 9198;
+    const HOST_MTU: u32 = 16114;
+
+    let _cam = common::TestCamera::start_with(|b| b.max_on_wire(PATH_CEILING)).await;
+    let device_info = discover_fake().await;
+
+    let (stream, mut device) =
+        build_stream_keeping_device(&device_info, |b| b.packet_size(HOST_MTU)).await;
+
+    assert_eq!(stream.params().packet_size, PATH_CEILING);
+
+    let held = device
+        .get_stream_packet_size(0)
+        .await
+        .expect("read GevSCPSPacketSize back");
+    assert_eq!(
+        held, PATH_CEILING,
+        "the device must be left holding the negotiated size, not the last one probed"
+    );
+}
+
+/// A device that answers no test packet must be left as it was found.
+///
+/// The control probe writes [`PROBE_FLOOR`]-worth of bytes into
+/// `GevSCPSPacketSize` before it can learn anything, so "change nothing" is not
+/// the same as "return early" — the register has already moved. Without the
+/// write-back, every camera that has never implemented test packets ends up
+/// configured at 1500 while the host strides at the size it asked for, and no
+/// frame completes. That is the common path, not an edge case.
+#[tokio::test]
+async fn test_probe_restores_the_requested_size_when_no_test_packet_returns() {
+    const REQUESTED: u32 = 9000;
+
+    let _cam = common::TestCamera::start_with(|b| b.max_on_wire(0)).await;
+    let device_info = discover_fake().await;
+
+    let (stream, mut device) =
+        build_stream_keeping_device(&device_info, |b| b.packet_size(REQUESTED)).await;
+
+    assert_eq!(stream.params().packet_size, REQUESTED);
+
+    let held = device
+        .get_stream_packet_size(0)
+        .await
+        .expect("read GevSCPSPacketSize back");
+    assert_eq!(
+        held, REQUESTED,
+        "a silent device must keep the requested size, not the probe's control size"
     );
 }
 

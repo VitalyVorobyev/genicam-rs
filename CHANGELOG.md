@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added
 
 - **The GVSP packet size is now probed against the network path, not just the
@@ -32,8 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape of the reporter's link, and something the existing `max_packet_size`
   register clamp cannot express. Without it `SR-13` would have been untestable.
 
-=======
 ### Fixed
+
+- **The GVSP path probe did not write its own answer back, leaving the camera
+  configured at a size it had merely tested** (backlog `SR-15`,
+  [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)). Asking for
+  a test packet *is* a write to `GevSCPSPacketSize` — bit 31 rides in the same
+  register as the size — so when the probe finished, the device held the last
+  size it was asked *about*, not the one it chose. Two ways that goes wrong, and
+  neither is visible from the host: a bisection whose final probe fails ends one
+  byte above its own answer, and a device that never answers is left at the
+  1500-byte control size while the host strides at the size it requested.
+
+  On the numbers in #112 the probe negotiated 9198 and left the camera at
+  **9199** — the first size that reporter measured as failing. The second case
+  is worse because it is the common one: the probe exists precisely so that a
+  camera which has never implemented test packets is left alone, and instead
+  every such camera was reconfigured to 1500 behind the caller's back. That is
+  the `SR-02` failure mode, caused by the fix for `SR-13`.
+
+  The probe now ends by configuring the value it returns, which also clears the
+  do-not-fragment bit it set. Both existing `SR-13` tests asserted
+  `params().packet_size` only and passed throughout.
 
 - **The fake camera reported a GVSP trailer `size_y` of zero** (backlog
   `TC-04`). `size_y` is the number of lines a block actually delivered — the
@@ -54,7 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StreamBuilder`, `Stream`, `FrameStream` and `gvsp::parse_packet` are all
   deliberately absent: a round trip through our own receive path proves only
   that it agrees with our own fake.
->>>>>>> ff44fb0 (Assert the fake's GVSP bytes against the spec, not against our parser (TC-04, #63))
+
+- **`viva-fake-gige` enforces `max_on_wire` on the stream, not only on test
+  packets** (backlog `SR-15`). The ceiling modelled a narrow hop for the probe
+  and then let every frame through regardless, so a camera left configured above
+  it still delivered perfectly — the fake was physically incapable of
+  contradicting the probe's own answer, which is the ADR-0019 failure mode one
+  level up from the parser. `test_probe_finds_a_path_ceiling_the_device_does_not_report`
+  now requires a frame to arrive, and two new tests read `GevSCPSPacketSize`
+  back over raw GVCP rather than trusting `params()`.
 
 - **Five spec-derived GenCP acknowledgement-header tests** (backlog `TC-04`)
   pin the header as a literal byte array indexed by offset, rather than

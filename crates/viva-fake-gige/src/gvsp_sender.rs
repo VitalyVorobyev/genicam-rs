@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use bytes::{BufMut, BytesMut};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, Notify};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::registers::RegisterMap;
 
@@ -83,6 +83,7 @@ pub async fn run(
                 chunk_active,
                 exposure_time,
                 event_dest,
+                max_on_wire,
             ) = {
                 let store = regs.lock().await;
                 // A real camera emits the event when EventNotification is On
@@ -110,6 +111,7 @@ pub async fn run(
                     store.chunk_mode_active(),
                     store.exposure_time(),
                     event_dest,
+                    store.max_on_wire(),
                 )
             };
 
@@ -151,15 +153,18 @@ pub async fn run(
 
             // Send leader packet (packet_id = 0).
             let leader = build_leader(block_id, width, height, pixel_format, timestamp);
-            let _ = socket.send_to(&leader, dest).await;
+            send_on_wire(&socket, &leader, dest, max_on_wire).await;
 
             // Send payload packets.
             let mut packet_id: u16 = 1;
             let mut offset = 0;
+            let mut dropped = 0usize;
             while offset < image_size {
                 let end = (offset + payload_per_packet).min(image_size);
                 let pkt = build_payload(block_id, packet_id, &image[offset..end]);
-                let _ = socket.send_to(&pkt, dest).await;
+                if !send_on_wire(&socket, &pkt, dest, max_on_wire).await {
+                    dropped += 1;
+                }
                 packet_id += 1;
                 offset = end;
             }
@@ -171,8 +176,17 @@ pub async fn run(
                 Vec::new()
             };
             let trailer = build_trailer(block_id, packet_id, height, &chunk_data);
-            let _ = socket.send_to(&trailer, dest).await;
+            send_on_wire(&socket, &trailer, dest, max_on_wire).await;
 
+            if dropped > 0 {
+                debug!(
+                    block_id,
+                    dropped,
+                    packet_size,
+                    max_on_wire,
+                    "payload packets exceeded the path ceiling and were dropped in flight"
+                );
+            }
             trace!(block_id, packets = packet_id + 1, %dest, "frame sent");
             block_id = block_id.wrapping_add(1);
             if block_id == 0 {
@@ -182,6 +196,35 @@ pub async fn run(
             tokio::time::sleep(frame_interval).await;
         }
     }
+}
+
+/// Send one GVSP datagram, unless a configured path ceiling would have
+/// swallowed it. Returns whether it went out.
+///
+/// `max_on_wire` models a hop that is narrower than either endpoint — a switch,
+/// a driver, a NIC — which drops the frame with nobody to report the loss. That
+/// is the shape of the link in
+/// [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112), and it is
+/// what no register read can discover.
+///
+/// It applies to the **stream** as well as to test packets. Gating only the
+/// test packets would make the fake agree with the probe's own answer while
+/// being physically incapable of contradicting it: a camera left configured one
+/// byte above the ceiling would still deliver every frame, so no test could
+/// catch it. That is the ADR-0019 failure mode, one level up from the parser.
+async fn send_on_wire(
+    socket: &UdpSocket,
+    packet: &[u8],
+    dest: SocketAddr,
+    max_on_wire: Option<u32>,
+) -> bool {
+    // `GevSCPSPacketSize` counts the transmitted IP datagram, so the ceiling is
+    // compared against the UDP payload plus both headers.
+    let on_wire = packet.len() + IPV4_HEADER_SIZE + UDP_HEADER_SIZE;
+    if max_on_wire.is_some_and(|max| on_wire > max as usize) {
+        return false;
+    }
+    socket.send_to(packet, dest).await.is_ok()
 }
 
 /// Generate a test pattern that animates across frames.
