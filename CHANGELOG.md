@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: streaming no longer overwrites the camera's `GevSCPSPacketSize` by
+  default** (backlog `SR-14`, ADR-0021,
+  [#118](https://github.com/VitalyVorobyev/viva-genicam/pull/118) — contributed
+  by the [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)
+  reporter). Since 0.4.0 every `StreamBuilder::build` wrote the host NIC MTU
+  into the register, so a camera an operator had tuned to 9000 for a narrow
+  switch lost that value on the next Acquisition Start — and Studio rebuilds the
+  stream on *every* Start. The default is now **preserve**: the camera's value is
+  read and used as-is.
+
+  Two new opt-ins restore the old behaviour explicitly. `StreamBuilder::auto_packet_size()`
+  / `viva-camctl stream --auto` / Python `auto_packet_size=True` sets the size
+  from the NIC MTU; `packet_size(n)` / `--packet-size N` / `packet_size=N`
+  remains an explicit ceiling, and the two are mutually exclusive. `--auto` had
+  been removed in 0.4.0 and returns with an honest meaning — it is **not** the
+  pre-0.4 flag whose `false` branch fell back to 1500. `viva-service`, Studio's
+  Start, `bench` and the examples all opt into auto, so no unattended caller
+  silently loses jumbo.
+
+  **All three policies still probe the path** (`SR-13`), preserve included. The
+  probe only ever *lowers* a size, so it cannot override one you set; it can only
+  decline to stream at a size the path drops, which no register read can find.
+  `StreamBuilder::probe(false)` turns it off and makes preserve literal.
+
 ### Added
 
 - **The GVSP packet size is now probed against the network path, not just the
@@ -51,7 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `SR-02` failure mode, caused by the fix for `SR-13`.
 
   The probe now ends by configuring the value it returns, which also clears the
-  do-not-fragment bit it set. Both existing `SR-13` tests asserted
+  do-not-fragment bit it set — except where the device already holds that value,
+  which is reachable only after a DF-set test packet of that size crossed the
+  path. Both existing `SR-13` tests asserted
   `params().packet_size` only and passed throughout.
 
 - **The fake camera reported a GVSP trailer `size_y` of zero** (backlog

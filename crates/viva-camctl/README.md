@@ -39,8 +39,10 @@ viva-camctl get --ip 192.168.0.10 --name ExposureTime
 # Write a feature
 viva-camctl set --ip 192.168.0.10 --name ExposureTime --value 5000
 
-# Stream with auto packet-size negotiation, save 2 frames
+# Stream and save 2 frames. Default preserves GevSCPSPacketSize (ADR-0021).
+# --auto negotiates from the NIC MTU; --packet-size N sets an explicit ceiling:
 viva-camctl stream --ip 192.168.0.10 --iface 192.168.0.5 --auto --save 2
+viva-camctl stream --ip 192.168.0.10 --iface 192.168.0.5 --packet-size 9000 --save 2
 
 # Run a 60-second streaming benchmark
 viva-camctl bench --ip 192.168.0.10 --duration-s 60 --json-out bench.json

@@ -158,6 +158,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut stream_device = viva_genicam::gige::GigeDevice::open(control_addr).await?;
     let stream = StreamBuilder::new(&mut stream_device)
         .iface(iface.clone())
+        .auto_packet_size()
         .build()
         .await?;
 

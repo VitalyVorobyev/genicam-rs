@@ -333,12 +333,13 @@ impl PyCamera {
         }
     }
 
-    #[pyo3(signature = (iface=None, packet_size=None, multicast=None, destination_port=None))]
+    #[pyo3(signature = (iface=None, packet_size=None, auto_packet_size=false, multicast=None, destination_port=None))]
     fn open_stream(
         &self,
         py: Python<'_>,
         iface: Option<&str>,
         packet_size: Option<u32>,
+        auto_packet_size: bool,
         multicast: Option<&str>,
         destination_port: Option<u16>,
     ) -> PyResult<PyFrameStream> {
@@ -378,6 +379,7 @@ impl PyCamera {
                     camera.clone(),
                     Some(iface_resolved),
                     packet_size,
+                    auto_packet_size,
                     multicast_addr,
                     destination_port,
                 )

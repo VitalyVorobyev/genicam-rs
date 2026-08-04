@@ -93,9 +93,16 @@ pub(crate) fn build_gige_stream(
     camera: Arc<Mutex<GigeCamera>>,
     iface: Option<Iface>,
     packet_size: Option<u32>,
+    auto_packet_size: bool,
     multicast: Option<Ipv4Addr>,
     destination_port: Option<u16>,
 ) -> PyResult<PyFrameStream> {
+    if auto_packet_size && packet_size.is_some() {
+        return Err(parse_error(
+            "pass at most one of auto_packet_size=True and packet_size=...",
+        ));
+    }
+
     let time_sync = {
         let g = camera
             .lock()
@@ -113,7 +120,9 @@ pub(crate) fn build_gige_stream(
         if let Some(iface) = iface {
             builder = builder.iface(iface);
         }
-        if let Some(size) = packet_size {
+        if auto_packet_size {
+            builder = builder.auto_packet_size();
+        } else if let Some(size) = packet_size {
             builder = builder.packet_size(size);
         }
         if let Some(port) = destination_port {

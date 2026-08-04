@@ -93,8 +93,15 @@ stops working.
 release that failed to fix what they reported — but SR-02 was never going to
 fix it, and DX-09 will at least tell them which half of the stream is at fault.
 Ship 0.4.1 with what has landed; **SR-13** (the GVSP test packet) is the actual
-candidate fix for #112 and is gated on a path measurement the reporter is
-running, so it belongs to the release after this one.
+candidate fix for #112 and belongs to the release after this one.
+
+**Since then**: the reporter's path measurement came back and isolated an
+ipTIME PoE4002 switch (≤9198 streams, ≥9199 does not; the same camera direct to
+the NIC reaches 16114). SR-13 landed on that evidence, then needed **SR-15** —
+the probe wrote test packets into `GevSCPSPacketSize` and never put its answer
+back. The reporter also contributed **SR-14** / ADR-0021, which stops the
+library overwriting a packet size an operator set. None of it is confirmed on
+their hardware yet; #112 stays open until it is.
 
 **Also newly filed from #112's attached log**, none of them related to the
 streaming failure and all of them real: **GA-20** (62 reads fail because a

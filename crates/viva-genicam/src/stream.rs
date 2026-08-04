@@ -215,8 +215,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// a test packet *is* a write to `GevSCPSPacketSize` — there is no separate
 /// register — so when the probe returns, the device holds the last size it was
 /// *asked about*, which is rarely the size that was chosen. Every path that
-/// probed therefore ends by configuring the negotiated value, which also clears
-/// the do-not-fragment bit the probe set.
+/// probed therefore ends by configuring the negotiated value.
+///
+/// That rewrite also clears the do-not-fragment bit the probe set — except where
+/// the device already holds the negotiated size, since `configure_packet_size`
+/// skips a redundant write. The exception is the safe one: it is reachable only
+/// when a *DF-set* test packet of that size traversed the path a moment earlier,
+/// which is the evidence that leaving DF on cannot hurt.
 async fn probe_packet_size(
     device: &mut GigeDevice,
     channel: u32,
@@ -433,6 +438,22 @@ impl SilenceWatch {
     }
 }
 
+/// How [`StreamBuilder`] chooses `GevSCPSPacketSize` (ADR-0021 / SR-14).
+///
+/// The variants differ only in where the *starting* size comes from. All three
+/// then hand it to the SR-13 path probe, which can lower it and never raise it,
+/// so no variant can end up above the size it began with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PacketSizeMode {
+    /// Start from the camera's current value; never write a larger one.
+    #[default]
+    Preserve,
+    /// Start from `best_packet_size(nic_mtu)`.
+    Auto,
+    /// Start from this size — a ceiling, never raised above.
+    Explicit(u32),
+}
+
 /// Builder for configuring a GVSP stream.
 pub struct StreamBuilder<'a> {
     device: &'a mut GigeDevice,
@@ -440,7 +461,7 @@ pub struct StreamBuilder<'a> {
     dest: Option<StreamDest>,
     rcvbuf_bytes: Option<usize>,
     target_mtu: Option<u32>,
-    packet_size: Option<u32>,
+    packet_size_mode: PacketSizeMode,
     packet_delay: Option<u32>,
     channel: u32,
     dst_port: u16,
@@ -449,6 +470,11 @@ pub struct StreamBuilder<'a> {
 
 impl<'a> StreamBuilder<'a> {
     /// Create a new builder bound to an opened [`GigeDevice`].
+    ///
+    /// Default packet-size policy is **preserve**: the camera's current
+    /// `GevSCPSPacketSize` is used as-is. Call [`StreamBuilder::auto_packet_size`]
+    /// to set from the NIC MTU and path-probe, or [`StreamBuilder::packet_size`]
+    /// for an explicit ceiling (ADR-0021).
     pub fn new(device: &'a mut GigeDevice) -> Self {
         Self {
             device,
@@ -456,20 +482,27 @@ impl<'a> StreamBuilder<'a> {
             dest: None,
             rcvbuf_bytes: None,
             target_mtu: None,
-            packet_size: None,
+            packet_size_mode: PacketSizeMode::Preserve,
             packet_delay: None,
             channel: 0,
             dst_port: 0,
+            // On for every policy, Preserve included: the probe only lowers.
             probe: true,
         }
     }
 
-    /// Whether to probe the path with a GVSP test packet before streaming
-    /// (default: on).
+    /// Whether to path-probe with a GVSP test packet before streaming
+    /// (default: on, under every packet-size policy).
     ///
-    /// Turning it off restores the pre-0.4.2 behaviour: whatever the camera
-    /// stored in `GevSCPSPacketSize` is assumed to reach the host. That is
-    /// wrong on any path narrower than both endpoints
+    /// It applies under the default preserve policy too, which is not a
+    /// contradiction: the probe never *raises* a size, so it cannot override the
+    /// value an operator set. It can only decline to stream at a size the path
+    /// demonstrably drops — something no register read can discover, because
+    /// both endpoints accept it. Turning it off is what makes preserve literal.
+    ///
+    /// Turning it off restores the pre-0.4.2 behaviour: whatever
+    /// `GevSCPSPacketSize` holds is assumed to reach the host.
+    /// That is wrong on any path narrower than both endpoints
     /// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)), so
     /// the only good reason to disable it is a device that misbehaves when
     /// asked for a test packet — in which case please open an issue, because
@@ -491,17 +524,28 @@ impl<'a> StreamBuilder<'a> {
         self
     }
 
-    /// Cap the MTU used when computing the GVSP packet size.
+    /// Cap the MTU used when computing the GVSP packet size in
+    /// [`StreamBuilder::auto_packet_size`] mode.
     ///
-    /// The interface's own MTU is probed either way; this only lowers it.
+    /// The interface's own MTU is still read; this only lowers the request.
     pub fn target_mtu(mut self, mtu: u32) -> Self {
         self.target_mtu = Some(mtu);
         self
     }
 
-    /// Override the GVSP packet size, ignoring the probed MTU.
+    /// Set `GevSCPSPacketSize` from the host NIC MTU, then path-probe (SR-13).
+    ///
+    /// This is the explicit opt-in that replaces the old always-write-MTU
+    /// default (ADR-0021). It is **not** the pre-0.4 `--auto false ⇒ 1500`
+    /// behaviour.
+    pub fn auto_packet_size(mut self) -> Self {
+        self.packet_size_mode = PacketSizeMode::Auto;
+        self
+    }
+
+    /// Write this GVSP packet size (a ceiling for the path probe).
     pub fn packet_size(mut self, size: u32) -> Self {
-        self.packet_size = Some(size);
+        self.packet_size_mode = PacketSizeMode::Explicit(size);
         self
     }
 
@@ -597,45 +641,43 @@ impl<'a> StreamBuilder<'a> {
         let mtu = self
             .target_mtu
             .map_or(iface_mtu, |limit| limit.min(iface_mtu));
-        // The packet size follows the link we just probed, unless the caller
-        // states one. There used to be an `auto_packet_size` flag whose `false`
-        // branch fell back to `best_packet_size(1500)` — discarding the MTU it
-        // had just measured. On the 16114-byte link in #70 that turned a 3.1 MB
-        // frame into ~2 100 packets instead of ~200, and the flag defaulted to
-        // `false` in `viva-camctl`, so that was the normal path (backlog SR-10).
-        let packet_size = self
-            .packet_size
-            .unwrap_or_else(|| nic::best_packet_size(mtu));
-        // A zero or absurdly small packet size configures the camera to send
-        // nothing and the caller then waits out a receive timeout with no clue
-        // why. This is not hypothetical: renaming the Python binding's
-        // `auto_packet_size` argument to `packet_size` turned a `False` into
-        // `Some(0)` -- Python's `bool` is an `int` -- and every wheel streaming
-        // test failed with `timeout waiting for frame`.
-        if packet_size < MIN_PACKET_SIZE {
+
+        // ADR-0021: default preserves the camera register. Auto writes the NIC
+        // MTU then SR-13-bisects; Explicit writes a caller ceiling. Preserve is
+        // never "fall back to 1500" (that was the pre-0.4 auto=false trap).
+        let (requested, write_camera) = match self.packet_size_mode {
+            PacketSizeMode::Preserve => {
+                let current = self
+                    .device
+                    .get_stream_packet_size(self.channel)
+                    .await
+                    .map_err(|err| GenicamError::transport(err.to_string()))?;
+                debug!(
+                    channel = self.channel,
+                    packet_size = current,
+                    "preserving camera GevSCPSPacketSize; pass auto_packet_size() \
+                     or packet_size(n) to negotiate"
+                );
+                (current, false)
+            }
+            PacketSizeMode::Auto => (nic::best_packet_size(mtu), true),
+            PacketSizeMode::Explicit(size) => (size, true),
+        };
+
+        if requested < MIN_PACKET_SIZE {
             return Err(GenicamError::transport(format!(
-                "GVSP packet size {packet_size} is below the {MIN_PACKET_SIZE}-byte minimum; \
-                 pass a real size or omit it to follow the interface MTU"
+                "GVSP packet size {requested} is below the {MIN_PACKET_SIZE}-byte minimum; \
+                 raise the camera's GevSCPSPacketSize, or override with auto_packet_size() \
+                 or packet_size(n)"
             )));
         }
-        // `best_packet_size` clamps the probed MTU to what an IPv4 datagram can
-        // carry, but an explicitly configured size used to bypass that (backlog
-        // TC-08's leftover) and reach `GevSCPSPacketSize`, whose size field is
-        // 16 bits -- so `--packet-size 70000` silently configured 4 464.
-        if packet_size > MAX_PACKET_SIZE {
+        if requested > MAX_PACKET_SIZE {
             return Err(GenicamError::transport(format!(
-                "GVSP packet size {packet_size} exceeds the {MAX_PACKET_SIZE}-byte maximum an \
+                "GVSP packet size {requested} exceeds the {MAX_PACKET_SIZE}-byte maximum an \
                  IPv4 datagram can carry, which is also the widest value GevSCPSPacketSize can \
                  hold"
             )));
         }
-
-        // A 1500-byte link needs inter-packet spacing to survive a burst; a
-        // jumbo link sends few enough packets that it does not.
-        let packet_delay = self.packet_delay.unwrap_or({
-            const DELAY_NS: u32 = 2_000;
-            if mtu <= 1500 { DELAY_NS / 80 } else { 0 }
-        });
 
         match &dest {
             StreamDest::Unicast { dst_ip, dst_port } => {
@@ -659,7 +701,18 @@ impl<'a> StreamBuilder<'a> {
         // probe below asks the camera to send to it.
         let source = PacketSource::Udp(Self::bind_socket(&dest, &iface, self.rcvbuf_bytes).await?);
 
-        let packet_size = configure_packet_size(self.device, self.channel, packet_size).await?;
+        let packet_size = if write_camera {
+            configure_packet_size(self.device, self.channel, requested).await?
+        } else {
+            requested
+        };
+        // Preserve probes too. The probe only ever *lowers* a size, so it cannot
+        // override the value an operator chose -- it can only decline to send at
+        // a size the path demonstrably drops, which no register read can reveal
+        // (#112). Skipping it under Preserve would leave the reporter's own
+        // camera at the 16114 an earlier run wrote, streaming nothing, with the
+        // one mechanism that could rescue it turned off. `probe(false)` is the
+        // escape for a literal preserve.
         let packet_size = if self.probe {
             let socket = source
                 .as_udp_socket()
@@ -668,6 +721,20 @@ impl<'a> StreamBuilder<'a> {
         } else {
             packet_size
         };
+
+        // The delay compensates for a burst of many small packets, so it follows
+        // the size actually in force -- known only now, after a clamp or a probe.
+        // Keying it off the NIC MTU was equivalent while the size was *derived*
+        // from that MTU; under Preserve the two come apart, and a jumbo NIC in
+        // front of a camera holding 1500 is exactly the case that needs spacing.
+        let packet_delay = self.packet_delay.unwrap_or({
+            const DELAY_NS: u32 = 2_000;
+            if packet_size <= 1500 {
+                DELAY_NS / 80
+            } else {
+                0
+            }
+        });
         self.device
             .set_stream_packet_delay(self.channel, packet_delay)
             .await
