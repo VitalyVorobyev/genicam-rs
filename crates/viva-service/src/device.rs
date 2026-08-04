@@ -124,7 +124,11 @@ impl DeviceHandle {
                 .map_err(|_| GenicamError::Transport("camera mutex poisoned".into()))?;
             let mut device = cam.transport().lock_device()?;
             handle.block_on(async {
-                let stream = StreamBuilder::new(&mut device).iface(iface).build().await?;
+                let stream = StreamBuilder::new(&mut device)
+                    .iface(iface)
+                    .auto_packet_size()
+                    .build()
+                    .await?;
                 Ok(FrameStream::new(stream, None))
             })
         })

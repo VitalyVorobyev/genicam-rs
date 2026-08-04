@@ -95,6 +95,7 @@ pub async fn run(args: BenchArgs, emit_json: bool) -> Result<()> {
         }
     };
     builder = builder.dest(dest);
+    builder = builder.auto_packet_size();
     let stream = builder.build().await.context("negotiate stream")?;
 
     camera.acquisition_start().context("start acquisition")?;

@@ -205,6 +205,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .channel(args.stream_idx);
     if let Some(size) = args.packet_size {
         builder = builder.packet_size(size);
+    } else {
+        builder = builder.auto_packet_size();
     }
     let stream = builder.build().await?;
 

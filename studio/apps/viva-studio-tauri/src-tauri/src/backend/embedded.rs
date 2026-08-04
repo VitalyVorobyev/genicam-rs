@@ -335,12 +335,13 @@ impl DeviceBackend for EmbeddedBackend {
                 let iface = viva_genicam::gige::nic::Iface::from_remote_ipv4(camera_ipv4)
                     .map_err(|e| format!("Failed to detect network interface: {e}"))?;
 
-                // StreamBuilder::build() is async — use block_on from the blocking context.
                 let stream = handle
                     .block_on(
                         viva_genicam::StreamBuilder::new(&mut device_guard)
                             .iface(iface)
                             .rcvbuf_bytes(64 << 20) // 64 MiB to absorb bursty GVSP traffic
+                            // No packet-size UI yet; negotiate from NIC MTU + path probe.
+                            .auto_packet_size()
                             .build(),
                     )
                     .map_err(|e| format!("Failed to build stream: {e}"))?;
