@@ -133,21 +133,36 @@ switch, and the host NIC.
   CPU becomes the bottleneck sooner.
 
 The usual approach is jumbo frames (MTU 9000) on a dedicated camera network,
-with the packet size set just below it. The library follows the interface's
-probed MTU unless you pass `--packet-size`.
+with the packet size set just below the **path** MTU — every hop, not only the
+host NIC. A NIC that advertises 16114 and a switch that only forwards ~9216-byte
+frames will accept a write of 16114 at both ends and still deliver nothing
+(Vieworks FS-3200T through an ipTIME PoE4002; the same camera direct to the NIC
+streams up to **16114**).
+
+**What the library does (ADR-0021 / SR-14).** Default **preserves** the camera’s
+current `GevSCPSPacketSize` (read only — no write, no path probe). Pass
+`--auto` / `StreamBuilder::auto_packet_size()` to write from the host NIC MTU
+and run the GVSP test-packet probe (SR-13), bisecting downward when the
+requested size does not arrive. Pass `--packet-size N` /
+`StreamBuilder::packet_size(n)` for an explicit ceiling (mutually exclusive
+with `--auto`). A clamping camera is still followed on write (SR-02).
+
+That overwrite-on-every-Start behaviour from 0.4.x is gone: a camera already
+set for a narrower switch keeps that value unless you opt into auto or an
+explicit size.
 
 Cameras **clamp** a packet size they cannot honour, and the write succeeds when
 they do — nothing on the wire distinguishes "accepted" from "accepted and
 reduced". The library reads `GevSCPSPacketSize` back after writing it and
-follows the effective value, logging a warning when the two differ, so a
-clamping camera streams instead of producing frames that never complete.
+follows the effective value, logging a warning when the two differ.
 
 If a stream produces nothing, the library says so after a few seconds and names
 the likely causes rather than leaving you with `frames=0`. Two messages are
 worth recognising:
 
-- *no GVSP packet has arrived* — a firewall, a lost control privilege, or a
-  camera waiting for a trigger. Nothing is reaching the socket.
+- *no GVSP packet has arrived* — a firewall, a lost control privilege, a
+  camera waiting for a trigger, or a **path MTU** smaller than the packet size.
+  Try `--packet-size 9000` or `1500` before assuming the camera is broken.
 - *packets are arriving but no frame has completed* — the two ends disagree
   about the packet size. Retry with `--packet-size 1500`.
 

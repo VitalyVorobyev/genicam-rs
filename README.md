@@ -191,8 +191,11 @@ cargo run -p viva-camctl -- get --ip 192.168.0.10 --name ExposureTime
 # Write a feature
 cargo run -p viva-camctl -- set --ip 192.168.0.10 --name ExposureTime --value 5000
 
-# Stream frames with auto packet-size negotiation
+# Stream frames. Default preserves the camera's GevSCPSPacketSize (ADR-0021).
+# --auto: set from NIC MTU, then path-probe / bisect. --packet-size N: explicit ceiling.
 cargo run -p viva-camctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --auto --save 2
+# Cap for a known narrow path (e.g. a switch that only forwards ~9K frames):
+cargo run -p viva-camctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --packet-size 9000 --save 2
 
 # Sustained streaming benchmark
 cargo run -p viva-camctl -- bench --ip 192.168.0.10 --duration-s 60 --json-out bench.json

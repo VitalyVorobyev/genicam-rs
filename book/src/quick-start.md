@@ -69,9 +69,13 @@ still produce output when nothing else does. Attach the file to an
 ## Streaming (early GVSP)
 
 ```bash
-# Receive a GVSP stream, auto‑negotiate packet size, save first two frames
+# Receive a GVSP stream. Default leaves GevSCPSPacketSize alone (ADR-0021).
+# --auto: NIC MTU then path bisect. --packet-size: explicit ceiling.
 cargo run -p viva-camctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --auto --save 2
 ```
+
+See [Streaming → Packet size and MTU](tutorials/streaming.md#41-packet-size-and-mtu)
+and [ADR-0021](../../docs/adrs/adr0021-gvsp-packet-size-policy.md).
 
 ## Windows specifics
 
