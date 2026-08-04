@@ -499,8 +499,10 @@ async fn setup_stream_owned(
 
 /// As [`setup_stream_owned`], but leaves the packet size to the caller.
 ///
-/// `None` means "follow the probed MTU", which is the path SR-02 covers and the
-/// only one where a camera gets the chance to clamp.
+/// `None` means [`StreamBuilder::auto_packet_size`] (NIC MTU + SR-13 probe) —
+/// the path SR-02 / SR-13 cover, where a camera can clamp or a path can bisect.
+/// Pass `Some(n)` for an explicit ceiling. Preserve-by-default is tested
+/// separately (ADR-0021 / SR-14).
 async fn setup_stream_sized(
     device_info: &gige::DeviceInfo,
     packet_size: Option<u32>,
@@ -541,9 +543,11 @@ async fn setup_stream_sized(
     // Callers pin the packet size so reassembly is exercised over ~200 packets.
     // Loopback reports a jumbo MTU, which would reduce a 640x480 frame to a
     // handful of datagrams and stop testing the stride arithmetic that #34 got
-    // wrong.
+    // wrong — unless they intentionally ask for Auto.
     if let Some(size) = packet_size {
         builder = builder.packet_size(size);
+    } else {
+        builder = builder.auto_packet_size();
     }
     let stream = builder.build().await.expect("build stream");
     let frame_stream = viva_genicam::FrameStream::new(stream, None);
@@ -582,7 +586,8 @@ async fn test_clamped_packet_size_is_followed_not_assumed() {
     let _cam = common::TestCamera::start_with(|builder| builder.max_packet_size(CAMERA_MAX)).await;
     let device_info = discover_fake().await;
 
-    // `None` = follow the probed MTU, which on loopback is well above the cap.
+    // `None` = auto_packet_size (NIC MTU + probe), which on loopback is well
+    // above the cap so the camera clamp is exercised.
     let (mut frame_stream, camera) = setup_stream_sized(&device_info, None).await;
     let camera = Arc::new(Mutex::new(camera));
 
@@ -621,6 +626,42 @@ async fn test_clamped_packet_size_is_followed_not_assumed() {
     })
     .await
     .unwrap();
+}
+
+/// ADR-0021 / SR-14: default StreamBuilder must not rewrite GevSCPSPacketSize.
+#[tokio::test]
+async fn test_default_preserves_camera_packet_size() {
+    const PRESET: u32 = 2500;
+
+    let _cam = common::TestCamera::start().await;
+    let device_info = discover_fake().await;
+
+    let control_addr = std::net::SocketAddr::new(device_info.ip.into(), gige::GVCP_PORT);
+    let mut device = gige::GigeDevice::open(control_addr)
+        .await
+        .expect("open device");
+    device.claim_control().await.expect("claim control");
+    device
+        .set_stream_packet_size(0, PRESET)
+        .await
+        .expect("preset GevSCPSPacketSize");
+
+    let stream = viva_genicam::StreamBuilder::new(&mut device)
+        .iface(loopback_iface())
+        .build()
+        .await
+        .expect("build with default preserve");
+
+    assert_eq!(
+        stream.params().packet_size,
+        PRESET,
+        "default must keep the camera register, not overwrite from NIC MTU"
+    );
+    let held = device
+        .get_stream_packet_size(0)
+        .await
+        .expect("read back after preserve build");
+    assert_eq!(held, PRESET, "preserve must not write the camera register");
 }
 
 /// Accumulates every `WARN` this test binary emits.
