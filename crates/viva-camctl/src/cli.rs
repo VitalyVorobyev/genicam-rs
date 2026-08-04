@@ -116,8 +116,14 @@ pub enum Cmd {
         group: Option<Ipv4Addr>,
         #[arg(long, default_value_t = 10040)]
         port: u16,
-        /// Override the GVSP packet size. Defaults to the interface's probed MTU.
-        #[arg(long)]
+        /// Set GevSCPSPacketSize from the host NIC MTU, then path-probe
+        /// (ADR-0021). Mutually exclusive with --packet-size. Default is to
+        /// leave the camera's current value alone.
+        #[arg(long, conflicts_with = "packet_size")]
+        auto: bool,
+        /// Override the GVSP packet size (ceiling). Default preserves the
+        /// camera's GevSCPSPacketSize. Mutually exclusive with --auto.
+        #[arg(long, conflicts_with = "auto")]
         packet_size: Option<u32>,
         #[arg(long, default_value_t = 1)]
         save: usize,
@@ -312,6 +318,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             group,
             port,
             packet_size,
+            auto,
             save,
             rgb,
             duration_s,
@@ -324,6 +331,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 group,
                 port,
                 packet_size,
+                auto,
                 save,
                 rgb,
                 duration_s,

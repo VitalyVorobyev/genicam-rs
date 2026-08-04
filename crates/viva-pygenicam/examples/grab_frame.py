@@ -44,7 +44,8 @@ def main() -> None:
     print(f"Connected to {cams[0].model or '(unknown)'} @ {cams[0].ip}")
 
     saved = 0
-    with cam.stream(packet_size=1500) as frames:
+    # Default preserves the camera register; auto negotiates from the NIC MTU.
+    with cam.stream(auto_packet_size=True) as frames:
         for frame in frames:
             saved += 1
             arr = frame.to_rgb8() if args.rgb else frame.to_numpy()

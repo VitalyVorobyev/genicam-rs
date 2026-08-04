@@ -98,6 +98,7 @@ class Camera:
         self,
         iface: Optional[str] = None,
         packet_size: Optional[int] = None,
+        auto_packet_size: bool = False,
         multicast: Optional[str] = None,
         destination_port: Optional[int] = None,
     ) -> FrameStream:
@@ -106,12 +107,16 @@ class Camera:
         ``iface`` names the host interface that receives the stream, either by
         one of its IPv4 addresses (``"169.254.105.106"``) or by its OS name
         (``"en0"``, or a GUID on Windows); omit it to let the OS pick the
-        interface that routes to the camera. ``packet_size`` overrides the GVSP
-        packet size in bytes; omit it to follow the interface's probed MTU.
-        GigE-only parameters are ignored for U3V cameras.
+        interface that routes to the camera.
+
+        Packet size: default leaves the camera's ``GevSCPSPacketSize`` alone;
+        ``auto_packet_size=True`` sets it from the NIC MTU and path-probes;
+        ``packet_size=N`` writes an explicit ceiling. Pass at most one of
+        ``auto_packet_size`` and ``packet_size``. GigE-only parameters are
+        ignored for U3V cameras.
         """
         native = self._native.open_stream(
-            iface, packet_size, multicast, destination_port
+            iface, packet_size, auto_packet_size, multicast, destination_port
         )
         return FrameStream(native, self)
 

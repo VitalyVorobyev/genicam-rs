@@ -61,3 +61,15 @@ def test_stream_auto_iface_for_loopback(fake_gige):
     with cam.stream(packet_size=1500) as frames:
         frame = frames.next_frame(timeout_ms=5000)
         assert frame is not None
+
+
+def test_auto_packet_size(camera):
+    with camera.stream(auto_packet_size=True) as frames:
+        frame = frames.next_frame(timeout_ms=5000)
+        assert frame is not None
+
+
+def test_auto_and_packet_size_conflict(camera):
+    with pytest.raises(Exception, match="at most one"):
+        with camera.stream(auto_packet_size=True, packet_size=1500):
+            pass

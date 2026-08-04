@@ -21,7 +21,11 @@ pub struct StreamArgs {
     pub mode: String,
     pub group: Option<Ipv4Addr>,
     pub port: u16,
+    /// Explicit GVSP packet size ceiling. Mutually exclusive with [`StreamArgs::auto`].
     pub packet_size: Option<u32>,
+    /// Set from NIC MTU then path-probe (ADR-0021). Mutually exclusive with
+    /// [`StreamArgs::packet_size`].
+    pub auto: bool,
     pub save: usize,
     pub rgb: bool,
     pub duration_s: u64,
@@ -96,7 +100,9 @@ pub async fn run(args: StreamArgs) -> Result<()> {
             .iface(iface.clone())
             .dest(dest)
             .rcvbuf_bytes(64 << 20);
-        if let Some(size) = args.packet_size {
+        if args.auto {
+            builder = builder.auto_packet_size();
+        } else if let Some(size) = args.packet_size {
             builder = builder.packet_size(size);
         }
         if args.port != 0 {
