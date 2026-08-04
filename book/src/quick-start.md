@@ -75,7 +75,7 @@ cargo run -p viva-camctl -- stream --ip 192.168.0.10 --iface 192.168.0.5 --auto 
 ```
 
 See [Streaming → Packet size and MTU](tutorials/streaming.md#41-packet-size-and-mtu)
-and [ADR-0021](../../docs/adrs/adr0021-gvsp-packet-size-policy.md).
+and [ADR-0021](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/adrs/adr0021-gvsp-packet-size-policy.md).
 
 ## Windows specifics
 

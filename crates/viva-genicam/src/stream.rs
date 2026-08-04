@@ -215,8 +215,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// a test packet *is* a write to `GevSCPSPacketSize` — there is no separate
 /// register — so when the probe returns, the device holds the last size it was
 /// *asked about*, which is rarely the size that was chosen. Every path that
-/// probed therefore ends by configuring the negotiated value, which also clears
-/// the do-not-fragment bit the probe set.
+/// probed therefore ends by configuring the negotiated value.
+///
+/// That rewrite also clears the do-not-fragment bit the probe set — except where
+/// the device already holds the negotiated size, since `configure_packet_size`
+/// skips a redundant write. The exception is the safe one: it is reachable only
+/// when a *DF-set* test packet of that size traversed the path a moment earlier,
+/// which is the evidence that leaving DF on cannot hurt.
 async fn probe_packet_size(
     device: &mut GigeDevice,
     channel: u32,
@@ -434,14 +439,18 @@ impl SilenceWatch {
 }
 
 /// How [`StreamBuilder`] chooses `GevSCPSPacketSize` (ADR-0021 / SR-14).
+///
+/// The variants differ only in where the *starting* size comes from. All three
+/// then hand it to the SR-13 path probe, which can lower it and never raise it,
+/// so no variant can end up above the size it began with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum PacketSizeMode {
-    /// Read the camera's current value; do not write or path-probe.
+    /// Start from the camera's current value; never write a larger one.
     #[default]
     Preserve,
-    /// Write `best_packet_size(nic_mtu)`, then SR-13 probe/bisect when enabled.
+    /// Start from `best_packet_size(nic_mtu)`.
     Auto,
-    /// Write this size (ceiling for the probe); never raises above it.
+    /// Start from this size — a ceiling, never raised above.
     Explicit(u32),
 }
 
@@ -477,20 +486,22 @@ impl<'a> StreamBuilder<'a> {
             packet_delay: None,
             channel: 0,
             dst_port: 0,
-            // Meaningful for Auto / Explicit only; Preserve never probes.
+            // On for every policy, Preserve included: the probe only lowers.
             probe: true,
         }
     }
 
-    /// Whether to path-probe with a GVSP test packet after writing a size
-    /// (default: on for [`StreamBuilder::auto_packet_size`] /
-    /// [`StreamBuilder::packet_size`]).
+    /// Whether to path-probe with a GVSP test packet before streaming
+    /// (default: on, under every packet-size policy).
     ///
-    /// Has no effect under the default preserve policy — preserve never writes
-    /// the camera, so there is nothing to probe.
+    /// It applies under the default preserve policy too, which is not a
+    /// contradiction: the probe never *raises* a size, so it cannot override the
+    /// value an operator set. It can only decline to stream at a size the path
+    /// demonstrably drops — something no register read can discover, because
+    /// both endpoints accept it. Turning it off is what makes preserve literal.
     ///
-    /// Turning it off restores the pre-0.4.2 behaviour for auto/explicit:
-    /// whatever was written to `GevSCPSPacketSize` is assumed to reach the host.
+    /// Turning it off restores the pre-0.4.2 behaviour: whatever
+    /// `GevSCPSPacketSize` holds is assumed to reach the host.
     /// That is wrong on any path narrower than both endpoints
     /// ([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)), so
     /// the only good reason to disable it is a device that misbehaves when
@@ -668,13 +679,6 @@ impl<'a> StreamBuilder<'a> {
             )));
         }
 
-        // Delay follows host link capacity (NIC MTU), not the chosen packet size —
-        // including in Preserve mode, where the camera may hold a smaller value.
-        let packet_delay = self.packet_delay.unwrap_or({
-            const DELAY_NS: u32 = 2_000;
-            if mtu <= 1500 { DELAY_NS / 80 } else { 0 }
-        });
-
         match &dest {
             StreamDest::Unicast { dst_ip, dst_port } => {
                 info!(%dst_ip, dst_port, channel = self.channel, "configuring unicast stream");
@@ -702,8 +706,14 @@ impl<'a> StreamBuilder<'a> {
         } else {
             requested
         };
-        // Path probe mutates GevSCPSPacketSize when it bisects, so Preserve skips it.
-        let packet_size = if write_camera && self.probe {
+        // Preserve probes too. The probe only ever *lowers* a size, so it cannot
+        // override the value an operator chose -- it can only decline to send at
+        // a size the path demonstrably drops, which no register read can reveal
+        // (#112). Skipping it under Preserve would leave the reporter's own
+        // camera at the 16114 an earlier run wrote, streaming nothing, with the
+        // one mechanism that could rescue it turned off. `probe(false)` is the
+        // escape for a literal preserve.
+        let packet_size = if self.probe {
             let socket = source
                 .as_udp_socket()
                 .expect("the UDP path always has a socket");
@@ -711,6 +721,20 @@ impl<'a> StreamBuilder<'a> {
         } else {
             packet_size
         };
+
+        // The delay compensates for a burst of many small packets, so it follows
+        // the size actually in force -- known only now, after a clamp or a probe.
+        // Keying it off the NIC MTU was equivalent while the size was *derived*
+        // from that MTU; under Preserve the two come apart, and a jumbo NIC in
+        // front of a camera holding 1500 is exactly the case that needs spacing.
+        let packet_delay = self.packet_delay.unwrap_or({
+            const DELAY_NS: u32 = 2_000;
+            if packet_size <= 1500 {
+                DELAY_NS / 80
+            } else {
+                0
+            }
+        });
         self.device
             .set_stream_packet_delay(self.channel, packet_delay)
             .await

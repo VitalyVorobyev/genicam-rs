@@ -296,7 +296,7 @@ switch drops the oversized GVSP datagrams and the stream shows `frames=0`.
 Direct camera↔NIC links on that same host have streamed at **16114**. When in
 doubt, cap with `viva-camctl stream --packet-size 9000` (or lower) rather than
 trusting the NIC alone. See [Streaming → Packet size and MTU](tutorials/streaming.md#41-packet-size-and-mtu)
-and [ADR-0021](../../docs/adrs/adr0021-gvsp-packet-size-policy.md).
+and [ADR-0021](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/adrs/adr0021-gvsp-packet-size-policy.md).
 
 Typical steps:
 - Camera: set `GevSCPSPacketSize` or similar feature to a value below the

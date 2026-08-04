@@ -1,6 +1,6 @@
 # ADR-0021: GVSP Packet-Size Policy (Preserve, `--auto`, Explicit)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-04
 
 ## Context
@@ -13,12 +13,14 @@ path will deliver it.
 **Hardware.** A Vieworks FS-3200T on a host with jumbo enabled (NIC jumbo 16128,
 IPv4 MTU 16114) through an ipTIME PoE4002 (~9216-byte frame ceiling) configures
 16114 at both ends and streams `frames=0`. The same camera **direct** to that
-NIC streams with max working **16114** (min failing 16115). Hand bisection and
-SR-13’s GVSP test-packet probe both point at the path, not a camera clamp
-([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112); local
-confirm on PoE4002 vs direct).
+NIC streams with max working **16114** (min failing 16115). Both bisections are
+the reporter's own, run with `viva-camctl stream`; removing the switch and
+re-running is what separates a path limit from a camera clamp
+([#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)). Whether the
+SR-13 probe *lands* on that ceiling on this camera is not established — see
+**Evidence standing** below.
 
-**What the library does today (0.4.x after SR-10 / SR-13).**
+**What the library does today (0.4.1, plus SR-13 on `main`).**
 
 1. If the caller does not pass an explicit size, `StreamBuilder` writes
    `best_packet_size(nic_mtu)` into `GevSCPSPacketSize`.
@@ -37,18 +39,39 @@ advertises 16114.
 flag and made “follow NIC MTU” the only path. That fixed the 1500 trap and
 overcorrected: there is no longer a way to say “do not write the camera.”
 
-Older READMEs still show `--auto` as if it existed; the CLI does not offer it.
+Older READMEs still showed `--auto` as if it existed, for a release in which the
+CLI did not offer it. This ADR is also what makes those examples true again.
 
 ## Decision
 
-Adopt a three-way packet-size policy. Implementation is tracked in the backlog;
-this ADR fixes the intended contract.
+Adopt a three-way packet-size policy, implemented in
+[#118](https://github.com/VitalyVorobyev/viva-genicam/pull/118) (backlog SR-14).
 
 | Mode | Meaning | Write `GevSCPSPacketSize`? | Path probe (SR-13)? |
 |------|---------|----------------------------|---------------------|
-| **Default** (no flag) | Use the camera’s current value | **No** (read only; size recv buffers from it) | Optional / off by default for preserve, or probe-without-raising only if we can prove it never writes larger — prefer **off** so preserve is literal |
-| **`--auto`** (explicit) | Start from `best_packet_size(nic_mtu)`, then negotiate the path | **Yes** | **Yes** — try the NIC MTU size first; if the test packet (or equivalent) fails, **bisect** downward with the existing SR-13 probe |
-| **`--packet-size N`** | Caller-chosen ceiling | **Yes** (to N, after clamps) | Yes by default (never raises above N); mutually exclusive with `--auto` |
+| **Default** (no flag) | Use the camera’s current value | **Not upward.** Read only, unless the probe finds the path cannot carry what the device holds | **Yes** |
+| **`--auto`** (explicit) | Start from `best_packet_size(nic_mtu)`, then negotiate the path | **Yes** | **Yes** — try the NIC MTU size first; if the test packet fails, **bisect** downward |
+| **`--packet-size N`** | Caller-chosen ceiling | **Yes** (to N, after clamps) | **Yes** (never raises above N); mutually exclusive with `--auto` |
+
+### Why preserve still probes
+
+The obvious reading — preserve means *touch nothing* — was the first draft of
+this ADR, and it is wrong on the hardware that prompted it. The reporter's raw
+bootstrap read gives `0x0D04 = 0x00003EF2` — **16114 already in the register**.
+Whatever put it there, a literal preserve hands that value straight back and
+reproduces `frames=0` through the PoE4002, with the one mechanism that could
+rescue it switched off.
+
+Keeping the probe costs nothing that preserve is trying to protect, because **the
+probe only ever lowers**. It cannot override an operator's choice upward; it can
+only decline to stream at a size the path demonstrably drops — a fact no register
+read can reach, since both endpoints accept it. So preserve's real promise is
+*we will not raise what you set*, and that survives intact. `probe(false)` is
+the escape for callers who want preserve to be literal.
+
+The probe writes the register when it bisects. That is not an exception to the
+policy but the mechanism of it: on this transport there is no way to ask without
+telling, since the test-packet request and the size share one register.
 
 ### `--auto` procedure
 
@@ -92,10 +115,20 @@ the PoE4002 class of failure without a separate `--probe-packet-size` flag.
   until someone opts into `--auto` or sets a size — document that clearly.
 - Devices that mis-handle test packets still need `probe(false)` escapes (already
   true for SR-13).
+- Preserve is not literal: the probe may lower the register. Callers who need
+  the register untouched must say so with `probe(false)`.
 
-### Follow-up
+### Evidence standing
 
-- Implement the three-way API in `StreamBuilder`, `viva-camctl`, and Python
-  (backlog SR-14).
-- Until then, user-facing examples must describe **current** behaviour and must
-  not show a working `--auto` flag.
+The failing configuration is **first-hand**: the reporter measured the ceiling by
+bisecting `viva-camctl stream` by hand, then isolated the switch by removing it
+and re-running the same bisection (16114 direct, ≥9199 failing through the
+PoE4002). Both numbers are theirs, not our inference from a log.
+
+What is **not** confirmed on hardware is that the SR-13 probe helps *that*
+camera, because it is unknown whether the FS-3200T answers GVSP test packets at
+all. If it does not, the probe correctly changes nothing and `--packet-size`
+remains the workaround on that link. This ADR does not depend on the answer —
+preserve-by-default stands on the overwrite-on-every-Start complaint alone — but
+the Default row's probe column does, and should be revisited if the answer is
+no.

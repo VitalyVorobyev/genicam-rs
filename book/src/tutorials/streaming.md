@@ -140,16 +140,23 @@ frames will accept a write of 16114 at both ends and still deliver nothing
 streams up to **16114**).
 
 **What the library does (ADR-0021 / SR-14).** Default **preserves** the camera’s
-current `GevSCPSPacketSize` (read only — no write, no path probe). Pass
-`--auto` / `StreamBuilder::auto_packet_size()` to write from the host NIC MTU
-and run the GVSP test-packet probe (SR-13), bisecting downward when the
-requested size does not arrive. Pass `--packet-size N` /
-`StreamBuilder::packet_size(n)` for an explicit ceiling (mutually exclusive
-with `--auto`). A clamping camera is still followed on write (SR-02).
+current `GevSCPSPacketSize`: it is read, never raised. Pass `--auto` /
+`StreamBuilder::auto_packet_size()` to set it from the host NIC MTU instead, or
+`--packet-size N` / `StreamBuilder::packet_size(n)` for an explicit ceiling
+(mutually exclusive with `--auto`). A clamping camera is followed on write
+(SR-02).
 
 That overwrite-on-every-Start behaviour from 0.4.x is gone: a camera already
 set for a narrower switch keeps that value unless you opt into auto or an
 explicit size.
+
+**All three then probe the path** (SR-13): the library asks the camera for a GVSP
+test packet and bisects downward when the size does not arrive. The probe only
+ever *lowers*, so it cannot override a size you chose — it can only refuse to
+stream at one the path drops, which is undetectable from either endpoint's
+registers. A device that answers no test packet keeps its size unchanged, so
+cameras that never implemented the mechanism are not walked down to 1500.
+`StreamBuilder::probe(false)` turns it off and makes preserve literal.
 
 Cameras **clamp** a packet size they cannot honour, and the write succeeds when
 they do — nothing on the wire distinguishes "accepted" from "accepted and
