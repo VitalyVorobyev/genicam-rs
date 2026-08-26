@@ -7,6 +7,7 @@ Runnable scripts demonstrating the `viva-genicam` Python package.
 | [`discover.py`](discover.py) | Enumerate GigE + U3V cameras reachable from this host |
 | [`get_set_feature.py`](get_set_feature.py) | Read/write features + introspection + typed helpers |
 | [`node_browser.py`](node_browser.py) | Walk the NodeMap: categories, kinds, access modes, visibility |
+| [`execute_command.py`](execute_command.py) | Execute `<Command>` features — list them, or reset via `UserSetSelector` + `UserSetLoad` |
 | [`grab_frame.py`](grab_frame.py) | Stream frames, convert to NumPy, save as PNG (needs `Pillow`) |
 | [`demo_fake_camera.py`](demo_fake_camera.py) | End-to-end demo using the in-process fake camera — no hardware needed |
 

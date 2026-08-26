@@ -46,6 +46,8 @@
 //! | `0x20088`   | 4      | ChunkEnable                     | u32 BE   |
 //! | `0x200a0`   | 4      | EventSelector                   | u32 BE   |
 //! | `0x200a4`   | 4      | EventNotification (per selector)| u32 BE   |
+//! | `0x200a8`   | 4      | UserSetSelector                 | u32 BE   |
+//! | `0x200ac`   | 4      | UserSetLoad (command, pValue)   | u32 BE   |
 //! | `0x20100`   | 4      | WidthMin (RO)                   | u32 BE   |
 //! | `0x20104`   | 4      | WidthMax (RO)                   | u32 BE   |
 //! | `0x20108`   | 4      | HeightMin (RO)                  | u32 BE   |
@@ -172,6 +174,21 @@ pub const REG_EVENT_SELECTOR: u64 = 0x200a0;
 /// [`RegisterMap::event_notification_on`].
 pub const REG_EVENT_NOTIFICATION: u64 = 0x200a4;
 
+/// `REG_USER_SET_SELECTOR` and `REG_USER_SET_LOAD` back the SFNC user-set
+/// features, so the fake can answer the workflow issue #121 was filed about.
+///
+/// `UserSetLoad` is also the fake's first command that reaches its register
+/// through `<pValue>` rather than a bare `<Address>`. That matters for backlog
+/// `GA-10`: all 432 `<Command>` nodes in the vendor corpus use `<pValue>`, and
+/// until now all three of the fake's used the direct-address path — so our
+/// integration tests exercised only the path no real camera takes.
+/// Exposure the fake boots with, and returns to on `UserSetLoad`.
+pub const DEFAULT_EXPOSURE_US: f64 = 5000.0;
+
+pub const REG_USER_SET_SELECTOR: u64 = 0x200a8;
+/// See [`REG_USER_SET_SELECTOR`].
+pub const REG_USER_SET_LOAD: u64 = 0x200ac;
+
 /// Limit registers.
 pub const REG_WIDTH_MIN: u64 = 0x20100;
 pub const REG_WIDTH_MAX: u64 = 0x20104;
@@ -229,6 +246,13 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <pFeature>AnalogControl</pFeature>
     <pFeature>TransportLayerControl</pFeature>
     <pFeature>ChunkDataControl</pFeature>
+    <pFeature>UserSetControl</pFeature>
+  </Category>
+
+  <Category Name="UserSetControl">
+    <DisplayName>User Set Control</DisplayName>
+    <pFeature>UserSetSelector</pFeature>
+    <pFeature>UserSetLoad</pFeature>
   </Category>
 
   <Category Name="DeviceControl">
@@ -528,6 +552,24 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <CommandValue>1</CommandValue>
     <Endianess>BigEndian</Endianess>
   </Command>
+
+  <Enumeration Name="UserSetSelector" NameSpace="Standard">
+    <ToolTip>User set that UserSetLoad restores</ToolTip>
+    <EnumEntry Name="Default"><Value>0</Value></EnumEntry>
+    <EnumEntry Name="UserSet0"><Value>1</Value></EnumEntry>
+    <pValue>UserSetSelectorReg</pValue>
+  </Enumeration>
+  <IntReg Name="UserSetSelectorReg"><Address>0x200a8</Address><Length>4</Length><AccessMode>RW</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
+
+  <!-- Reaches its register through <pValue>, unlike the three commands above.
+       That is the shape every <Command> in the vendor corpus uses, and the one
+       our tests had no example of (backlog GA-10). -->
+  <Command Name="UserSetLoad" NameSpace="Standard">
+    <ToolTip>Restore the selected user set</ToolTip>
+    <pValue>UserSetLoadReg</pValue>
+    <CommandValue>1</CommandValue>
+  </Command>
+  <IntReg Name="UserSetLoadReg"><Address>0x200ac</Address><Length>4</Length><AccessMode>WO</AccessMode><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess></IntReg>
 
   <Command Name="AcquisitionStop" NameSpace="Standard">
     <ToolTip>Stop image acquisition</ToolTip>
@@ -862,9 +904,14 @@ impl RegisterMap {
         // ── Acquisition control ─────────────────────────────────────────
         regs.insert(REG_ACQ_MODE, 0u32.to_be_bytes().to_vec()); // Continuous
         regs.insert(REG_ACQ_START, vec![0, 0, 0, 0]);
+        regs.insert(REG_USER_SET_SELECTOR, 0u32.to_be_bytes().to_vec()); // Default
+        regs.insert(REG_USER_SET_LOAD, 0u32.to_be_bytes().to_vec());
         regs.insert(REG_ACQ_STOP, vec![0, 0, 0, 0]);
         regs.insert(REG_ACQ_FRAME_RATE, 30.0f32.to_be_bytes().to_vec());
-        regs.insert(REG_EXPOSURE_TIME, 5000.0f64.to_be_bytes().to_vec());
+        regs.insert(
+            REG_EXPOSURE_TIME,
+            DEFAULT_EXPOSURE_US.to_be_bytes().to_vec(),
+        );
         regs.insert(REG_EXPOSURE_AUTO, 0u32.to_be_bytes().to_vec()); // Off
 
         // ── Analog control ──────────────────────────────────────────────
@@ -1134,6 +1181,28 @@ impl RegisterMap {
             self.regs
                 .insert(REG_TIMESTAMP_VALUE, ts.to_be_bytes().to_vec());
         }
+        if addr == REG_USER_SET_LOAD {
+            self.load_user_set();
+        }
+    }
+
+    /// Restore the analog-control defaults, as `UserSetLoad` does on a real
+    /// camera.
+    ///
+    /// A command that only acknowledges the write is untestable: a test could
+    /// assert nothing beyond the absence of an error, which is the fake
+    /// agreeing with itself. Restoring observable device state means a test can
+    /// change a feature, execute the command, and read the change back out
+    /// (ADR-0019).
+    fn load_user_set(&mut self) {
+        self.regs.insert(
+            REG_EXPOSURE_TIME,
+            DEFAULT_EXPOSURE_US.to_be_bytes().to_vec(),
+        );
+        self.regs.insert(REG_GAIN, 0.0f64.to_be_bytes().to_vec());
+        self.regs
+            .insert(REG_EXPOSURE_AUTO, 0u32.to_be_bytes().to_vec());
+        self.regs.insert(REG_GAIN_AUTO, 0u32.to_be_bytes().to_vec());
     }
 
     // ── Accessors ───────────────────────────────────────────────────────

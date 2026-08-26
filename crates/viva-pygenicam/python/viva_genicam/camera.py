@@ -86,6 +86,25 @@ class Camera:
 
     # ── control ──────────────────────────────────────────────────────────
 
+    def execute(self, name: str) -> None:
+        """Execute a ``Command`` feature.
+
+        ``node_info(name).kind == "Command"`` identifies one. Commands have no
+        value: the camera acts on the write itself.
+
+        >>> cam.set("UserSetSelector", "Default")
+        >>> cam.execute("UserSetLoad")
+
+        ``set(name, "1")`` does the same thing and always did, which is how
+        this gap went unnoticed (issue #121) — but it reads like a write and
+        the value it takes is discarded, so prefer ``execute``.
+
+        GenICam's ``pIsDone`` polling is not implemented, so this returns once
+        the register write is acknowledged rather than once the camera has
+        finished acting on it.
+        """
+        self._native.execute(name)
+
     def acquisition_start(self) -> None:
         self._native.acquisition_start()
 

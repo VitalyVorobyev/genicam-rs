@@ -35,6 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Camera.execute(name)` in the Python bindings, and `viva-camctl execute`**
+  ([#121](https://github.com/VitalyVorobyev/viva-genicam/issues/121), backlog
+  `API-12`). GenApi `<Command>` features — `UserSetLoad`, `TimestampLatch`,
+  `TriggerSoftware` — had no verb in Python, so a user trying to reset a camera
+  through `UserSetSelector` + `UserSetLoad` concluded, reasonably, that it was
+  not possible.
+
+  It *was* possible: `Camera.set(name, "1")` dispatches Command nodes and
+  discards the value, and always has. Nothing said so, and a setter that
+  requires a meaningless value is not an API anyone should have to guess. The
+  Rust facade already had `Camera::execute_command`, and the service and Studio
+  already spoke `execute` on the wire; only Python and the CLI were missing it.
+  Both now use the same verb.
+
+  `viva-camctl execute --name <Node>` does not read back: `Camera::get` on a
+  Command is a type error, and GenICam's `<pIsDone>` polling is not implemented
+  anywhere in this library, so the only honest report is that the write was
+  acknowledged. That limitation is now documented rather than implied.
+
 - **The GVSP packet size is now probed against the network path, not just the
   device** (backlog `SR-13`,
   [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)).
@@ -116,6 +135,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-0019 exists for.
 
 ### Testing
+
+- **The fake camera has `UserSetSelector` and `UserSetLoad`** — its first
+  `<Command>` that reaches its register through `<pValue>` rather than a bare
+  `<Address>`. All 432 `<Command>` nodes in the vendor XML corpus use `<pValue>`
+  and all three of the fake's used the direct-address path, so the integration
+  suite exercised only the path no real camera takes (backlog `GA-10`).
+  `UserSetLoad` restores the analog-control defaults, so a test can move a
+  feature, execute the command, and read the change back off the device — a
+  command that only acknowledges its write can be "verified" by a test that
+  proves nothing (ADR-0019).
+
 
 - **`test_fake_gvsp_packets_match_spec_layout`** (backlog `TC-04`,
   [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63)) asserts the

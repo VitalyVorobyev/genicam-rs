@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use viva_genapi::AccessMode;
+use viva_genapi::RegisterIo;
 use viva_genicam::{Camera, GigeRegisterIo, connect_gige, gige};
 
 async fn discover_fake() -> gige::DeviceInfo {
@@ -49,6 +50,16 @@ async fn set_feature(
     })
     .await
     .unwrap();
+}
+
+async fn get_feature(camera: &Arc<Mutex<Camera<GigeRegisterIo>>>, name: &'static str) -> String {
+    let cam = camera.clone();
+    tokio::task::spawn_blocking(move || {
+        let cam = cam.lock().unwrap();
+        cam.get(name).unwrap_or_else(|e| panic!("get {name}: {e}"))
+    })
+    .await
+    .unwrap()
 }
 
 async fn read_predicate<F, T>(camera: &Arc<Mutex<Camera<GigeRegisterIo>>>, f: F) -> T
@@ -232,5 +243,72 @@ async fn writing_a_locked_exposure_time_is_refused_before_the_wire() {
     assert!(
         msg.contains("ExposureTime") && msg.contains("ExposureAutoActive"),
         "error should name the node and its lock, got: {msg}"
+    );
+}
+
+/// `Camera::execute_command` drives a `<Command>` that reaches its register
+/// through `<pValue>`, and the device state actually changes.
+///
+/// Both halves matter. All 432 `<Command>` nodes in the vendor XML corpus use
+/// `<pValue>`; until `UserSetLoad` was added, all three of the fake's commands
+/// used a bare `<Address>`, so the integration suite exercised only the path no
+/// real camera takes (backlog `GA-10`).
+///
+/// And the assertion is on the camera, not on our own return value: a command
+/// that merely acknowledges a write can be "verified" by a test that proves
+/// nothing. Here the exposure is moved away from the boot default first, so a
+/// no-op execute fails the test.
+#[tokio::test]
+async fn execute_command_through_pvalue_changes_device_state() {
+    let _cam = common::TestCamera::start().await;
+    let camera = connect_fake().await;
+
+    set_feature(&camera, "ExposureTime", "20000.0".into()).await;
+    let moved = get_feature(&camera, "ExposureTime").await;
+    assert!(
+        moved.starts_with("20000"),
+        "precondition: exposure should have moved off the default, got {moved}"
+    );
+
+    set_feature(&camera, "UserSetSelector", "Default".into()).await;
+
+    {
+        let cam = camera.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cam = cam.lock().unwrap();
+            cam.execute_command("UserSetLoad")
+        })
+        .await
+        .unwrap()
+        .expect("UserSetLoad should execute");
+    }
+
+    // Read the register through the transport rather than through
+    // `Camera::get`. Two reasons, and both are the point of the test:
+    //
+    //  * It asserts what the *camera* did, not what our nodemap believes. A
+    //    command that only returns `Ok` can be "verified" by a test that proves
+    //    nothing.
+    //  * `Camera::get` would still answer 20000 here. FLIR's `UserSetLoad`
+    //    declares `<pInvalidator>` on every feature it resets, and we parse
+    //    none of them (backlog `GA-24`), so nothing tells the cache it is
+    //    stale. That gap is real and filed; it must not also hide whether the
+    //    execute reached the device.
+    let raw = {
+        let cam = camera.clone();
+        tokio::task::spawn_blocking(move || {
+            let cam = cam.lock().unwrap();
+            cam.transport()
+                .read(viva_fake_gige::registers::REG_EXPOSURE_TIME, 8)
+        })
+        .await
+        .unwrap()
+        .expect("read exposure register")
+    };
+    let restored = f64::from_be_bytes(raw.try_into().expect("8 bytes"));
+    assert_eq!(
+        restored,
+        viva_fake_gige::registers::DEFAULT_EXPOSURE_US,
+        "UserSetLoad should have restored the default exposure on the device"
     );
 }

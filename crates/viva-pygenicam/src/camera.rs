@@ -210,6 +210,30 @@ impl PyCamera {
         })
     }
 
+    /// Execute a `<Command>` node.
+    ///
+    /// Exposed because there was no verb for it (issue #121): `set(name, "1")`
+    /// already dispatched commands and ignored the value, which is neither
+    /// discoverable nor documented. Named `execute` to match
+    /// `Camera::execute_command` in the Rust API and the `execute` key the
+    /// service and Studio already use.
+    fn execute(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        py.detach(|| match &self.inner {
+            CameraInner::Gige { camera, .. } => {
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
+                g.execute_command(name).into_py_err()
+            }
+            CameraInner::U3v { camera, .. } => {
+                let mut g = camera
+                    .lock()
+                    .map_err(|_| parse_error("camera mutex poisoned"))?;
+                g.execute_command(name).into_py_err()
+            }
+        })
+    }
+
     fn acquisition_start(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| match &self.inner {
             CameraInner::Gige { camera, .. } => {

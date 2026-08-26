@@ -98,3 +98,36 @@ def test_categories_non_empty(camera):
 def test_unknown_feature_raises(camera):
     with pytest.raises(vg.GenApiError):
         camera.get("NonExistent_Feature_XYZ")
+
+
+def test_execute_runs_a_command_and_changes_the_camera(camera):
+    """`execute` on a `<Command>` node, asserted against the camera's state.
+
+    This is the workflow from issue #121: select a user set, load it. The
+    exposure is moved off its default first, so an execute that quietly did
+    nothing would fail here rather than pass on a bare `Ok`.
+
+    `UserSetLoad` in the fake reaches its register through `<pValue>`, which is
+    the shape all 432 `<Command>` nodes in the vendor XML corpus use.
+    """
+    assert camera.node_info("UserSetLoad").kind == "Command"
+    assert "Default" in camera.enum_entries("UserSetSelector")
+
+    camera.set("ExposureTime", "20000.0")
+    assert camera.get("ExposureTime").startswith("20000")
+
+    camera.set("UserSetSelector", "Default")
+    camera.execute("UserSetLoad")
+
+    # Re-connect rather than re-read: `UserSetLoad` declares no <pInvalidator>
+    # in the fake, and we would not parse one if it did (backlog GA-24), so the
+    # open camera's cache still holds 20000. A fresh nodemap reads the device.
+    cams = vg.discover(timeout_ms=1500, all=True)
+    reopened = vg.connect_gige(next(c for c in cams if c.ip.startswith("127.")))
+    assert reopened.get("ExposureTime").startswith("5000")
+
+
+def test_execute_rejects_a_non_command_node(camera):
+    """A non-Command node must be refused, not silently written."""
+    with pytest.raises(Exception):
+        camera.execute("ExposureTime")
