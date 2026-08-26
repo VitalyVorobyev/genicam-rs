@@ -890,7 +890,9 @@ fn encode_camera_frame(
 
         PixelFormat::BGR8Packed => {
             let rgb: Vec<u8> = pixel_data
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .flat_map(|c| [c[2], c[1], c[0]])
                 .collect();
             encoder_rgb
