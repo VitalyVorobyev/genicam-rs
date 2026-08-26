@@ -118,7 +118,7 @@ RUST_LOG=debug cargo test --workspace -- --nocapture
 Fake cameras only exercise constructs we already thought of. Real vendor
 GenApi XML is where the surprises live -- issues #45 and #35 were both a
 single vendor construct making a camera unopenable, and both reached
-users before us. The corpus test parses 37 documents: 34 real device
+users before us. The corpus test parses 38 documents: 35 real device
 descriptions (AVT, Basler, Baumer, FLIR, Hikrobot, JAI, Micro-Epsilon,
 PCO, Point Grey, Photonic Science, Prosilica, SVS, Sony, TIS), the
 GenICam conformance document, and aravis's two synthetic devices.
@@ -126,9 +126,11 @@ Count them with `ls fixtures/vendor-xml/*.xml | wc -l` rather than
 trusting this paragraph — it has drifted before, and three files here
 are not vendor hardware. Most are fetched from third-party projects; the
 Hikrobot MV-CS050-10GC (#35), five FLIR Blackfly / Blackfly S
-descriptions (#45) and the Micro-Epsilon scanCONTROL 850050 (#93) were
-contributed by users and are fetched from the issue attachments or a
-pinned gist revision. The fifth FLIR document is the #45 reporter's
+descriptions (#45), the Micro-Epsilon scanCONTROL 850050 (#93) and the
+TIS DMK 33GP2000e (#122) were contributed by users and are fetched from
+the issue attachments or a pinned gist revision. The DMK is the only
+document in the corpus that opens with a UTF-8 byte-order mark, which is
+the defect it was reported for. The fifth FLIR document is the #45 reporter's
 own BFS-PGE-31S4C-C, obtained with `viva-camctl xml` after 0.3.0 fixed
 the defect that made it unopenable — so that exact model is now covered
 directly rather than by four stand-ins.

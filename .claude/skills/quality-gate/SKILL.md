@@ -44,6 +44,20 @@ Adding a variant to a public enum broke this and nothing local caught it
 (#105 → #106). Run it whenever a public `enum`, trait or signature changes in
 the library workspace, not only when `studio/` files are edited.
 
+## `crates/viva-pygenicam` is a FOURTH workspace — lint it separately
+
+It is `exclude`d from the root workspace (`Cargo.toml`), so
+`cargo clippy --workspace` never reaches it, and CI lints it in its own
+`lint viva-pygenicam` job. Run:
+
+```bash
+cd crates/viva-pygenicam && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+```
+
+A new clippy lint in a rustc release turned three workspaces red at once and
+this was the one the local gates missed, because it is the only one this file
+did not name.
+
 ## The Python bindings are not covered by `cargo test` (run them when the pyo3
 ## surface changes)
 

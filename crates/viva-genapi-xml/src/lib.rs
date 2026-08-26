@@ -830,8 +830,23 @@ pub struct MinimalXmlInfo {
     pub top_level_features: Vec<String>,
 }
 
+/// Drop a leading UTF-8 byte-order mark.
+///
+/// A BOM is valid UTF-8 (`U+FEFF`), so it survives `String::from_utf8` and
+/// reaches the parser intact; The Imaging Source's DMK 33GP2000e ships one
+/// (issue #122). quick-xml removes it from its own view of the input but does
+/// **not** advance `Reader::buffer_position`, so every offset it reports is
+/// three bytes short of the true offset into `xml`. [`parse`] slices node
+/// elements out of `xml` by those offsets, so each slice lost its closing `>`
+/// and every node in the document was skipped. Stripping here keeps quick-xml's
+/// positions and our `&str` talking about the same bytes.
+fn strip_bom(xml: &str) -> &str {
+    xml.strip_prefix('\u{feff}').unwrap_or(xml)
+}
+
 /// Parse a GenICam XML snippet and collect minimal metadata.
 pub fn parse_into_minimal_nodes(xml: &str) -> Result<MinimalXmlInfo, XmlError> {
+    let xml = strip_bom(xml);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     // Vendor XML is not ours to fix: a lone `&` in a tooltip must not stop us
@@ -986,6 +1001,7 @@ fn parse_isolated_node(element: &str) -> Result<Vec<NodeDecl>, XmlError> {
 /// rather than failing the load and leaving the camera unopenable. Only errors
 /// that make the document as a whole unreadable are returned.
 pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
+    let xml = strip_bom(xml);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     // Vendor XML is not ours to fix: a lone `&` in a tooltip must not stop us
@@ -1021,8 +1037,22 @@ pub fn parse(xml: &str) -> Result<XmlModel, XmlError> {
                     reader
                         .read_to_end(QName(&tag))
                         .map_err(|err| XmlError::Xml(err.to_string()))?;
-                    let element = &xml[element_start..reader.buffer_position() as usize];
-                    match parse_isolated_node(element) {
+                    // `get`, not `[..]`: this slice is built from reader
+                    // offsets rather than from `xml` itself, and a byte-order
+                    // mark used to desynchronise the two (#122). Indexing
+                    // panics on a non-character-boundary index; `get` turns the
+                    // same disagreement into one skipped feature, which is the
+                    // right price to pay in the middle of a camera connect.
+                    let element = xml
+                        .get(element_start..reader.buffer_position() as usize)
+                        .ok_or_else(|| {
+                            XmlError::Invalid(format!(
+                                "reader offset {element_start}..{} is not a character \
+                                 boundary in the document",
+                                reader.buffer_position()
+                            ))
+                        });
+                    match element.and_then(parse_isolated_node) {
                         Ok(parsed) => nodes.extend(parsed),
                         Err(err) => {
                             let tag = String::from_utf8_lossy(&tag).into_owned();
@@ -1787,6 +1817,71 @@ mod tests {
             NodeDecl::Integer { meta, .. } => meta,
             other => panic!("unexpected node: {other:?}"),
         }
+    }
+
+    /// Regression for issue #122: The Imaging Source's DMK 33GP2000e ships its
+    /// GenApi XML with a UTF-8 byte-order mark.
+    ///
+    /// The BOM is valid UTF-8, so nothing upstream rejected it and `parse`
+    /// returned `Ok` — with every node in the document skipped, because
+    /// quick-xml strips the BOM from its own view without advancing
+    /// `buffer_position`, leaving each sliced element three bytes short of its
+    /// closing `>`. Assert the node count *and* an empty skip list: asserting
+    /// `parse(..).is_ok()` alone passed throughout the bug.
+    #[test]
+    fn byte_order_mark_does_not_shift_node_slices() {
+        let body = r#"<Integer Name="Width"><Address>0x100</Address><Length>4</Length></Integer><Integer Name="Height"><Address>0x104</Address><Length>4</Length></Integer>"#;
+        let doc = format!(
+            r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="1">{body}</RegisterDescription>"#
+        );
+        let with_bom = format!("\u{feff}{doc}");
+
+        let plain = parse(&doc).expect("parse without BOM");
+        let bom = parse(&with_bom).expect("parse with BOM");
+
+        assert!(
+            bom.skipped.is_empty(),
+            "BOM document skipped nodes: {:?}",
+            bom.skipped
+        );
+        assert_eq!(bom.nodes.len(), plain.nodes.len());
+        assert_eq!(bom.version, plain.version);
+    }
+
+    /// The same document, through the offset-free scan `viva-camctl` and the
+    /// `fetch_xml` example use first. This half always worked — which is why
+    /// issue #122 reported 291 top-level features listed correctly and then
+    /// every node failing. Pin it so the two entry points cannot diverge again.
+    #[test]
+    fn byte_order_mark_does_not_disturb_the_minimal_scan() {
+        let doc = r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="1"><Category Name="Root"><pFeature>Width</pFeature></Category></RegisterDescription>"#;
+        let with_bom = format!("\u{feff}{doc}");
+
+        let info = parse_into_minimal_nodes(&with_bom).expect("minimal scan with BOM");
+        assert_eq!(info.schema_version.as_deref(), Some("1.1.1"));
+        assert_eq!(info.top_level_features, vec!["Root".to_string()]);
+    }
+
+    /// A BOM in a document that also carries multi-byte text.
+    ///
+    /// The three-byte shift lands on ASCII markup for any XML we have seen, so
+    /// this is not a second failure mode — it is the same one, checked on
+    /// content where a wrong slice would corrupt text rather than only truncate
+    /// a tag. The `xml.get(..)` guard in [`parse`] is defensive on top of that:
+    /// no document in the corpus reaches a non-character-boundary index, and it
+    /// exists so that if one ever does the cost is one skipped feature instead
+    /// of a panic in the middle of a camera connect.
+    #[test]
+    fn byte_order_mark_before_multibyte_text_keeps_the_text_intact() {
+        let doc = r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="1"><Integer Name="Gain"><Address>0x100</Address><Length>4</Length><ToolTip>Verstärkung in dB — Meßwert</ToolTip></Integer></RegisterDescription>"#;
+        let with_bom = format!("\u{feff}{doc}");
+
+        let model = parse(&with_bom).expect("parse with BOM and multi-byte text");
+        assert!(model.skipped.is_empty(), "skipped: {:?}", model.skipped);
+        assert_eq!(
+            only_meta(&model).tooltip.as_deref(),
+            Some("Verstärkung in dB — Meßwert")
+        );
     }
 
     /// Regression for issue #45: a FLIR BFS-PGE camera failed to open because a

@@ -94,8 +94,10 @@ impl PyFrame {
             PixelFormat::Mono16 => {
                 expect_len(payload.len(), h * w * 2, "Mono16")?;
                 let u16_vec: Vec<u16> = payload
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
                     .collect();
                 let arr = PyArray1::<u16>::from_vec(py, u16_vec).reshape([h, w])?;
                 Ok(arr.into_any())

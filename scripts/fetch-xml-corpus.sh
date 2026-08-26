@@ -69,6 +69,10 @@ done
 # reported, or a device class we had never seen; keeping it here is what stops
 # that bug from coming back.
 #
+# The DMK 33GP2000e is also the only document in the corpus that begins with a
+# UTF-8 byte-order mark (#122). Every other one starts at `<`, which is why a
+# BOM went unnoticed until a user hit it.
+#
 # Gist URLs are pinned to a revision SHA. The bare `/raw` form follows the
 # latest revision, so an edit upstream would silently change what the corpus
 # tests run against.
@@ -77,6 +81,7 @@ USER_CONTRIBUTED=$(
   cat <<'EOF'
 Hikrobot_MV-CS050-10GC.xml	https://github.com/user-attachments/files/30513169/xml.raw.xml	35
 MicroEpsilon_scanCONTROL_850050.xml	https://gist.githubusercontent.com/Katze719/f1116fda94ff1f424fc7bf5955c86952/raw/9e3153952c8fab3b64e60268c4a6119fcc70f39d/scancontrol-device.xml	93
+TIS_DMK_33GP2000e.xml	https://github.com/user-attachments/files/31440543/camera_dmk_33GP2000e.xml	122
 EOF
 )
 

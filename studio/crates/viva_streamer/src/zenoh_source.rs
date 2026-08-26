@@ -350,7 +350,9 @@ fn encode_frame(
         PixelFormat::BGR8 => {
             // Swap B↔R channels.
             let rgb: Vec<u8> = pixel_data
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .flat_map(|c| [c[2], c[1], c[0]])
                 .collect();
             Ok(Some(encoder_rgb.encode_rgb24(&rgb)?))
@@ -359,7 +361,9 @@ fn encode_frame(
         PixelFormat::RGBa8 => {
             // Strip alpha (4th byte).
             let rgb: Vec<u8> = pixel_data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|c| [c[0], c[1], c[2]])
                 .collect();
             Ok(Some(encoder_rgb.encode_rgb24(&rgb)?))

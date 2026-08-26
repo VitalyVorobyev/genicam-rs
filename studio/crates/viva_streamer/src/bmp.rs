@@ -208,10 +208,10 @@ impl BmpEncoder {
             let row_pixels = &pixels[start..end];
 
             // BMP stores BGR, input is RGB — swap R and B for each triplet.
-            for chunk in row_pixels.chunks_exact(3) {
-                buffer.push(chunk[2]); // B
-                buffer.push(chunk[1]); // G
-                buffer.push(chunk[0]); // R
+            for [r, g, b] in row_pixels.as_chunks::<3>().0 {
+                buffer.push(*b); // B
+                buffer.push(*g); // G
+                buffer.push(*r); // R
             }
 
             if padding > 0 {
@@ -236,9 +236,11 @@ impl BmpEncoder {
 pub fn mono_u16le_to_gray8(pixels: &[u8], src_bits: u8) -> Vec<u8> {
     let shift = src_bits.saturating_sub(8);
     pixels
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
-            let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let value = u16::from_le_bytes(*chunk);
             (value >> shift) as u8
         })
         .collect()
