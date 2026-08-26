@@ -13,11 +13,18 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-> **Status -- not production-ready.** Under active development, pre-1.0, API
-> changes between releases. The protocols are implemented and well tested
-> against simulators and 34 real vendor XML descriptions, but barely tested
-> against physical cameras -- we have none. We are working towards production
-> readiness one reported camera at a time, and **reports are genuinely welcome**.
+> **Status -- pre-1.0, and working.** Users have run discovery, control and
+> streaming against real GigE Vision cameras from FLIR, Hikrobot and JAI, on
+> Linux, Windows and macOS. The protocol layers are implemented against the EMVA
+> specifications and covered by ~370 automated tests, in-process fake cameras,
+> and a corpus of 35 real vendor GenApi XML descriptions.
+>
+> What pre-1.0 means in practice: the API still changes between releases, and
+> **there is no camera in CI** -- every hardware confirmation so far came from a
+> user with a device we do not own. So a camera nobody has tried yet may well hit
+> something. If yours does, [open an issue](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose):
+> that is how every camera-specific bug here has been found and fixed, and it has
+> worked every time.
 
 > **Disclaimer** -- Independent open-source Rust implementation of GenICam-related standards.
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
