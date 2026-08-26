@@ -6,9 +6,10 @@ use tracing::warn;
 
 use super::{
     NodeMetaBuilder, SelectorState, TAG_BIT, TAG_BYTE_ORDER, TAG_DISPLAY_NAME, TAG_ENDIANESS,
-    TAG_ENDIANNESS, TAG_LSB, TAG_MASK, TAG_MSB, TAG_P_ADDRESS, TAG_P_INDEX, TAG_P_VALUE, TAG_VALUE,
-    handle_addressing_empty, handle_addressing_start, handle_p_selected_empty,
-    handle_p_selected_start, handle_predicate_start, handle_selected_empty, handle_selected_start,
+    TAG_ENDIANNESS, TAG_LSB, TAG_LSB_MIXED, TAG_MASK, TAG_MSB, TAG_MSB_MIXED, TAG_P_ADDRESS,
+    TAG_P_INDEX, TAG_P_VALUE, TAG_VALUE, handle_addressing_empty, handle_addressing_start,
+    handle_p_selected_empty, handle_p_selected_start, handle_predicate_start,
+    handle_selected_empty, handle_selected_start,
 };
 use crate::builders::{AddressingBuilder, BitfieldBuilder, addressing_lengths};
 use crate::util::{
@@ -213,7 +214,7 @@ pub fn parse_boolean(
                     let text = read_text_start(reader, e)?;
                     access = AccessMode::parse(&text)?;
                 }
-                TAG_LSB => {
+                TAG_LSB | TAG_LSB_MIXED => {
                     let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     let lsb = u32::try_from(value).map_err(|_| {
@@ -221,7 +222,7 @@ pub fn parse_boolean(
                     })?;
                     bitfield.note_lsb(lsb);
                 }
-                TAG_MSB => {
+                TAG_MSB | TAG_MSB_MIXED => {
                     let text = read_text_start(reader, e)?;
                     let value = parse_u64(&text)?;
                     let msb = u32::try_from(value).map_err(|_| {
@@ -271,7 +272,7 @@ pub fn parse_boolean(
                 TAG_P_ADDRESS => {
                     handle_addressing_empty(e, &mut addressing)?;
                 }
-                TAG_LSB => {
+                TAG_LSB | TAG_LSB_MIXED => {
                     if let Some(value) = attribute_value(e, TAG_VALUE)? {
                         let parsed = parse_u64(&value)?;
                         let lsb = u32::try_from(parsed).map_err(|_| {
@@ -280,7 +281,7 @@ pub fn parse_boolean(
                         bitfield.note_lsb(lsb);
                     }
                 }
-                TAG_MSB => {
+                TAG_MSB | TAG_MSB_MIXED => {
                     if let Some(value) = attribute_value(e, TAG_VALUE)? {
                         let parsed = parse_u64(&value)?;
                         let msb = u32::try_from(parsed).map_err(|_| {
