@@ -1947,12 +1947,12 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.11.1"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624c5448ba529e74f594c65b7024f31b2de7b64a9b228b8df26796bbb6e32c36"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5658,40 +5658,40 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viva-genapi"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "viva-genapi-xml",
 ]
 
 [[package]]
 name = "viva-genapi-xml"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "zip",
 ]
 
 [[package]]
 name = "viva-gencp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "viva-genicam"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bytes",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "viva-genapi",
@@ -5705,15 +5705,15 @@ dependencies = [
 
 [[package]]
 name = "viva-gige"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bytes",
  "fastrand",
  "if-addrs",
  "libc",
- "socket2 0.5.10",
- "thiserror 1.0.69",
+ "socket2 0.6.3",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "viva-gencp",
@@ -5722,19 +5722,19 @@ dependencies = [
 
 [[package]]
 name = "viva-pfnc"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "viva-sfnc"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "viva-u3v"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "rusb",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "viva-gencp",
  "zip",
@@ -5742,11 +5742,11 @@ dependencies = [
 
 [[package]]
 name = "viva-zenoh-api"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
