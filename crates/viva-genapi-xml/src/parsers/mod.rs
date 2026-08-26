@@ -43,9 +43,21 @@ pub const TAG_TOOLTIP: &[u8] = b"ToolTip";
 /// XML element for the recommended numeric representation.
 pub const TAG_REPRESENTATION: &[u8] = b"Representation";
 /// XML element describing the least significant bit of a bitfield.
-pub const TAG_LSB: &[u8] = b"Lsb";
+///
+/// The GenICam schema spells it `LSB`, and every one of the 1 419 declarations
+/// in register nodes across the vendor corpus uses that spelling — none uses
+/// `Lsb`. Both are accepted: matching only the mixed-case form silently dropped
+/// the bit range from every `<MaskedIntReg>` that declared one, leaving the node
+/// reading its whole register (issue #120).
+pub const TAG_LSB: &[u8] = b"LSB";
+/// Mixed-case spelling of [`TAG_LSB`], accepted alongside it.
+pub const TAG_LSB_MIXED: &[u8] = b"Lsb";
 /// XML element describing the most significant bit of a bitfield.
-pub const TAG_MSB: &[u8] = b"Msb";
+///
+/// See [`TAG_LSB`] for why both spellings are accepted.
+pub const TAG_MSB: &[u8] = b"MSB";
+/// Mixed-case spelling of [`TAG_MSB`], accepted alongside it.
+pub const TAG_MSB_MIXED: &[u8] = b"Msb";
 /// XML element describing the starting bit index of a bitfield.
 pub const TAG_BIT: &[u8] = b"Bit";
 /// XML element describing a bitmask for a bitfield.

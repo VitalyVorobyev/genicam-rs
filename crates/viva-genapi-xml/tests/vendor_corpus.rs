@@ -55,6 +55,28 @@ const EXPECTED_SKIP_REASONS: &[(&str, &str)] = &[
     ("Register", "<pLength>"),
 ];
 
+/// Count declarations that carry a resolved bitfield, as `(single-bit, ranged)`.
+///
+/// The split matters: `<Bit>` and `<LSB>`/`<MSB>` are parsed by different arms,
+/// and a regression in one is invisible in a combined total.
+fn count_bitfields(model: &viva_genapi_xml::XmlModel) -> (usize, usize) {
+    let mut single = 0;
+    let mut ranged = 0;
+    for node in &model.nodes {
+        let bitfield = match node {
+            viva_genapi_xml::NodeDecl::Integer { bitfield, .. }
+            | viva_genapi_xml::NodeDecl::Boolean { bitfield, .. } => bitfield,
+            _ => continue,
+        };
+        match bitfield {
+            Some(field) if field.bit_length > 1 => ranged += 1,
+            Some(_) => single += 1,
+            None => {}
+        }
+    }
+    (single, ranged)
+}
+
 fn corpus_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VIVA_GENICAM_XML_CORPUS") {
         return PathBuf::from(dir);
@@ -101,6 +123,7 @@ fn vendor_xml_corpus_parses() {
 
     let mut failures = Vec::new();
     let mut total_nodes = 0usize;
+    let mut bitfields = 0usize;
 
     for path in &documents {
         let document = path
@@ -116,6 +139,28 @@ fn vendor_xml_corpus_parses() {
         match viva_genapi_xml::parse(&xml) {
             Ok(model) => {
                 total_nodes += model.nodes.len();
+                let (single, ranged) = count_bitfields(&model);
+                bitfields += single + ranged;
+
+                // A parser that drops a bit range does not fail, warn, or skip
+                // the node — it returns an integer that reads the whole
+                // register. That is how `parsers::numeric` came to match only
+                // the mixed-case `<Lsb>` spelling while every real document
+                // writes `<LSB>`, silently losing the range from 1 374 register
+                // fields across this corpus until issue #120 surfaced it.
+                //
+                // Checked per document rather than as a corpus-wide total: the
+                // fetch script warns and continues when a third-party URL is
+                // unreachable, so any assertion keyed to the corpus *size*
+                // would fail for a reason that has nothing to do with the
+                // parser.
+                if ranged == 0 && (xml.contains("<LSB>") || xml.contains("<Lsb>")) {
+                    println!("FAIL  {document}: declares <LSB> but parsed no bit range");
+                    failures.push(format!(
+                        "{document}: declares <LSB>/<Lsb> but no multi-bit bitfield survived \
+                         parsing — a bit-range spelling stopped being recognised"
+                    ));
+                }
                 let unexpected: Vec<_> = model
                     .skipped
                     .iter()
@@ -156,7 +201,7 @@ fn vendor_xml_corpus_parses() {
     }
 
     println!(
-        "=== {} documents, {total_nodes} nodes, {} failures ===",
+        "=== {} documents, {total_nodes} nodes, {bitfields} bitfields, {} failures ===",
         documents.len(),
         failures.len()
     );

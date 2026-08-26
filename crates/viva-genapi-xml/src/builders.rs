@@ -285,7 +285,13 @@ impl BitfieldBuilder {
             .checked_mul(8)
             .ok_or_else(|| XmlError::Invalid(format!("node {node} register length overflow")))?;
 
-        let (offset_lsb, bit_length) = match source {
+        // Whether the index produced below is already counted the way
+        // `bitops` counts for this byte order — see the `offset` match at the
+        // end of this function for what that means and why it differs by
+        // source.
+        let index_matches_byte_order = !matches!(source, BitfieldSource::Mask);
+
+        let (first_index, bit_length) = match source {
             BitfieldSource::LsbMsb => {
                 let lsb = self
                     .lsb
@@ -293,6 +299,33 @@ impl BitfieldBuilder {
                 let msb = self
                     .msb
                     .ok_or_else(|| XmlError::Invalid(format!("node {node} is missing <Msb>")))?;
+                // GenICam orients the pair by endianness: on `Big` the
+                // indices count down from the MSB, so a conformant document
+                // has `<LSB>` >= `<MSB>`; on `Little` they count up, so
+                // `<LSB>` <= `<MSB>`. Across the 38-document vendor corpus the
+                // split is absolute — 1307 big-endian declarations with
+                // `LSB > MSB` and none the other way, 41 little-endian with
+                // `LSB < MSB` and none the other way. Taking min/max reads the
+                // right field under either orientation, but a document that
+                // contradicts its own byte order is the one signal that a
+                // vendor used the other convention, so say so rather than
+                // normalising it away in silence (ADR-0018).
+                if lsb != msb {
+                    let inverted = match byte_order {
+                        ByteOrder::Big => lsb < msb,
+                        ByteOrder::Little => lsb > msb,
+                    };
+                    if inverted {
+                        tracing::debug!(
+                            node,
+                            lsb,
+                            msb,
+                            order = ?byte_order,
+                            "bit range is oriented against its byte order; reading it as \
+                             min..=max"
+                        );
+                    }
+                }
                 let lower = lsb.min(msb);
                 let upper = lsb.max(msb);
                 let length = upper
@@ -338,9 +371,9 @@ impl BitfieldBuilder {
             )));
         }
 
-        if offset_lsb > u16::MAX as u32 {
+        if first_index > u16::MAX as u32 {
             return Err(XmlError::Invalid(format!(
-                "node {node} bit offset {offset_lsb} exceeds u16 range"
+                "node {node} bit offset {first_index} exceeds u16 range"
             )));
         }
 
@@ -350,15 +383,33 @@ impl BitfieldBuilder {
             )));
         }
 
-        if offset_lsb + bit_length > total_bits {
+        if first_index + bit_length > total_bits {
             return Err(XmlError::Invalid(format!(
                 "node {node} bitfield exceeds register width"
             )));
         }
 
-        let offset = match byte_order {
-            ByteOrder::Little => offset_lsb,
-            ByteOrder::Big => total_bits - bit_length - offset_lsb,
+        // [`BitField::bit_offset`] is relative to the *most* significant bit for
+        // `Big` and to the least significant bit for `Little`, matching
+        // `viva_genapi::bitops`.
+        //
+        // GenICam numbers `<LSB>`, `<MSB>` and `<Bit>` the same way: from the
+        // MSB on a big-endian register, from the LSB otherwise. So for those
+        // sources the XML index is already in the target frame and must be used
+        // as-is. Converting it — as this function did until issue #120 — flips
+        // it a second time in `bitops` and cancels out, which read big-endian
+        // registers off the wrong end. FLIR's `ExposureTime_Imp` (`<Bit>0</Bit>`,
+        // big-endian, 4 bytes) resolved to bit 0 instead of bit 31, so every
+        // write to `ExposureTime` was refused locally as unavailable.
+        //
+        // `<Mask>` is the exception, and the reason this match is keyed on the
+        // source rather than only on the byte order: a mask is a literal
+        // register value, so `trailing_zeros` is inherently LSB-relative and
+        // still has to be converted for `Big`.
+        let offset = match (byte_order, index_matches_byte_order) {
+            (_, true) => first_index,
+            (ByteOrder::Little, false) => first_index,
+            (ByteOrder::Big, false) => total_bits - bit_length - first_index,
         };
 
         Ok(Some(BitField {

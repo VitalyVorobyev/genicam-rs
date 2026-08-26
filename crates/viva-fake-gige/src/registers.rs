@@ -163,6 +163,18 @@ pub const REG_CHUNK_SELECTOR: u64 = 0x20084;
 pub const REG_CHUNK_ENABLE: u64 = 0x20088;
 
 /// `EventSelector` backing register: a GigE Vision event identifier.
+/// `REG_FEATURE_STATUS` is a FLIR-shaped feature-status word: one big-endian
+/// register whose individual bits say whether a feature is implemented,
+/// available and locked, addressed by `<MaskedIntReg>` + `<Bit>`.
+///
+/// It exists so the fake can disagree with us about bit numbering. Every other
+/// predicate here is an `<IntSwissKnife>` or a `<StructEntry>`, and both of
+/// those took the code path that was already correct — so the whole suite
+/// passed while `<MaskedIntReg>` read big-endian registers off the wrong end on
+/// real hardware (issue #120). GenICam counts `<Bit>` from the MSB on a
+/// big-endian register, so bit 0 is `0x8000_0000`.
+pub const REG_FEATURE_STATUS: u64 = 0x2009c;
+
 pub const REG_EVENT_SELECTOR: u64 = 0x200a0;
 /// `EventNotification` backing register for the selected event (0 = Off, 1 = On).
 ///
@@ -565,8 +577,24 @@ pub const FAKE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <Min>10.0</Min>
     <Max>1000000.0</Max>
     <Endianess>BigEndian</Endianess>
+    <pIsImplemented>ExposureTime_Imp</pIsImplemented>
+    <pIsAvailable>ExposureTime_Avl</pIsAvailable>
     <pIsLocked>ExposureAutoActive</pIsLocked>
   </Float>
+
+  <!-- Feature-status bits in one big-endian word, the shape FLIR ships and the
+       shape that exposed issue #120. GenICam counts <Bit> from the MSB here, so
+       bit 0 is 0x80000000 and bit 1 is 0x40000000; the fake boots this register
+       to 0xC0000000. Read from the wrong end these both come out zero and
+       ExposureTime becomes unavailable, which is what the reporter saw. -->
+  <MaskedIntReg Name="ExposureTime_Imp">
+    <Address>0x2009c</Address><Length>4</Length><AccessMode>RO</AccessMode>
+    <Bit>0</Bit><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess>
+  </MaskedIntReg>
+  <MaskedIntReg Name="ExposureTime_Avl">
+    <Address>0x2009c</Address><Length>4</Length><AccessMode>RO</AccessMode>
+    <Bit>1</Bit><Sign>Unsigned</Sign><Endianess>BigEndian</Endianess>
+  </MaskedIntReg>
 
   <Enumeration Name="ExposureAuto" NameSpace="Standard">
     <ToolTip>Automatic exposure control</ToolTip>
@@ -881,6 +909,9 @@ impl RegisterMap {
         // Capability bits, MSB-first as GenICam counts them on a big-endian
         // register: bit 0 = frame rate control present, bit 1 = chunk support.
         regs.insert(REG_DEVICE_CAPS, 0xC000_0000u32.to_be_bytes().to_vec());
+        // ExposureTime implemented (bit 0) and available (bit 1), MSB-first —
+        // see REG_FEATURE_STATUS.
+        regs.insert(REG_FEATURE_STATUS, 0xC000_0000u32.to_be_bytes().to_vec());
 
         // ── Timestamp (1 GHz tick frequency) ────────────────────────────
         regs.insert(REG_TIMESTAMP_FREQ, 1_000_000_000u32.to_be_bytes().to_vec());

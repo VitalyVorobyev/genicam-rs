@@ -1626,19 +1626,32 @@ mod tests {
         }
     }
 
+    /// Big-endian `<LSB>`/`<MSB>` are counted **from the MSB**, so a
+    /// conformant document has `<LSB>` >= `<MSB>` and the pair's *minimum* is
+    /// the offset of the field's most significant bit.
+    ///
+    /// The fixture is real: `AVT_Manta_G125B.xml` declares GigE Vision's
+    /// bootstrap `GevSCPSPacketSize` at `0xD04` exactly this way, and the
+    /// standard fixes that register's layout — the packet size is the *low*
+    /// 16 bits. `viva_genapi::bitops` turns `bit_offset = 16` over 4 bytes into
+    /// `shift = 32 - 16 - 16 = 0`, i.e. the low half. The end-to-end decode is
+    /// asserted in `viva-genapi`, which owns the extraction.
+    ///
+    /// This test previously used `<Lsb>8</Lsb><Msb>15</Msb>` with `BigEndian` —
+    /// a shape that appears **zero** times in the 38-document vendor corpus and
+    /// is inverted against its own byte order. It encoded the issue-#120 defect
+    /// rather than catching it.
     #[test]
     fn parse_integer_bitfield_big_endian() {
         const XML: &str = r#"
             <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
-                <Integer Name="Packed">
-                    <Address>0x1000</Address>
+                <Integer Name="RegSCPSPacketSize">
+                    <Address>0xD04</Address>
                     <Length>4</Length>
                     <AccessMode>RW</AccessMode>
-                    <Min>0</Min>
-                    <Max>65535</Max>
-                    <Lsb>8</Lsb>
-                    <Msb>15</Msb>
-                    <Endianness>BigEndian</Endianness>
+                    <LSB>31</LSB>
+                    <MSB>16</MSB>
+                    <Endianess>BigEndian</Endianess>
                 </Integer>
             </RegisterDescription>
         "#;
@@ -1650,13 +1663,113 @@ mod tests {
                 assert_eq!(*len, 4);
                 let field = bitfield.as_ref().expect("bitfield present");
                 assert_eq!(field.byte_order, ByteOrder::Big);
-                assert_eq!(field.bit_length, 8);
+                assert_eq!(field.bit_length, 16);
                 assert_eq!(field.bit_offset, 16);
             }
             other => panic!("unexpected node: {other:?}"),
         }
     }
 
+    /// `<Bit>` is `<LSB>` and `<MSB>` at the same index, so it inherits the same
+    /// orientation: on a big-endian register `<Bit>0</Bit>` is the *most*
+    /// significant bit.
+    ///
+    /// This is the exact shape behind issue #120 — FLIR gates `ExposureTime` on
+    /// three such registers sharing one 32-bit word at `0x000C1000`.
+    #[test]
+    fn parse_big_endian_single_bit_is_counted_from_the_msb() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="ExposureTime_Imp">
+                    <Address>0x000C1000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RO</AccessMode>
+                    <Bit>0</Bit>
+                    <Endianess>BigEndian</Endianess>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse big-endian single bit");
+        match &model.nodes[0] {
+            NodeDecl::Integer { bitfield, .. } => {
+                let field = bitfield.as_ref().expect("bitfield present");
+                assert_eq!(field.bit_length, 1);
+                // Offset from the MSB, so `bitops` shifts by 31 and reads the
+                // top bit. Before #120 this was 31, which shifted by 0.
+                assert_eq!(field.bit_offset, 0);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
+
+    /// The GenICam schema spells the bit-range elements `LSB` and `MSB`, and
+    /// every one of the 1 419 declarations inside register nodes across the
+    /// vendor corpus uses that spelling — none uses `Lsb`.
+    ///
+    /// `parsers::numeric` matched only the mixed-case form, so it dropped the
+    /// bit range from every `<MaskedIntReg>` in every real document and read the
+    /// whole register instead. `parsers::struct_reg` already accepted both,
+    /// which is another way the two bitfield paths had drifted apart. Both
+    /// spellings must parse, and to the same field.
+    #[test]
+    fn both_spellings_of_lsb_and_msb_are_accepted() {
+        fn bitfield_of(lsb_tag: &str, msb_tag: &str) -> BitField {
+            let xml = format!(
+                r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="1">
+                     <MaskedIntReg Name="Field">
+                       <Address>0xD04</Address><Length>4</Length><AccessMode>RW</AccessMode>
+                       <{lsb_tag}>31</{lsb_tag}><{msb_tag}>16</{msb_tag}>
+                       <Endianess>BigEndian</Endianess>
+                     </MaskedIntReg>
+                   </RegisterDescription>"#
+            );
+            let model = parse(&xml).expect("parse");
+            match &model.nodes[0] {
+                NodeDecl::Integer { bitfield, .. } => *bitfield.as_ref().expect("bitfield present"),
+                other => panic!("unexpected node: {other:?}"),
+            }
+        }
+
+        let schema = bitfield_of("LSB", "MSB");
+        let mixed = bitfield_of("Lsb", "Msb");
+        assert_eq!(schema.bit_offset, 16);
+        assert_eq!(schema.bit_length, 16);
+        assert_eq!(schema, mixed);
+    }
+
+    /// `<Mask>` is the one bitfield source that stays LSB-relative under `Big`,
+    /// because it is a literal register value rather than a GenICam bit index.
+    ///
+    /// It has zero corpus occurrences, so only this test keeps the distinction
+    /// honest: the #120 fix removes the endianness conversion for `<LSB>`/
+    /// `<MSB>`/`<Bit>` and must **keep** it here.
+    #[test]
+    fn big_endian_mask_stays_lsb_relative() {
+        const XML: &str = r#"
+            <RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="0" SchemaSubMinorVersion="0">
+                <Integer Name="Masked">
+                    <Address>0x3000</Address>
+                    <Length>4</Length>
+                    <AccessMode>RW</AccessMode>
+                    <Mask>0x0000FF00</Mask>
+                    <Endianess>BigEndian</Endianess>
+                </Integer>
+            </RegisterDescription>
+        "#;
+
+        let model = parse(XML).expect("parse big-endian mask");
+        match &model.nodes[0] {
+            NodeDecl::Integer { bitfield, .. } => {
+                let field = bitfield.as_ref().expect("bitfield present");
+                assert_eq!(field.byte_order, ByteOrder::Big);
+                assert_eq!(field.bit_length, 8);
+                // Bits 8..15 counted from the LSB are bits 16..23 from the MSB.
+                assert_eq!(field.bit_offset, 16);
+            }
+            other => panic!("unexpected node: {other:?}"),
+        }
+    }
     #[test]
     fn parse_boolean_bitfield_default_length() {
         const XML: &str = r#"
