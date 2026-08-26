@@ -59,6 +59,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Breaking (behaviour): big-endian masked registers were read off the wrong
+  end** (backlog `GA-22`,
+  [#120](https://github.com/VitalyVorobyev/viva-genicam/issues/120), reported on
+  a FLIR BFS-PGE-31S4C-C). Writing `ExposureTime` was refused locally as
+  `node unavailable` on a camera that SpinView, Spinnaker and `arv-tool` all
+  write. Two separate defects in the same path, neither of which produced an
+  error, a warning or a skipped node:
+
+  1. **Bit numbering.** GenICam counts `<LSB>`, `<MSB>` and `<Bit>` from the
+     **most** significant bit when a register declares
+     `<Endianess>BigEndian</Endianess>`. The XML layer converted the index as
+     though it were LSB-relative and `bitops` converted it again, so the two
+     cancelled out. **9 473** big-endian single-bit fields across the vendor
+     corpus were read from the wrong end.
+  2. **Element casing.** `parsers::numeric` matched only `<Lsb>`/`<Msb>`, while
+     all 1 419 declarations in corpus register nodes use the schema spelling
+     `<LSB>`/`<MSB>`. Those registers therefore carried **no bit range at all**
+     and returned their entire register value — **1 374** fields across the
+     corpus.
+
+  On the reporter's camera, `ExposureTime` gates on three `<MaskedIntReg>`
+  predicates sharing one big-endian word at `0x000C1000` (bits 0, 1 and 3 from
+  the MSB). All three read as zero, so the feature looked unimplemented and every
+  setter refused before anything reached the wire — which is why setting
+  `ExposureAuto=Off` first made no difference.
+
+  **This did not need hardware to settle.** `AVT_Manta_G125B.xml` declares
+  bootstrap `GevSCPSPacketSize` at `0xD04` as `<LSB>31</LSB><MSB>16</MSB>`
+  big-endian; GigE Vision fixes the packet size as the low 16 bits; and the
+  reporter's own diagnostic bundle shows that register holding `0x40000578`,
+  i.e. 1400 bytes. Counted from the MSB that yields 1400, and our reading yielded
+  16384. The corpus agrees independently — 1 307 big-endian declarations with
+  `LSB > MSB` and none the other way, 41 little-endian with `LSB < MSB` and none
+  the other way — and so does aravis.
+
+  `<Mask>` deliberately keeps the endianness conversion: a mask is a literal
+  register value and so is LSB-relative by construction. It has zero corpus
+  occurrences, which is exactly why it now has its own test.
+
+  **A consequence worth stating plainly:** the `pIsLocked` guard added for
+  [#45](https://github.com/VitalyVorobyev/viva-genicam/issues/45) can never have
+  fired on that reporter's camera. It was reading bit 3 from the wrong end and
+  always saw zero.
+
 - **GenApi XML beginning with a UTF-8 byte-order mark loaded as an empty
   nodemap** ([#122](https://github.com/VitalyVorobyev/viva-genicam/issues/122),
   reported on a The Imaging Source DMK 33GP2000e). A BOM is valid UTF-8, so it
@@ -116,6 +160,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-0019 exists for.
 
 ### Testing
+
+- **The fake camera can now disagree with us about bit numbering** (backlog
+  `GA-22`, ADR-0019). Every predicate in `viva-fake-gige` was an
+  `<IntSwissKnife>` or a `<StructEntry>`, and both took the code path that was
+  already correct — so the whole suite passed while `<MaskedIntReg>` read real
+  cameras' registers off the wrong end. `ExposureTime` now gates on big-endian
+  `<MaskedIntReg>` + `<Bit>` predicates over a FLIR-shaped feature-status word,
+  and reverting the fix fails two `predicates.rs` tests instead of none.
+
+- **The XML corpus test asserts that a declared bit range survives parsing.**
+  Dropping one is silent by construction — the node still parses and simply
+  reads its whole register — so no skip list could have caught the casing defect
+  above. The check is per document rather than a corpus-wide total, because the
+  fetch script warns and continues when a third-party URL is unreachable and a
+  size-keyed assertion would fail for reasons unrelated to the parser. Reverting
+  the fix fails 24 of the 38 documents.
+
+- **Two test fixtures encoded the defect rather than catching it.**
+  `parse_integer_bitfield_big_endian` and the `BeBits` nodemap fixture both used
+  a big-endian `<Lsb>`/`<Msb>` pair oriented against its own byte order — a shape
+  that appears **zero** times in the vendor corpus. Both now use real vendor
+  shapes, and the numbers they assert come from the GigE Vision register layout
+  rather than from our own output.
+
 
 - **`test_fake_gvsp_packets_match_spec_layout`** (backlog `TC-04`,
   [#63](https://github.com/VitalyVorobyev/viva-genicam/issues/63)) asserts the
