@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-26
+
+Two behaviour changes need a read before upgrading, both under the headings
+below: streaming no longer writes `GevSCPSPacketSize` unless you ask it to, and
+big-endian masked registers are now read from the MSB as GenICam specifies —
+which changes what `pIsAvailable`/`pIsLocked` evaluate to on most GigE cameras.
+Both fix defects reported from real hardware.
+
 ### Changed
 
 - **Dependency majors brought current** (backlog `CI-13`): `thiserror` 1 → 2,
@@ -1146,7 +1154,8 @@ Initial public release of the viva-genicam workspace.
 - `viva-fake-gige` -- In-process fake GigE Vision camera for self-contained integration testing (no external dependencies required)
 - `viva-fake-u3v` -- In-process fake USB3 Vision camera for testing
 
-[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/VitalyVorobyev/viva-genicam/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.5.0
 [0.4.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.4.1
 [0.4.0]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.4.0
 [0.3.1]: https://github.com/VitalyVorobyev/viva-genicam/releases/tag/v0.3.1
