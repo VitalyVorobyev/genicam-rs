@@ -1738,6 +1738,47 @@ mod tests {
         assert_eq!(schema, mixed);
     }
 
+    /// Both spellings must reach the `<Boolean>` parser too, not only the
+    /// numeric one.
+    ///
+    /// `<Boolean>` is parsed by `parsers::symbolic`, a different function from
+    /// the `<Integer>`/`<MaskedIntReg>` path, and it matched the shared
+    /// `TAG_LSB`/`TAG_MSB` constants. Renaming those to the schema spelling for
+    /// GA-22 therefore *swapped* which spelling worked here instead of
+    /// accepting both — and a register-backed Boolean wider than one byte whose
+    /// bit range is dropped is not merely misread, it fails
+    /// `Boolean node {name} requires explicit bitfield metadata` and is skipped
+    /// outright. Caught in review on
+    /// [#124](https://github.com/VitalyVorobyev/viva-genicam/pull/124).
+    #[test]
+    fn boolean_accepts_both_spellings_of_lsb_and_msb() {
+        fn flag_bitfield(lsb_tag: &str, msb_tag: &str) -> BitField {
+            let xml = format!(
+                r#"<RegisterDescription SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="1">
+                     <Boolean Name="Flag">
+                       <Address>0x2000</Address><Length>4</Length><AccessMode>RW</AccessMode>
+                       <{lsb_tag}>31</{lsb_tag}><{msb_tag}>31</{msb_tag}>
+                       <Endianess>BigEndian</Endianess>
+                     </Boolean>
+                   </RegisterDescription>"#
+            );
+            let model = parse(&xml).expect("parse");
+            assert!(model.skipped.is_empty(), "skipped: {:?}", model.skipped);
+            match &model.nodes[0] {
+                NodeDecl::Boolean { bitfield, .. } => *bitfield.as_ref().expect("bitfield present"),
+                other => panic!("unexpected node: {other:?}"),
+            }
+        }
+
+        let schema = flag_bitfield("LSB", "MSB");
+        let mixed = flag_bitfield("Lsb", "Msb");
+        // Index 31 from the MSB of a 4-byte register is the least significant
+        // bit, so `bitops` shifts by zero.
+        assert_eq!(schema.bit_offset, 31);
+        assert_eq!(schema.bit_length, 1);
+        assert_eq!(schema, mixed);
+    }
+
     /// `<Mask>` is the one bitfield source that stays LSB-relative under `Big`,
     /// because it is a literal register value rather than a GenICam bit index.
     ///

@@ -99,9 +99,15 @@ class Camera:
         this gap went unnoticed (issue #121) — but it reads like a write and
         the value it takes is discarded, so prefer ``execute``.
 
-        GenICam's ``pIsDone`` polling is not implemented, so this returns once
-        the register write is acknowledged rather than once the camera has
-        finished acting on it.
+        Two distinct limitations, easily confused:
+
+        * **A read after the command is stale, and waiting does not help.**
+          ``<pInvalidator>`` is not parsed, so the cached nodemap never learns
+          the command changed anything. The camera is updated; the stale value
+          is ours. Reconnect to read the new settings back.
+        * **``pIsDone`` polling is not implemented**, so this returns once the
+          register write is acknowledged rather than once the camera has
+          finished acting on it. A short sleep helps with this one.
         """
         self._native.execute(name)
 
