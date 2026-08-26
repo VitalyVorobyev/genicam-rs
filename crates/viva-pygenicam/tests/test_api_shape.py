@@ -50,6 +50,8 @@ def test_camera_has_expected_methods():
         "node_info",
         "all_node_info",
         "categories",
+        "enum_entries",
+        "execute",
         "acquisition_start",
         "acquisition_stop",
         "stream",

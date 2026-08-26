@@ -52,7 +52,10 @@ no Python equivalent today:
 - **Time sync.** `time_calibrate` is not exposed, which also means
   `frame.ts_host` has no device mapping to work from — see
   [Streaming](python/streaming.md).
-- **Action commands** and **FORCEIP / persistent IP** configuration.
+- **Action commands** and **FORCEIP / persistent IP** configuration. (GenApi
+  *`<Command>` features* — `UserSetLoad`, `TriggerSoftware` — are a different
+  thing and **are** exposed, via `cam.execute(name)`; see
+  [Control](python/control.md#executing-commands).)
 - **Skipped nodes.** `NodeMap::skipped()` — the list of features we could not
   build from this camera's XML — is reachable from `viva-camctl` but not from
   Python (backlog DX-05). A missing feature is therefore indistinguishable from
