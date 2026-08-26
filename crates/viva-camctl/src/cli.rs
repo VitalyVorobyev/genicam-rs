@@ -9,6 +9,7 @@ use viva_gige::nic::IfaceSelector;
 use crate::cmd_bench::{self, BenchArgs};
 use crate::cmd_chunks;
 use crate::cmd_events;
+use crate::cmd_execute;
 use crate::cmd_get;
 use crate::cmd_list;
 use crate::cmd_report::{self, ReportArgs};
@@ -100,6 +101,15 @@ pub enum Cmd {
         name: String,
         #[arg(long)]
         value: String,
+    },
+    /// Execute a GenApi Command feature (e.g. `UserSetLoad`)
+    Execute {
+        #[arg(long)]
+        ip: Option<Ipv4Addr>,
+        #[arg(long)]
+        index: Option<usize>,
+        #[arg(long)]
+        name: String,
     },
     /// Start GVSP stream (uni-/multicast)
     Stream {
@@ -310,6 +320,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             name,
             value,
         } => cmd_set::run(ip, index, name, value, iface, json).await?,
+        Cmd::Execute { ip, index, name } => cmd_execute::run(ip, index, name, iface, json).await?,
         Cmd::Stream {
             ip,
             index,
