@@ -59,6 +59,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **GenApi XML beginning with a UTF-8 byte-order mark loaded as an empty
+  nodemap** ([#122](https://github.com/VitalyVorobyev/viva-genicam/issues/122),
+  reported on a The Imaging Source DMK 33GP2000e). A BOM is valid UTF-8, so it
+  survived `String::from_utf8` and reached the parser. quick-xml removes it from
+  its own view of the input but does **not** advance `Reader::buffer_position`,
+  and `viva_genapi_xml::parse` slices each node element out of the caller's
+  `&str` by exactly those offsets — so every slice started three bytes early,
+  lost the closing `>` of its end tag, and was recorded as unparsable. The
+  failure was quiet in the worst way: `parse` returned `Ok`, the offset-free
+  top-level scan listed all 291 features correctly, and then every single node
+  was skipped, which is what the reporter saw. The BOM is now stripped in both
+  `parse` and `parse_into_minimal_nodes`.
+
+  The reporter's XML is in the vendor corpus as `TIS_DMK_33GP2000e.xml`; it is
+  the only document there that opens with a BOM, which is why nothing caught
+  this earlier. Its one remaining skipped node — a `<Register>` with `<pLength>`
+  — is the separate, known `GA-09` phase-two gap and is unaffected by this fix.
+
+  The element slice is now taken with `str::get` rather than by indexing. No
+  corpus document reaches a non-character-boundary index, so this is defensive
+  only: it makes any future offset disagreement cost one skipped feature instead
+  of panicking part-way through a camera connect.
+
 - **The GVSP path probe did not write its own answer back, leaving the camera
   configured at a size it had merely tested** (backlog `SR-15`,
   [#112](https://github.com/VitalyVorobyev/viva-genicam/issues/112)). Asking for

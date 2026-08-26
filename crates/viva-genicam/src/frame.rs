@@ -136,8 +136,8 @@ impl Frame {
             "converting BGR8 frame to RGB8"
         );
         let mut out = Vec::with_capacity(expected);
-        for chunk in self.payload.chunks_exact(3) {
-            out.extend_from_slice(&[chunk[2], chunk[1], chunk[0]]);
+        for [b, g, r] in self.payload.as_chunks::<3>().0 {
+            out.extend_from_slice(&[*r, *g, *b]);
         }
         Ok(out)
     }
