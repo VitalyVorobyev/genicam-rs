@@ -8,25 +8,31 @@ This is the main entry point for the [viva-genicam](https://github.com/VitalyVor
 > Not affiliated with, endorsed by, or the reference implementation of EMVA GenICam.
 > GenICam is a trademark of EMVA.
 
-## Project status — not production-ready
+## Project status — pre-1.0, and working
 
-This crate is under active development and is not yet suitable for production
-use. It is pre-1.0 and the API changes between releases.
+Users have connected, controlled and streamed from real GigE Vision cameras
+with this crate — FLIR, Hikrobot and JAI models, across Linux, Windows and
+macOS. The protocols are implemented against the EMVA specifications and
+covered by ~370 automated tests, in-process fake cameras, and a corpus of 35
+real vendor GenApi XML descriptions.
 
-The protocols are implemented against the EMVA specifications and covered by
-292 automated tests, in-process fake cameras, and a corpus of 35 real vendor
-GenApi XML descriptions — but **almost none of it has been exercised against
-physical hardware**, because the maintainer has none. Fake cameras only
-reproduce the behaviour we already thought of. Every camera-specific bug found
-so far was found by a user.
+Two honest caveats, neither of which should stop you trying it:
 
-We intend to make this production-ready, and the way that happens is one
-reported camera at a time. Cameras deviate from the standard and contradict
-their own documentation; working with the hardware that exists is the goal,
-not a compromise. **If your camera does not work, please
+- **The API changes between releases.** It is pre-1.0 and it moves.
+- **There is no camera in CI.** The maintainer owns no hardware, so every
+  hardware confirmation this project has came from a user with a device. Fake
+  cameras only reproduce the behaviour we already thought of, and every
+  camera-specific bug found so far was found by someone running it on a real
+  device.
+
+That second point is why a camera nobody has tried yet may still hit something.
+Cameras deviate from the standard and contradict their own documentation;
+working with the hardware that exists is the goal, not a compromise. **If your
+camera does not work, please
 [open an issue](https://github.com/VitalyVorobyev/viva-genicam/issues/new/choose)**
-— and attach the camera's GenApi XML if you can, since that becomes a
-permanent regression fixture for your model.
+— and attach the camera's GenApi XML if you can, since that becomes a permanent
+regression fixture for your model. That loop is how this crate has improved,
+and it has worked every time it has been used.
 
 Current gaps are tracked in
 [docs/backlog.md](https://github.com/VitalyVorobyev/viva-genicam/blob/main/docs/backlog.md).

@@ -3,6 +3,7 @@ name = "viva-service-u3v"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Zenoh bridge exposing USB3 Vision cameras to Viva Studio"
 repository.workspace = true
 rust-version.workspace = true
 publish = false
