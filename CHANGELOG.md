@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dependency majors brought current** (backlog `CI-13`): `thiserror` 1 → 2,
+  `if-addrs` 0.11 → 0.15, `socket2` 0.5 → 0.6, and `pyo3`/`numpy` 0.28 → 0.29
+  for the Python bindings. `if-addrs` was checked rather than assumed — its
+  `link-local` feature is what makes APIPA interfaces visible on Windows, and it
+  still exists at 0.15. `quick-xml` stays at 0.41 deliberately: 0.42 moves its
+  whole API from `&[u8]` to `&str` and is a refactor of every parser, tracked as
+  `CI-14`.
+
+- **The project status statements now match the evidence.** `README.md` said the
+  library was "barely tested against physical cameras — we have none". The
+  tracker says otherwise: users have run discovery, control and streaming
+  against real FLIR, Hikrobot and JAI cameras on Linux, Windows and macOS. The
+  three statements (root README, crate README, book) also carried three
+  different and all-stale test and corpus counts. They now say the same thing,
+  from the same numbers, and keep the caveat that actually matters — the API
+  moves, and there is no camera in CI.
+
 - **Breaking: streaming no longer overwrites the camera's `GevSCPSPacketSize` by
   default** (backlog `SR-14`, ADR-0021,
   [#118](https://github.com/VitalyVorobyev/viva-genicam/pull/118) — contributed

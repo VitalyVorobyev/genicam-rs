@@ -25,7 +25,13 @@ Worth knowing before you build on it:
 - **Viva Studio is experimental.** It works, and it has been driven against very
   little hardware.
 
-> The protocol implementations follow the published EMVA specifications and are validated against built-in fake camera simulators (190+ automated tests). Testing against physical cameras from different manufacturers is ongoing -- bug reports and compatibility feedback are welcome.
+> **Status.** The protocol implementations follow the published EMVA
+> specifications and are validated against built-in fake cameras (~370 automated
+> tests) and a corpus of 35 real vendor GenApi XML descriptions. Users have run
+> discovery, control and streaming against real FLIR, Hikrobot and JAI cameras on
+> Linux, Windows and macOS. There is no camera in CI, though -- every hardware
+> confirmation came from a user with a device the maintainer does not own -- so
+> bug reports and compatibility feedback remain the main way this gets better.
 
 ## How this book is organized
 - Start with **Quick Start** to build, test, and run the first discovery.

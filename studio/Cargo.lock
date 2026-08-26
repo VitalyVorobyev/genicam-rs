@@ -3385,7 +3385,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viva-genapi"
 version = "0.4.1"
 dependencies = [
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "viva-genapi-xml",
 ]
@@ -3396,7 +3396,7 @@ version = "0.4.1"
 dependencies = [
  "quick-xml",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "zip",
 ]
@@ -3438,7 +3438,7 @@ version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

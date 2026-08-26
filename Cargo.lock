@@ -1147,12 +1147,12 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.11.1"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624c5448ba529e74f594c65b7024f31b2de7b64a9b228b8df26796bbb6e32c36"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3205,7 +3205,7 @@ version = "0.4.1"
 dependencies = [
  "bytes",
  "clap",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3225,7 +3225,7 @@ dependencies = [
 name = "viva-genapi"
 version = "0.4.1"
 dependencies = [
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tracing",
  "viva-genapi-xml",
 ]
@@ -3236,7 +3236,7 @@ version = "0.4.1"
 dependencies = [
  "quick-xml",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
  "zip",
@@ -3248,7 +3248,7 @@ version = "0.4.1"
 dependencies = [
  "bitflags",
  "bytes",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3260,7 +3260,7 @@ dependencies = [
  "fastrand",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3284,8 +3284,8 @@ dependencies = [
  "fastrand",
  "if-addrs",
  "libc",
- "socket2 0.5.10",
- "thiserror 1.0.69",
+ "socket2 0.6.5",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3346,7 +3346,7 @@ version = "0.4.1"
 dependencies = [
  "bytes",
  "rusb",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tracing",
  "viva-gencp",
  "zip",
@@ -3358,7 +3358,7 @@ version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
