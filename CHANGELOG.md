@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Viva Studio and documentation — not part of any published crate
+
+Viva Studio lives in the `studio/` workspace, which is excluded from the root
+workspace and published nowhere: no crate on crates.io and no desktop binary
+carries these changes. They are recorded here because the book they correct
+*is* published on every push to `main`. Nothing in this section changes the
+library.
 
 - **Viva Studio now shows which backend mode it started in, and says so when it
   could not honour `ZENOH_CONFIG`** (backlog `DOC-18`/`ST-23`,
