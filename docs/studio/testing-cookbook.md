@@ -33,12 +33,19 @@ This is the fastest way to develop and test the UI:
 ```bash
 # Terminal 1: start mock service (from studio/)
 cd studio
-cargo run -p viva-mock-service
+cargo run -p viva-mock-service -- --zenoh-config config/zenoh-local.json5
 
-# Terminal 2: start studio
+# Terminal 2: start studio (from the repository root)
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri
 cargo tauri dev
 ```
+
+Both configs are required. The mock service defaults to `zenoh::Config::default()`
+— peer mode with multicast scouting — and Studio without `ZENOH_CONFIG` is not a
+Zenoh client at all, it is in embedded mode talking to real hardware. Pointing
+both at the fixed loopback endpoint is the same topology the real-service recipe
+below uses, and the one `tests/e2e` exercises.
 
 The mock service generates synthetic test patterns (Mono8 gradient, RGB8 color bars) — no real camera required.
 
@@ -54,13 +61,18 @@ cargo run -p viva-service -- --iface lo0 --zenoh-config studio/config/zenoh-loca
 # Or: --iface lo   # Linux loopback
 # Or: --iface en0  # real NIC
 
-# Terminal 3: start studio
+# Terminal 3: start studio. ZENOH_CONFIG is required and must be absolute,
+# because the `cd` that follows would break a relative path.
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri
 cargo tauri dev
 ```
 
-In dev mode, Studio auto-loads `studio/config/zenoh-studio.json5`, which connects to the
-service endpoint configured by `zenoh-local.json5`.
+`zenoh-studio.json5` connects to the service endpoint configured by
+`zenoh-local.json5`. Studio does not load it on its own — there is no default
+path and no dev-mode auto-detection. Without `ZENOH_CONFIG` it starts in
+embedded mode, whose discovery skips loopback, so the fake camera never appears
+(#132). The header chip shows which mode is active.
 
 ## What to Expect
 

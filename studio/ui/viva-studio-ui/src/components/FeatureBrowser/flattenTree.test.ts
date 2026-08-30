@@ -14,7 +14,7 @@ function makeGraph(categories: Record<string, UiCategory>, nodes: Record<string,
     } as UiNode;
   }
   // Add category nodes
-  for (const [name, cat] of Object.entries(categories)) {
+  for (const name of Object.keys(categories)) {
     if (!fullNodes[name]) {
       fullNodes[name] = {
         name,

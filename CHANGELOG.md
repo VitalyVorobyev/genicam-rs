@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Viva Studio now shows which backend mode it started in, and says so when it
+  could not honour `ZENOH_CONFIG`** (backlog `DOC-18`/`ST-23`,
+  [#132](https://github.com/VitalyVorobyev/viva-genicam/issues/132)). Six
+  documents told readers that Studio "loads its own Zenoh config automatically
+  in dev mode". It never has: remote mode requires the `ZENOH_CONFIG`
+  environment variable to name a loadable config file — there is no default
+  path, no dev-mode detection, and no `--zenoh-config` flag on that binary.
+  Without it the app starts in embedded mode, whose GigE discovery deliberately
+  skips loopback, so the fake camera in the documented walkthrough could never
+  appear and the device list stayed empty with no error at all.
+
+  The walkthroughs now export `ZENOH_CONFIG`, absolute — they `cd` into the app
+  directory immediately after, which breaks a relative path. More to the point,
+  the app no longer hides the answer: the header carries an Embedded/Remote
+  chip, and a `ZENOH_CONFIG` that is set but fails to load is now an `error!`
+  plus an error toast and a Diagnostics entry, instead of a `warn!` and a silent
+  switch to the other mode. It still starts, so it is never unlaunchable.
+
+  Two things surfaced while fixing it. The cookbook's mock-service quick start
+  was broken the same way and is now verified end to end rather than assumed.
+  And the Tauri crate's 50 unit tests had never run in CI — it is excluded from
+  the studio workspace, so `cargo test --workspace` never reached it — which
+  `studio-ci.yml` now corrects.
+
+- **The Studio UI's 14 type errors are fixed, and CI now type-checks the
+  frontend** (backlog `ST-20`). `bun run build` is Vite, which strips types
+  without checking them, so nothing in CI had ever type-checked the UI;
+  `studio-ci.yml` now runs `bunx tsc --noEmit`. Seven of the fourteen were a
+  stale `uigraph.ts`: the Rust model has always carried `UiCategory::{tooltip,
+  comment}` and `UiNode::comment`, so the components reading them were correct
+  and the TypeScript declarations were the half that had drifted — the feature
+  tooltips were arriving all along. `formatDeviceChip` handled four of
+  `ConnectionState`'s five variants and returned `undefined` for
+  `reconnecting`; it now renders the attempt count, as `DeviceDropdown` already
+  did. The rest were unused declarations, including a fixture-loading
+  affordance that had been wired to nothing since the studio was imported.
+
 ## [0.5.0] - 2026-08-26
 
 Two behaviour changes need a read before upgrading, both under the headings

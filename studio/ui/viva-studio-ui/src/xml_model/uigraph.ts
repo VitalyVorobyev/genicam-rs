@@ -11,6 +11,7 @@ export interface UiNode {
   name: string;
   kind: UiNodeKind;
   display_name?: string;
+  comment?: string;
   tooltip?: string;
   description?: string;
   visibility?: string;
@@ -43,6 +44,8 @@ export interface UiCategory {
   name: string;
   display_name: string;
   features: string[];
+  tooltip?: string;
+  comment?: string;
 }
 
 export interface NumericConstraints {

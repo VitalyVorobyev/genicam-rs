@@ -35,7 +35,7 @@ impl DeviceBackend for RemoteBackend {
 
     async fn connect(&self, _device_id: &str) -> Result<ConnectResult, String> {
         Err("Remote mode: device operations use Zenoh commands. \
-             Pass --zenoh-config or set ZENOH_CONFIG to enable."
+             Set ZENOH_CONFIG to a Zenoh config file to enable remote mode."
             .to_string())
     }
 

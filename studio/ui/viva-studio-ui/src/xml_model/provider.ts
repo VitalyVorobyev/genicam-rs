@@ -1,4 +1,4 @@
-import type { ParseXmlResponse, UiGraph } from "./uigraph";
+import type { ParseXmlResponse } from "./uigraph";
 import type { NodeValue } from "./values";
 import type { CommandResult, FeatureState } from "../device/types";
 
@@ -67,14 +67,6 @@ export class TauriProvider implements XmlModelProvider {
 async function invokeNative<T>(command: string, payload?: Record<string, unknown>) {
   const { invoke } = await import("@tauri-apps/api/core");
   return (await invoke(command, payload)) as T;
-}
-
-function buildSummary(graph: UiGraph) {
-  return {
-    node_count: Object.keys(graph.nodes_by_name ?? {}).length,
-    category_count: Object.keys(graph.categories ?? {}).length,
-    root_category: graph.root_category || "",
-  };
 }
 
 function nodeValueToJson(value: NodeValue): unknown {

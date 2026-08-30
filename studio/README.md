@@ -129,7 +129,9 @@ cargo run -p viva-fake-gige
 cargo run -p viva-service -- --iface lo0 --zenoh-config studio/config/zenoh-local.json5
 # On Linux: --iface lo
 
-# 3: the app
+# 3: the app. ZENOH_CONFIG is required, and must be absolute — the `cd` below
+# means a relative path would no longer resolve.
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
 
@@ -137,8 +139,18 @@ USB3 Vision needs only two, because the service hosts its own fake:
 
 ```sh
 cargo run -p viva-service-u3v -- --fake --zenoh-config studio/config/zenoh-local.json5
+
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
+
+**`ZENOH_CONFIG` is what puts the app in remote mode.** There is no default
+path and no dev-mode auto-detection: without it the app starts in *embedded*
+mode and talks to cameras directly, which is a perfectly good mode but not this
+one — embedded discovery does not scan loopback, so a fake camera on
+`127.0.0.1` never appears and the device list stays empty. The mode is shown in
+the app header, and a `ZENOH_CONFIG` that fails to load is reported as an error
+rather than silently ignored.
 
 ## Building
 
