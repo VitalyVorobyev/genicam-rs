@@ -33,6 +33,14 @@ export function formatDeviceChip(cs: ConnectionState): DeviceChipData {
       };
     case "connecting":
       return { label: "Connecting\u2026", state: "connecting" };
+    case "reconnecting":
+      // Wording and state borrowed from DeviceDropdown, which renders the live
+      // header affordance: it shows the attempt count and reuses the
+      // "connecting" dot rather than giving reconnection a colour of its own.
+      return {
+        label: `Reconnecting (${cs.attempt}/${cs.max_attempts})\u2026`,
+        state: "connecting",
+      };
     case "disconnected":
       return { label: "No device", state: "disconnected" };
     case "error":

@@ -103,8 +103,6 @@ export function FeatureBrowserPage({
   const [status, setStatus] = useState<ParseStatus>({ kind: "idle" });
   const [diags, setDiags] = useState<Diag[]>([]);
   const [summaryOverride, setSummaryOverride] = useState<string | null>(null);
-  const [fixtures, setFixtures] = useState<string[]>([]);
-  const [selectedFixture, setSelectedFixture] = useState("");
 
   const { drafts, errors, setDraft, resetDraft, clearAllDrafts } = useDraftValues();
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
@@ -167,17 +165,6 @@ export function FeatureBrowserPage({
 
   useEffect(() => {
     let isMounted = true;
-
-    if (provider.listFixtures) {
-      provider
-        .listFixtures()
-        .then((names) => {
-          if (!isMounted) return;
-          setFixtures(names);
-          setSelectedFixture(names[0] ?? "");
-        })
-        .catch(() => { if (isMounted) setFixtures([]); });
-    }
 
     if (provider.getCurrentModel) {
       provider
@@ -262,17 +249,6 @@ export function FeatureBrowserPage({
     },
     [applyResponse, provider]
   );
-
-  const onLoadFixture = useCallback(async () => {
-    if (!provider.loadFixture || !selectedFixture) return;
-    setStatus({ kind: "loading", fileName: selectedFixture });
-    try {
-      const parsed = await provider.loadFixture(selectedFixture);
-      applyResponse(parsed, selectedFixture);
-    } catch (error) {
-      setStatus({ kind: "error", message: formatErrorMessage(error) });
-    }
-  }, [applyResponse, provider, selectedFixture]);
 
   // T7.3 — Export preset: download current drafts as JSON
   const onExportPreset = useCallback(() => {

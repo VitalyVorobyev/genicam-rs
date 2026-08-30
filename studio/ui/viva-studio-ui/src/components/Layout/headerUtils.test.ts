@@ -45,6 +45,19 @@ describe("formatDeviceChip", () => {
     expect(result.state).toBe("connecting");
   });
 
+  it("test_format_chip_reconnecting — reconnecting shows the attempt count", () => {
+    const result = formatDeviceChip({
+      kind: "reconnecting",
+      device_id: "cam0",
+      attempt: 2,
+      max_attempts: 5,
+      reason: "heartbeat timeout",
+    });
+    expect(result.label).toBe("Reconnecting (2/5)…");
+    // Same treatment DeviceDropdown gives it: reconnection reuses "connecting".
+    expect(result.state).toBe("connecting");
+  });
+
   it("test_format_chip_error — error maps to disconnected chip with No device label", () => {
     const result = formatDeviceChip({ kind: "error", message: "Timeout" });
     expect(result.label).toBe("No device");

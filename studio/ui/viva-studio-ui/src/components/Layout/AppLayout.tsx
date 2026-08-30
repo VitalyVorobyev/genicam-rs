@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "../../tauri";
 import { useDevice } from "../../device/useDevice";
+import { useBackendStatus } from "../../device/useBackendStatus";
+import { formatBackendChip } from "../../device/backendStatus";
 import { useNodeBulkRead } from "../../device/useNodeBulkRead";
 import { useNodeValues } from "../../device/useNodeValues";
 import { useAcquisition } from "../../device/useAcquisition";
@@ -47,6 +49,7 @@ function AppLayoutInner() {
   const { status: acqStatus, streamerInfo, start: startAcq, stop: stopAcq } = useAcquisition();
   const { recordingStatus, startRecording, stopRecording } = useRecording();
   const { imageMeta } = useImageMeta();
+  const backendStatus = useBackendStatus();
   const { log } = useAppLog();
   const { addToast } = useToast();
 
@@ -62,6 +65,16 @@ function AppLayoutInner() {
       ? `Viva Studio — ${connectedDeviceName}`
       : "Viva Studio";
   }, [connectedDeviceName]);
+
+  // A ZENOH_CONFIG that was set but failed to load leaves the app in embedded
+  // mode — running, but unable to see the service the user pointed it at (#132).
+  // The header chip shows the state; this makes sure nobody misses the reason.
+  useEffect(() => {
+    const error = backendStatus?.zenoh_config_error;
+    if (!error) return;
+    addToast("error", error);
+    log("error", error);
+  }, [backendStatus, addToast, log]);
 
   // Track the last successfully connected device ID for the reconnect prompt.
   useEffect(() => {
@@ -189,9 +202,20 @@ function AppLayoutInner() {
   return (
     <div className="app-layout">
       <header className="app-header">
-        {/* Left: brand wordmark */}
+        {/* Left: brand wordmark + backend mode (reference info, not an action) */}
         <div className="app-header__brand">
           <h1 className="app-header__brand-name">Viva Studio</h1>
+          {backendStatus && (() => {
+            const chip = formatBackendChip(backendStatus);
+            return (
+              <span
+                className={`app-header__mode-chip app-header__mode-chip--${chip.state}`}
+                title={chip.title}
+              >
+                {chip.label}
+              </span>
+            );
+          })()}
         </div>
 
         {/* Center: tab navigation */}

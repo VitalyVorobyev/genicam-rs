@@ -153,18 +153,27 @@ cargo run -p viva-service -- \
   --zenoh-config studio/config/zenoh-local.json5
 # On Linux: --iface lo
 
-# Terminal 3: the desktop app (loads its own Zenoh config in dev mode)
+# Terminal 3: the desktop app. ZENOH_CONFIG is what selects remote mode, and it
+# has to be absolute — the `cd` below would break a relative path.
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri
 cargo tauri dev
 ```
 
 Studio should discover the fake camera, show its feature tree, and stream
-gradient images in the viewer.
+gradient images in the viewer. The chip in the header reads **Remote**.
+
+If you skip `ZENOH_CONFIG`, the app still starts — in *embedded* mode, where it
+drives cameras directly instead of through the service. That mode does not scan
+loopback, so this fake camera cannot appear and the device list simply stays
+empty. The header chip reads **Embedded**, which is how you tell the two apart.
 
 For USB3 Vision the service can host its own fake, so two terminals suffice:
 
 ```bash
 cargo run -p viva-service-u3v -- --fake --zenoh-config studio/config/zenoh-local.json5
+
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
 

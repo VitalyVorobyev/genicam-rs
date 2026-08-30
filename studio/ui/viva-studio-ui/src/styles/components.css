@@ -272,6 +272,30 @@ input[type="checkbox"] {
 .app-header__device-dot--connecting   { background: var(--warning); animation: pulse 1.8s ease-in-out infinite; }
 .app-header__device-dot--disconnected { background: var(--text-muted); }
 
+/* Backend mode label (Embedded / Remote), next to the wordmark: it is
+   reference information about how the app was launched, not an action, so it
+   lives with the brand rather than among the header's action buttons. Plain
+   text, equal weight for the two deliberate states — Embedded is the
+   documented default, not a lesser mode, so it reads no dimmer than Remote
+   (text-muted drops below WCAG AA here and this label is the whole point of
+   #132, not a decoration). Only the degraded (fault) state gets the bordered
+   danger pill, matching .btn--stop-sm / .status--error. */
+.app-header__mode-chip {
+  font-size: var(--text-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.app-header__mode-chip--degraded {
+  color: var(--danger);
+  background: var(--danger-muted);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-pill);
+  padding: var(--sp-1) var(--sp-4);
+}
+
 .app-body {
   flex: 1;
   display: flex;

@@ -1,4 +1,4 @@
-import type { UiGraph, UiNode } from "../../xml_model/uigraph";
+import type { UiGraph } from "../../xml_model/uigraph";
 import type { NodeValueEntry } from "../../device/types";
 import {
   isUnknownKind,

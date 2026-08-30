@@ -16,23 +16,66 @@ fn ping() -> &'static str {
     "pong"
 }
 
+/// Outcome of resolving the app's Zenoh configuration from the environment.
+struct ZenohConfigOutcome {
+    /// `Some` only in remote mode.
+    config: Option<zenoh::Config>,
+    /// Set only when `ZENOH_CONFIG` was present but could not be loaded.
+    error: Option<String>,
+}
+
+/// Explain a `ZENOH_CONFIG` that was set but could not be loaded.
+///
+/// Kept separate from [`detect_zenoh_config`] so it can be tested without
+/// constructing a `zenoh::Config`. The message has to carry the trap that
+/// produced [#132]: the app keeps running, but in a mode that cannot see the
+/// camera the user was pointing it at.
+///
+/// [#132]: https://github.com/VitalyVorobyev/viva-genicam/issues/132
+fn zenoh_config_error_message(path: &str, err: &str) -> String {
+    format!(
+        "Failed to load ZENOH_CONFIG={path}: {err}. \
+         Continuing in embedded mode (direct camera access), which does not \
+         discover cameras on loopback — so a fake camera on 127.0.0.1 will not \
+         appear. If the path is relative, make it absolute: the app's working \
+         directory is not the repository root."
+    )
+}
+
 /// Determine whether the app should run in remote (Zenoh) mode.
 ///
-/// Returns `Some(config)` only if the `ZENOH_CONFIG` environment variable is set.
-/// Embedded mode (direct camera access) is the default for all other cases.
-fn detect_zenoh_config() -> Option<zenoh::Config> {
+/// Remote mode requires the `ZENOH_CONFIG` environment variable to name a
+/// loadable Zenoh config file. There is no default path and no dev-mode
+/// auto-detection: embedded mode (direct camera access) is the default for
+/// every other case, including a `ZENOH_CONFIG` that fails to load.
+fn detect_zenoh_config() -> ZenohConfigOutcome {
     if let Ok(path) = std::env::var("ZENOH_CONFIG") {
         match zenoh::Config::from_file(&path) {
             Ok(cfg) => {
                 tracing::info!("Loaded Zenoh config from ZENOH_CONFIG={path} — remote mode");
-                return Some(cfg);
+                return ZenohConfigOutcome {
+                    config: Some(cfg),
+                    error: None,
+                };
             }
-            Err(e) => tracing::warn!("Failed to load ZENOH_CONFIG={path}: {e}"),
+            Err(e) => {
+                // The user explicitly asked for remote mode; starting embedded
+                // instead is a surprise, so this is an error rather than a warning.
+                let message = zenoh_config_error_message(&path, &e.to_string());
+                tracing::error!("{message}");
+                return ZenohConfigOutcome {
+                    config: None,
+                    error: Some(message),
+                };
+            }
         }
     }
 
     tracing::info!("No ZENOH_CONFIG set — using embedded mode (direct camera access)");
-    None
+    ZenohConfigOutcome {
+        config: None,
+        error: None,
+    }
 }
 
 fn dirs_log_path() -> std::path::PathBuf {
@@ -64,7 +107,10 @@ fn main() {
     tracing::info!("Log directory: {}", log_dir.display());
 
     // Detect backend mode: embedded (default) or remote (Zenoh).
-    let zenoh_config = detect_zenoh_config();
+    let ZenohConfigOutcome {
+        config: zenoh_config,
+        error: zenoh_config_error,
+    } = detect_zenoh_config();
     let is_remote_mode = zenoh_config.is_some();
 
     // ModelState: holds the last parsed UiGraph (used by xml_model commands).
@@ -103,6 +149,7 @@ fn main() {
         .manage(zenoh_state)
         .manage(sfnc_groups_state)
         .manage(backend_state)
+        .manage(commands::backend::StartupDiagnostics { zenoh_config_error })
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
@@ -132,7 +179,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ping,
             // Backend mode query
-            commands::backend::backend_mode,
+            commands::backend::backend_status,
             // XML model (offline + fixture mode)
             commands::xml_model::parse_xml,
             commands::xml_model::get_current_model,
@@ -179,5 +226,32 @@ fn main() {
         .run(tauri::generate_context!())
     {
         tracing::error!("error while running tauri application: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_error_message_names_the_path_and_the_cause() {
+        let msg = zenoh_config_error_message("/tmp/nope.json5", "No such file or directory");
+        assert!(msg.contains("/tmp/nope.json5"));
+        assert!(msg.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn config_error_message_explains_the_fallback() {
+        let msg = zenoh_config_error_message("cfg.json5", "parse error");
+        // The whole point of #132: the app keeps running, and the mode it keeps
+        // running in cannot see a camera on loopback. Both halves must be said.
+        assert!(msg.contains("embedded mode"));
+        assert!(msg.contains("loopback"));
+    }
+
+    #[test]
+    fn config_error_message_points_at_the_relative_path_trap() {
+        let msg = zenoh_config_error_message("config/zenoh-studio.json5", "not found");
+        assert!(msg.contains("absolute"));
     }
 }

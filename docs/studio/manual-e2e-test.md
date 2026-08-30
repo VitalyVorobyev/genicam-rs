@@ -36,13 +36,19 @@ RUST_LOG=viva_service=debug,viva_genicam=info,warn \
 > The `--zenoh-config` flag is **required** for local testing. It makes the
 > service listen on `tcp/127.0.0.1:7447` so the studio can connect. Without
 > it, the service uses Zenoh multicast scouting which often fails on macOS.
-> The studio automatically loads `studio/config/zenoh-studio.json5` in dev mode.
 
 **Terminal 3 -- studio:**
 ```bash
+# Required, and absolute: the `cd` below would break a relative path.
+export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
 cd studio/apps/viva-studio-tauri
 RUST_LOG=viva_studio_tauri=info,viva_streamer=debug,warn cargo tauri dev
 ```
+
+> The studio does **not** load a Zenoh config on its own — there is no default
+> path and no dev-mode auto-detection. Without `ZENOH_CONFIG` it starts in
+> embedded mode, which never scans loopback, so this fake camera cannot show up
+> (#132). The header chip tells you which mode you got.
 
 ## Quick verification with CLI (optional, no studio needed)
 

@@ -83,6 +83,15 @@ jobs:
         working-directory: studio/apps/viva-studio-tauri/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      # The crate carries 50 unit tests that no job had ever run: it is excluded
+      # from the studio workspace (`studio/Cargo.toml`), so `cargo test
+      # --workspace` never reached it, and this job stopped at clippy. Running
+      # them costs almost nothing once `--all-targets` has compiled them.
+      - name: Cargo test
+        if: ${{ !cancelled() }}
+        working-directory: studio/apps/viva-studio-tauri/src-tauri
+        run: cargo test
+
   ui:
     runs-on: ubuntu-latest
     steps:
@@ -96,11 +105,20 @@ jobs:
         working-directory: studio/ui/viva-studio-ui
         run: bun install --frozen-lockfile
 
+      # `bun run build` is Vite, which strips types without checking them, so
+      # until this step existed nothing in CI type-checked the frontend at all
+      # and 14 real errors accumulated on main (ST-20).
+      - name: Type check
+        working-directory: studio/ui/viva-studio-ui
+        run: bunx tsc --noEmit
+
       - name: Test
+        if: ${{ !cancelled() }}
         working-directory: studio/ui/viva-studio-ui
         run: bun run test -- --run
 
       - name: Build
+        if: ${{ !cancelled() }}
         working-directory: studio/ui/viva-studio-ui
         run: bun run build
 

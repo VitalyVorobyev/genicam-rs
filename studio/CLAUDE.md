@@ -27,8 +27,13 @@ cd studio/apps/viva-studio-tauri && cargo tauri dev
 # E2E against the in-repo fake camera (3 terminals, repo root)
 # T1: cargo run -p viva-fake-gige
 # T2: cargo run -p viva-service -- --iface lo0 --zenoh-config studio/config/zenoh-local.json5
-# T3: cd studio/apps/viva-studio-tauri && cargo tauri dev
+# T3: export ZENOH_CONFIG=$(pwd)/studio/config/zenoh-studio.json5
+#     cd studio/apps/viva-studio-tauri && cargo tauri dev
 ```
+
+`ZENOH_CONFIG` on T3 is required and must be absolute (the `cd` breaks a
+relative path). Without it the app starts in embedded mode, whose discovery
+skips loopback — so the fake camera never appears. See `#132`.
 
 ## Key Invariants
 
